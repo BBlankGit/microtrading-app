@@ -57,6 +57,9 @@ CREATE TABLE IF NOT EXISTS paper_candidates (
     positive_reasons_json   JSONB,
     negative_reasons_json   JSONB,
     decision_reason         TEXT,
+    catalyst_sentiment      TEXT,
+    catalyst_sentiment_score NUMERIC(5,3),
+    catalyst_materiality_score NUMERIC(5,3),
     created_at              TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -116,6 +119,10 @@ CREATE INDEX IF NOT EXISTS idx_paper_trades_event_created_at
     ON paper_trades_journal (event, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_event_symbol_created_at
     ON paper_trades_journal (event, symbol, created_at DESC);
+
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS catalyst_sentiment TEXT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS catalyst_sentiment_score NUMERIC(5,3);
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS catalyst_materiality_score NUMERIC(5,3);
 """
 
 

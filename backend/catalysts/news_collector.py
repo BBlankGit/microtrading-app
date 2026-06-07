@@ -36,6 +36,7 @@ async def collect_news_for_symbols(
     apply_filter: bool = False,
     max_age_hours: int = 24,
     classify_events: bool = False,
+    analyze_sentiment: bool = False,
 ) -> dict[str, Any]:
     """
     Collect recent news catalysts for a list of symbols.
@@ -46,6 +47,8 @@ async def collect_news_for_symbols(
     and adds a 'filter' key to the result.
     When classify_events=True, adds deterministic event-type classification
     fields to each catalyst record (and to filter.accepted if filtering is on).
+    When analyze_sentiment=True, runs deterministic rule-based sentiment
+    analysis on each catalyst (no AI/LLM).
     Caches result in Redis under catalysts:latest (best-effort, TTL 300s).
     """
     seen: set[str] = set()
@@ -72,6 +75,10 @@ async def collect_news_for_symbols(
 
     if classify_events:
         all_catalysts = [classify_catalyst_event(c) for c in all_catalysts]
+
+    if analyze_sentiment:
+        from catalysts.sentiment import analyze_catalyst_sentiment
+        all_catalysts = [{**c, **analyze_catalyst_sentiment(c)} for c in all_catalysts]
 
     result: dict[str, Any] = {
         "symbols_requested": clean,

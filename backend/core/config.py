@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     MARKET_REGIME_MIN_RISK_ON_SCORE: int = 60
     MARKET_REGIME_MAX_RISK_OFF_SCORE: int = 40
 
+    # Catalyst sentiment (Phase 2I — no AI/LLM, deterministic rules only)
+    PAPER_REJECT_STRONG_BEARISH_CATALYST: bool = True
+    PAPER_BEARISH_CATALYST_REJECT_MATERIALITY: float = 0.8
+
     def paper_universe_list(self) -> list[str]:
         return [s.strip().upper() for s in self.PAPER_DEFAULT_UNIVERSE.split(",") if s.strip()]
 

@@ -138,11 +138,13 @@ async def persist_tick_result(
                             volume_ratio, catalyst_count, catalyst_type,
                             total_score, score_threshold, score_pass,
                             score_components_json, positive_reasons_json,
-                            negative_reasons_json, decision_reason
+                            negative_reasons_json, decision_reason,
+                            catalyst_sentiment, catalyst_sentiment_score,
+                            catalyst_materiality_score
                         ) VALUES (
                             $1,$2,$3,$4,$5,$6,$7,$8,
                             $9,$10,$11,$12,$13,$14,
-                            $15,$16,$17,$18
+                            $15,$16,$17,$18,$19,$20,$21
                         )
                         """,
                         [
@@ -165,6 +167,9 @@ async def persist_tick_result(
                                 json.dumps(c["positive_reasons"]) if c.get("positive_reasons") else None,
                                 json.dumps(c["negative_reasons"]) if c.get("negative_reasons") else None,
                                 c.get("decision_reason"),
+                                c.get("catalyst_sentiment"),
+                                _float(c.get("catalyst_sentiment_score")),
+                                _float(c.get("catalyst_materiality_score")),
                             )
                             for c in candidates
                         ],

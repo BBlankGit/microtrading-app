@@ -109,22 +109,88 @@ def score_candidate(
         negative_reasons.append(f"low volume ratio {vol_ratio:.2f}x")
 
     # ── E. Catalyst score (max 20) ────────────────────────────────────────────
+    catalyst_sentiment: str | None = None
+    catalyst_sentiment_score: float | None = None
+    catalyst_materiality_score: float | None = None
+    catalyst_sentiment_reasons: list[str] = []
+    bullish_flags: list[str] = []
+    bearish_flags: list[str] = []
+    strongest_catalyst_title: str | None = None
+    strongest_catalyst_sentiment: str | None = None
+    bearish_catalyst_penalty = 0
+
     if not catalysts:
         catalyst_score = 0
         negative_reasons.append("no accepted catalysts")
     else:
-        event_types = {c.get("classified_event_type") for c in catalysts}
-        if event_types & _HIGH_VALUE_EVENT_TYPES:
-            catalyst_score = 20
-            matched = sorted(event_types & _HIGH_VALUE_EVENT_TYPES)
-            positive_reasons.append(f"high-value catalyst: {matched[0]}")
-        elif event_types & _MID_VALUE_EVENT_TYPES:
-            catalyst_score = 12
-            matched = sorted(event_types & _MID_VALUE_EVENT_TYPES)
-            positive_reasons.append(f"mid-value catalyst: {matched[0]}")
+        best = max(
+            catalysts,
+            key=lambda c: (
+                c.get("materiality_score") or 0.0,
+                abs(c.get("sentiment_score") or 0.0),
+            ),
+        )
+        if best.get("sentiment"):
+            sentiment = best.get("sentiment", "unknown")
+            materiality = best.get("materiality_score") or 0.0
+            ss = best.get("sentiment_score") or 0.0
+
+            catalyst_sentiment = sentiment
+            catalyst_sentiment_score = ss
+            catalyst_materiality_score = materiality
+            catalyst_sentiment_reasons = best.get("sentiment_reasons") or []
+            bullish_flags = best.get("bullish_flags") or []
+            bearish_flags = best.get("bearish_flags") or []
+            strongest_catalyst_title = best.get("title")
+            strongest_catalyst_sentiment = sentiment
+
+            if sentiment == "bullish":
+                if materiality >= 0.7:
+                    catalyst_score = 20
+                elif materiality >= 0.4:
+                    catalyst_score = 16
+                else:
+                    catalyst_score = 10
+                positive_reasons.append(
+                    f"bullish catalyst (materiality {materiality:.2f})"
+                )
+            elif sentiment == "mixed":
+                if materiality >= 0.7:
+                    catalyst_score = 12
+                elif materiality >= 0.4:
+                    catalyst_score = 10
+                else:
+                    catalyst_score = 8
+                reason = (
+                    catalyst_sentiment_reasons[0]
+                    if catalyst_sentiment_reasons
+                    else "conflicting signals"
+                )
+                negative_reasons.append(f"Mixed catalyst sentiment: {reason}")
+            elif sentiment in ("neutral", "unknown"):
+                catalyst_score = 5
+                negative_reasons.append("Weak/unknown catalyst sentiment")
+            elif sentiment == "bearish":
+                catalyst_score = 0
+                bearish_catalyst_penalty = -15
+                label = bearish_flags[0] if bearish_flags else "bearish signal"
+                negative_reasons.append(f"Bearish catalyst: {label}")
+            else:
+                catalyst_score = 5
         else:
-            catalyst_score = 5
-            negative_reasons.append("only generic_news catalysts")
+            # Fallback: event-type based scoring (no sentiment fields present)
+            event_types = {c.get("classified_event_type") for c in catalysts}
+            if event_types & _HIGH_VALUE_EVENT_TYPES:
+                catalyst_score = 20
+                matched = sorted(event_types & _HIGH_VALUE_EVENT_TYPES)
+                positive_reasons.append(f"high-value catalyst: {matched[0]}")
+            elif event_types & _MID_VALUE_EVENT_TYPES:
+                catalyst_score = 12
+                matched = sorted(event_types & _MID_VALUE_EVENT_TYPES)
+                positive_reasons.append(f"mid-value catalyst: {matched[0]}")
+            else:
+                catalyst_score = 5
+                negative_reasons.append("only generic_news catalysts")
 
     # ── F. Risk penalty (min -20) ─────────────────────────────────────────────
     risk_penalty = 0
@@ -139,6 +205,7 @@ def score_candidate(
     if vol_ratio is not None and vol_ratio < 0.8:
         risk_penalty -= 5
         negative_reasons.append(f"volume risk: ratio {vol_ratio:.2f}x < 0.8")
+    risk_penalty += bearish_catalyst_penalty
     risk_penalty = max(risk_penalty, -20)
 
     # ── Total score ───────────────────────────────────────────────────────────
@@ -177,4 +244,12 @@ def score_candidate(
         "positive_reasons": positive_reasons,
         "negative_reasons": negative_reasons,
         "decision_reason": decision_reason,
+        "catalyst_sentiment": catalyst_sentiment,
+        "catalyst_sentiment_score": catalyst_sentiment_score,
+        "catalyst_materiality_score": catalyst_materiality_score,
+        "catalyst_sentiment_reasons": catalyst_sentiment_reasons,
+        "bullish_flags": bullish_flags,
+        "bearish_flags": bearish_flags,
+        "strongest_catalyst_title": strongest_catalyst_title,
+        "strongest_catalyst_sentiment": strongest_catalyst_sentiment,
     }

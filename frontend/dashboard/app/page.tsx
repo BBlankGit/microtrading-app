@@ -81,6 +81,14 @@ interface Candidate {
   score_pass: boolean | null;
   score_components: ScoreComponents | null;
   decision_reason: string | null;
+  catalyst_sentiment: string | null;
+  catalyst_sentiment_score: number | null;
+  catalyst_materiality_score: number | null;
+  catalyst_sentiment_reasons: string[] | null;
+  bullish_flags: string[] | null;
+  bearish_flags: string[] | null;
+  strongest_catalyst_title: string | null;
+  strongest_catalyst_sentiment: string | null;
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -547,6 +555,19 @@ function TradesTable({ trades }: { trades: Trade[] }) {
   );
 }
 
+function sentimentBadge(sentiment: string | null): JSX.Element {
+  if (!sentiment) return <span className="text-gray-600">—</span>;
+  const map: Record<string, { label: string; cls: string }> = {
+    bullish:  { label: "bull", cls: "text-green-400 font-semibold" },
+    bearish:  { label: "bear", cls: "text-red-400 font-semibold" },
+    mixed:    { label: "mix",  cls: "text-yellow-400 font-semibold" },
+    neutral:  { label: "neu",  cls: "text-gray-400" },
+    unknown:  { label: "unk",  cls: "text-gray-600" },
+  };
+  const entry = map[sentiment] ?? { label: sentiment.slice(0, 4), cls: "text-gray-400" };
+  return <span className={`font-mono text-xs ${entry.cls}`}>{entry.label}</span>;
+}
+
 function scoreColor(score: number | null, threshold: number | null): string {
   if (score == null) return "text-gray-400";
   if (threshold != null && score >= threshold) return "text-green-400";
@@ -570,7 +591,7 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
-            {["Symbol","✓","Action","Score","Components","Spread%","Chg%","Cats","Type","Decision / Rejection"].map((h) => (
+            {["Symbol","✓","Action","Score","Components","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection"].map((h) => (
               <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
             ))}
           </tr>
@@ -597,6 +618,14 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
               </td>
               <td className="py-2 pr-4 font-mono">{c.catalyst_count}</td>
               <td className="py-2 pr-4 text-blue-300">{c.catalyst_type || "—"}</td>
+              <td className="py-2 pr-4 whitespace-nowrap" title={
+                c.catalyst_sentiment_reasons?.join("; ") ?? undefined
+              }>
+                {sentimentBadge(c.catalyst_sentiment)}
+                {c.catalyst_materiality_score != null && (
+                  <span className="text-gray-600 text-xs ml-1">{fmt(c.catalyst_materiality_score, 2)}</span>
+                )}
+              </td>
               <td className="py-2 pr-4 text-gray-400 text-xs max-w-xs truncate">
                 {c.decision_reason || c.rejection_reason || "—"}
               </td>
@@ -1483,7 +1512,7 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2H
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2I
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>

@@ -237,6 +237,7 @@ async def run_tick() -> dict[str, Any]:
                 apply_filter=True,
                 max_age_hours=24,
                 classify_events=True,
+                analyze_sentiment=True,
             )
             for c in cat_result.get("filter", {}).get("accepted", []):
                 sym = c.get("symbol")
@@ -312,6 +313,13 @@ async def run_tick() -> dict[str, Any]:
                 hard_rejection = "no accepted catalysts"
             elif all(c.get("classified_event_type") == "generic_news" for c in cats):
                 hard_rejection = "only generic_news catalysts"
+            elif (
+                settings.PAPER_REJECT_STRONG_BEARISH_CATALYST
+                and scoring.get("catalyst_sentiment") == "bearish"
+                and (scoring.get("catalyst_materiality_score") or 0.0)
+                >= settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY
+            ):
+                hard_rejection = "strong_bearish_catalyst"
 
             cat_type = cats[0].get("classified_event_type") if cats else None
             candidate: dict[str, Any] = {
@@ -333,6 +341,15 @@ async def run_tick() -> dict[str, Any]:
                 "positive_reasons": scoring["positive_reasons"],
                 "negative_reasons": scoring["negative_reasons"],
                 "decision_reason": scoring["decision_reason"],
+                # Sentiment fields (Phase 2I)
+                "catalyst_sentiment": scoring.get("catalyst_sentiment"),
+                "catalyst_sentiment_score": scoring.get("catalyst_sentiment_score"),
+                "catalyst_materiality_score": scoring.get("catalyst_materiality_score"),
+                "catalyst_sentiment_reasons": scoring.get("catalyst_sentiment_reasons"),
+                "bullish_flags": scoring.get("bullish_flags"),
+                "bearish_flags": scoring.get("bearish_flags"),
+                "strongest_catalyst_title": scoring.get("strongest_catalyst_title"),
+                "strongest_catalyst_sentiment": scoring.get("strongest_catalyst_sentiment"),
             }
 
             if hard_rejection is not None:
