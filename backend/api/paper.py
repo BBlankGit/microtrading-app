@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from api.dependencies import require_admin_token
 from paper import simulator
+from paper.universe import build_dynamic_universe, get_active_paper_universe, get_cached_universe
 
 router = APIRouter(prefix="/api/paper")
 
@@ -21,6 +22,16 @@ async def paper_trades():
     return {"trades": simulator.get_trades()}
 
 
+@router.get("/universe")
+async def paper_universe():
+    return await get_active_paper_universe()
+
+
+@router.post("/universe/refresh")
+async def paper_universe_refresh(_: None = Depends(require_admin_token)):
+    return await build_dynamic_universe(force_refresh=True)
+
+
 @router.get("/dashboard")
 async def paper_dashboard():
     return {
@@ -28,6 +39,7 @@ async def paper_dashboard():
         "positions": simulator.get_positions(),
         "trades": simulator.get_trades(),
         "last_candidates": simulator.get_state()["last_candidates"],
+        "universe": get_cached_universe(),
         "disclaimer": (
             "Research-only fake-money simulation. "
             "No broker. No live trading. No real orders."

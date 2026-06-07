@@ -20,6 +20,7 @@ from data.polygon_client import PolygonError
 from data.redis_client import make_redis
 from paper.account import PaperAccount
 from paper.scoring import score_candidate
+from paper.universe import get_active_paper_universe
 
 logger = logging.getLogger(__name__)
 
@@ -183,9 +184,24 @@ async def run_tick() -> dict[str, Any]:
         "entries_made": 0,
         "candidates": [],
         "errors": [],
+        "universe_active_count": 0,
+        "universe_symbols": [],
+        "universe_last_refreshed_at": None,
+        "universe_refresh_reason": None,
     }
 
-    symbols = settings.paper_universe_list()
+    # ── 0. Resolve active universe ────────────────────────────────────────────
+    try:
+        _uni = await get_active_paper_universe()
+        symbols = _uni["active_symbols"]
+        result["universe_active_count"] = _uni["active_count"]
+        result["universe_symbols"] = list(symbols)
+        result["universe_last_refreshed_at"] = _uni.get("last_refreshed_at")
+        result["universe_refresh_reason"] = _uni.get("refresh_reason")
+    except Exception as exc:
+        symbols = settings.paper_base_universe_list()[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
+        result["universe_refresh_reason"] = "error_fallback"
+        result["errors"].append({"phase": "universe", "error": str(exc)})
 
     # ── 1. Fetch market quality for all symbols concurrently ──────────────────
     quality_map: dict[str, dict] = {}

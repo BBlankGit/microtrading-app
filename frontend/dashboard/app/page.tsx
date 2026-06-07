@@ -83,11 +83,23 @@ interface Candidate {
   decision_reason: string | null;
 }
 
+interface UniverseInfo {
+  base_symbols: string[];
+  dynamic_symbols: string[];
+  active_symbols: string[];
+  active_count: number;
+  max_symbols_per_tick: number;
+  last_refreshed_at: string | null;
+  refresh_reason: string;
+  errors: Array<{ symbol?: string; error: string }>;
+}
+
 interface Dashboard {
   status: PaperStatus;
   positions: Position[];
   trades: Trade[];
   last_candidates: Candidate[];
+  universe: UniverseInfo | null;
   disclaimer: string;
 }
 
@@ -291,6 +303,60 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
   );
 }
 
+function UniverseSection({ universe }: { universe: UniverseInfo | null }) {
+  if (!universe) {
+    return (
+      <p className="text-gray-500 text-sm">
+        Universe not built yet. Run ⚡ Tick or use 🌐 Universe Refresh to populate.
+      </p>
+    );
+  }
+  const first50 = universe.active_symbols.slice(0, 50);
+  return (
+    <div className="space-y-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatBox label="Active Symbols" value={String(universe.active_count)} />
+        <StatBox label="Max / Tick" value={String(universe.max_symbols_per_tick)} />
+        <StatBox label="Refresh Reason" value={universe.refresh_reason} />
+        <StatBox
+          label="Errors"
+          value={String(universe.errors.length)}
+          cls={universe.errors.length > 0 ? "text-yellow-400" : "text-green-400"}
+        />
+      </div>
+      {universe.last_refreshed_at && (
+        <p className="text-xs text-gray-500">
+          Last refreshed: <span className="font-mono text-gray-400">{utcShort(universe.last_refreshed_at)}</span>
+        </p>
+      )}
+      <div>
+        <p className="text-xs text-gray-400 mb-1">
+          Active symbols ({first50.length}{universe.active_count > 50 ? ` of ${universe.active_count} shown` : ""}):
+        </p>
+        <div className="flex flex-wrap gap-1">
+          {first50.map((sym) => (
+            <span key={sym} className="text-xs font-mono bg-gray-700 text-yellow-300 rounded px-1.5 py-0.5">
+              {sym}
+            </span>
+          ))}
+        </div>
+      </div>
+      {universe.errors.length > 0 && (
+        <details className="text-xs text-gray-500">
+          <summary className="cursor-pointer text-yellow-600 hover:text-yellow-400">
+            {universe.errors.length} fetch error(s) — click to expand
+          </summary>
+          <ul className="mt-1 space-y-0.5 font-mono text-red-400">
+            {universe.errors.slice(0, 10).map((e, i) => (
+              <li key={i}>{e.symbol ? `${e.symbol}: ` : ""}{e.error}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -339,7 +405,7 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2A
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2C
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
@@ -406,10 +472,11 @@ export default function Home() {
             />
           </div>
           {[
-            { label: "▶ Start", path: "/api/paper/start" },
-            { label: "■ Stop",  path: "/api/paper/stop"  },
-            { label: "↺ Reset", path: "/api/paper/reset" },
-            { label: "⚡ Tick", path: "/api/paper/tick"  },
+            { label: "▶ Start",          path: "/api/paper/start"           },
+            { label: "■ Stop",           path: "/api/paper/stop"            },
+            { label: "↺ Reset",          path: "/api/paper/reset"           },
+            { label: "⚡ Tick",          path: "/api/paper/tick"            },
+            { label: "🌐 Universe",      path: "/api/paper/universe/refresh"},
           ].map(({ label, path }) => (
             <button
               key={path}
@@ -445,6 +512,17 @@ export default function Home() {
       <section className="mb-6">
         <h2 className="text-xl font-semibold mb-3">Last Tick — Candidate Decisions</h2>
         <CandidatesTable candidates={dashboard?.last_candidates ?? []} />
+      </section>
+
+      {/* Paper Universe */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Paper Universe
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            dynamic · ranked by movement · fake-money only
+          </span>
+        </h2>
+        <UniverseSection universe={dashboard?.universe ?? null} />
       </section>
 
       <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4 space-y-1">
