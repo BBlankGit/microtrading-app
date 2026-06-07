@@ -33,16 +33,12 @@ services:
       POSTGRES_USER: microtrader
       POSTGRES_PASSWORD: microtrader_password
       POSTGRES_DB: microtrading
-    ports:
-      - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redis-data:/data
     restart: unless-stopped
