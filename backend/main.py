@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.data_status import router as data_status_router
+from api.market import router as market_router
+
 app = FastAPI(
     title="Microtrading App",
     description="Cloud-only automated U.S. equities microtrading research platform",
@@ -13,6 +16,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(data_status_router)
+app.include_router(market_router)
 
 
 @app.get("/health")

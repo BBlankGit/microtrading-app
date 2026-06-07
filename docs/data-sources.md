@@ -7,15 +7,34 @@
 
 ---
 
-## V1 Sources
+## Phase 1A — Polygon REST (Implemented)
 
-| Source | Type | Description |
+The following Polygon REST endpoints are implemented in `backend/data/polygon_client.py`:
+
+| Endpoint | Backend route | Description |
 |---|---|---|
-| **Polygon REST API** | Market data | OHLCV bars, snapshots, ticker details, reference data |
-| **Polygon WebSocket API** | Real-time | Streaming trades, quotes, and aggregate bars |
-| **Polygon news endpoint** | Catalyst | News articles associated with specific tickers |
+| `GET /v2/snapshot/locale/us/markets/stocks/tickers/{symbol}` | `/api/market/ticker/{symbol}/snapshot` | Real-time snapshot: price, volume, change |
+| `GET /v2/aggs/ticker/{symbol}/prev` | `/api/market/ticker/{symbol}/previous-close` | Previous session OHLCV |
+| `GET /v2/reference/news?ticker={symbol}` | `/api/market/ticker/{symbol}/news` | Recent news for a ticker |
 
-Polygon API key is loaded from `POLYGON_API_KEY` environment variable.
+A diagnostic endpoint is available at `/api/data/status` — it shows whether the Polygon key is configured, using a masked preview only. The full API key is never returned by any endpoint or log.
+
+---
+
+## Polygon WebSocket — Planned (Phase 1B)
+
+Real-time streaming via Polygon WebSocket is **not yet implemented**.
+It is planned for Phase 1B to support live quote and trade streaming.
+
+---
+
+## V1 Sources (Full Plan)
+
+| Source | Type | Status |
+|---|---|---|
+| **Polygon REST API** | Market data | Implemented (Phase 1A) |
+| **Polygon WebSocket API** | Real-time streaming | Planned (Phase 1B) |
+| **Polygon news endpoint** | Catalyst | Implemented (Phase 1A) |
 
 ---
 

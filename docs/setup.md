@@ -2,7 +2,13 @@
 
 ## Phase 0 — Foundation Only
 
-This is Phase 0. It does not connect to Polygon, any broker, or any live trading system.
+Phase 0 does not connect to Polygon, any broker, or any live trading system.
+
+## Phase 1A — Polygon REST Data Foundation
+
+Phase 1A adds Polygon REST connectivity. A real `POLYGON_API_KEY` is required to use
+the market data endpoints. The stack runs without it, but market endpoints will return
+an error until the key is set.
 
 ---
 
@@ -15,7 +21,9 @@ cd microtrading-app
 
 # Set up environment
 cp .env.example .env
-# Edit .env if needed (Phase 0 requires no real API keys)
+
+# Edit .env — set your Polygon API key:
+#   POLYGON_API_KEY=your_actual_key_here
 
 # Build and start all services
 cd infra/docker
@@ -24,9 +32,7 @@ docker-compose up --build
 
 ---
 
-## Verify the Stack
-
-After services start, run these checks:
+## Verify the Stack — Phase 0
 
 ```bash
 # Backend health
@@ -39,23 +45,22 @@ curl http://SERVER_IP:8000/api/status
 http://SERVER_IP:3000
 ```
 
-Expected responses:
+---
 
-**`/health`**
-```json
-{"status": "ok"}
-```
+## Verify the Stack — Phase 1A
 
-**`/api/status`**
-```json
-{
-  "app_name": "Microtrading App",
-  "version": "0.1.0",
-  "mode": "paper",
-  "live_trading_enabled": false,
-  "broker_connected": false,
-  "message": "Phase 0 foundation is running. No live trading is enabled. Paper trading only — no broker connection, no real-money execution."
-}
+```bash
+# Data layer status (shows masked key preview, never full key)
+curl http://SERVER_IP:8000/api/data/status
+
+# Previous session close for AAPL
+curl http://SERVER_IP:8000/api/market/ticker/AAPL/previous-close
+
+# Latest 5 news articles for AAPL
+curl "http://SERVER_IP:8000/api/market/ticker/AAPL/news?limit=5"
+
+# Real-time snapshot for AAPL (requires market hours or recent data)
+curl http://SERVER_IP:8000/api/market/ticker/AAPL/snapshot
 ```
 
 ---
@@ -83,7 +88,3 @@ To also remove persistent volumes:
 ```bash
 docker-compose down -v
 ```
-
----
-
-## Do Not Proceed to Phase 1 Until Phase 0 Is Verified
