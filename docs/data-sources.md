@@ -25,11 +25,13 @@ A diagnostic endpoint is available at `/api/data/status` — it shows whether th
 
 Real-time streaming via Polygon WebSocket is implemented in `backend/data/polygon_ws.py`.
 
-| Channel | Event type | Redis key pattern |
-|---|---|---|
-| `T.{symbol}` | Trade | `stream:latest:{symbol}:trade` |
-| `Q.{symbol}` | Quote | `stream:latest:{symbol}:quote` |
-| `AM.{symbol}` | Minute aggregate | `stream:latest:{symbol}:aggregate` |
+| Channel | Event type | Redis key pattern | Status |
+|---|---|---|---|
+| `T.{symbol}` | Trade | `stream:latest:{symbol}:trade` | Implemented |
+| `Q.{symbol}` | Quote | `stream:latest:{symbol}:quote` | Implemented |
+| `AM.{symbol}` | Minute aggregate | `stream:latest:{symbol}:aggregate` | Planned — not currently subscribed |
+
+Phase 1B intentionally subscribes only to trades and quotes. Minute aggregates are normalized by the code but not subscribed by default to avoid plan-tier issues.
 
 **Constraints (Phase 1B):**
 - Subscriptions are limited to a fixed test ticker list: AAPL, MSFT, NVDA, TSLA, AMD.

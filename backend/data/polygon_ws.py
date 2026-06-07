@@ -131,7 +131,7 @@ async def _stream_loop(symbols: list[str]) -> None:
                 _state["last_error"] = None
                 logger.info("Polygon WS authenticated. Subscribing to %s", symbols)
 
-                # Subscribe to T/Q/AM channels for each symbol
+                # Subscribe to T/Q channels for each symbol. AM aggregates are planned for a later phase.
                 await ws.send(json.dumps({
                     "action": "subscribe",
                     "params": _subscribe_params(symbols),
