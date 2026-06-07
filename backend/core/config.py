@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     PAPER_MIN_DAY_VOLUME: int = 500_000
     PAPER_MIN_CHANGE_ABS_PERCENT: float = 0.5
 
+    # Market regime monitor (Phase 2H — observational only, no strategy changes)
+    MARKET_REGIME_ENABLED: bool = True
+    MARKET_REGIME_SYMBOLS: str = "SPY,QQQ,IWM,DIA,XLK,XLF,XLE,XLY,XLI,XLU"
+    MARKET_REGIME_REFRESH_SECONDS: int = 60
+    MARKET_REGIME_MIN_RISK_ON_SCORE: int = 60
+    MARKET_REGIME_MAX_RISK_OFF_SCORE: int = 40
+
     def paper_universe_list(self) -> list[str]:
         return [s.strip().upper() for s in self.PAPER_DEFAULT_UNIVERSE.split(",") if s.strip()]
 

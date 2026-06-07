@@ -52,6 +52,16 @@ async def paper_dashboard():
     trades = simulator.get_trades()
     candidates = simulator.get_state()["last_candidates"]
     universe = get_cached_universe()
+
+    market_regime = None
+    try:
+        from core.config import settings
+        if settings.MARKET_REGIME_ENABLED:
+            from market.regime import get_market_regime
+            market_regime = await get_market_regime()
+    except Exception:
+        pass
+
     return {
         "status": status,
         "positions": positions,
@@ -59,6 +69,7 @@ async def paper_dashboard():
         "last_candidates": candidates,
         "universe": universe,
         "analytics": get_trade_analytics(status, positions, trades, candidates, universe),
+        "market_regime": market_regime,
         "disclaimer": (
             "Research-only fake-money simulation. "
             "No broker. No live trading. No real orders."

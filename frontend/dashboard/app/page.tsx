@@ -175,6 +175,45 @@ interface UniverseInfo {
   errors: Array<{ symbol?: string; error: string }>;
 }
 
+interface MarketRegimeLeader {
+  change_percent: number | null;
+  last_trade_price: number | null;
+}
+
+interface MarketRegimeData {
+  enabled: boolean;
+  symbols_requested: string[];
+  symbols_fetched: string[];
+  symbols_failed: string[];
+  fetch_ratio: number;
+  breadth: {
+    total: number;
+    positive: number;
+    negative: number;
+    flat: number;
+    positive_percent: number | null;
+    avg_change_percent: number | null;
+  };
+  leaders: {
+    data: {
+      SPY: MarketRegimeLeader | null;
+      QQQ: MarketRegimeLeader | null;
+      IWM: MarketRegimeLeader | null;
+    };
+    bullish_count: number;
+    bearish_count: number;
+  };
+  risk: {
+    regime: "risk_on" | "neutral" | "risk_off" | "unknown" | string;
+    risk_on_score: number | null;
+    confidence: "high" | "medium" | "low" | "unknown" | string;
+    fetched_count: number;
+  };
+  as_of: string | null;
+  disclaimer: string;
+  error?: string;
+}
+
 interface Dashboard {
   status: PaperStatus;
   positions: Position[];
@@ -182,6 +221,7 @@ interface Dashboard {
   last_candidates: Candidate[];
   universe: UniverseInfo | null;
   analytics: Analytics | null;
+  market_regime: MarketRegimeData | null;
   disclaimer: string;
 }
 
@@ -977,6 +1017,134 @@ function UniverseSection({ universe }: { universe: UniverseInfo | null }) {
   );
 }
 
+// ── Market regime panel ───────────────────────────────────────────────────────
+
+function regimeColor(regime: string | null | undefined): string {
+  if (regime === "risk_on") return "text-green-400";
+  if (regime === "risk_off") return "text-red-400";
+  if (regime === "neutral") return "text-yellow-400";
+  return "text-gray-400";
+}
+
+function regimeBadgeClass(regime: string | null | undefined): string {
+  if (regime === "risk_on") return "bg-green-900 text-green-300 border-green-700";
+  if (regime === "risk_off") return "bg-red-900 text-red-300 border-red-700";
+  if (regime === "neutral") return "bg-yellow-900 text-yellow-300 border-yellow-700";
+  return "bg-gray-800 text-gray-400 border-gray-600";
+}
+
+function MarketRegimePanel({ regime }: { regime: MarketRegimeData | null }) {
+  if (!regime || !regime.enabled) {
+    return (
+      <p className="text-gray-500 text-sm">
+        Market regime monitor disabled or data unavailable.
+      </p>
+    );
+  }
+
+  const { breadth, leaders, risk, as_of, symbols_fetched, symbols_failed, error } = regime;
+
+  return (
+    <div className="space-y-4">
+      {/* Status badges */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${regimeBadgeClass(risk?.regime)}`}>
+          Regime: {risk?.regime ? risk.regime.replace("_", " ").toUpperCase() : "UNKNOWN"}
+        </span>
+        {risk?.risk_on_score != null && (
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded border bg-gray-800 border-gray-600 ${regimeColor(risk.regime)}`}>
+            Score: {risk.risk_on_score} / 100
+          </span>
+        )}
+        <span className={`text-xs px-2 py-0.5 rounded border ${
+          risk?.confidence === "high" ? "bg-green-950 text-green-400 border-green-800" :
+          risk?.confidence === "medium" ? "bg-yellow-950 text-yellow-400 border-yellow-800" :
+          "bg-gray-800 text-gray-500 border-gray-600"
+        }`}>
+          Confidence: {risk?.confidence ?? "—"}
+        </span>
+        <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
+          {symbols_fetched?.length ?? 0} symbols fetched
+          {(symbols_failed?.length ?? 0) > 0 && ` · ${symbols_failed.length} failed`}
+        </span>
+        {error && (
+          <span className="text-xs text-red-400 font-mono bg-red-950 px-2 py-0.5 rounded border border-red-800 truncate max-w-xs">
+            ERR: {error}
+          </span>
+        )}
+      </div>
+
+      {/* Breadth stats */}
+      {breadth && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Market Breadth</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+            <StatBox label="Total Symbols" value={String(breadth.total)} />
+            <StatBox label="Positive" value={String(breadth.positive)} cls="text-green-400" />
+            <StatBox label="Negative" value={String(breadth.negative)} cls="text-red-400" />
+            <StatBox label="Flat" value={String(breadth.flat)} cls="text-gray-400" />
+            <StatBox
+              label="Positive %"
+              value={breadth.positive_percent != null ? `${breadth.positive_percent}%` : "—"}
+              cls={
+                breadth.positive_percent != null
+                  ? breadth.positive_percent >= 60 ? "text-green-400"
+                  : breadth.positive_percent >= 40 ? "text-yellow-400"
+                  : "text-red-400"
+                  : ""
+              }
+            />
+            <StatBox
+              label="Avg Change"
+              value={breadth.avg_change_percent != null ? `${fmt(breadth.avg_change_percent)}%` : "—"}
+              cls={breadth.avg_change_percent != null ? pnlClass(breadth.avg_change_percent) : ""}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Leaders */}
+      {leaders && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Key Leaders</h3>
+          <div className="grid grid-cols-3 sm:grid-cols-5 gap-3">
+            {(["SPY", "QQQ", "IWM"] as const).map((sym) => {
+              const d = leaders.data?.[sym];
+              return (
+                <div key={sym} className="bg-gray-800 rounded p-3 border border-gray-700">
+                  <div className="text-xs text-gray-400 mb-1">{sym}</div>
+                  {d ? (
+                    <>
+                      <div className={`font-mono font-semibold text-sm ${d.change_percent != null ? pnlClass(d.change_percent) : "text-gray-400"}`}>
+                        {d.change_percent != null ? `${d.change_percent > 0 ? "+" : ""}${fmt(d.change_percent)}%` : "—"}
+                      </div>
+                      {d.last_trade_price != null && (
+                        <div className="text-xs text-gray-500 font-mono mt-0.5">${fmt(d.last_trade_price, 2)}</div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="font-mono text-sm text-gray-600">—</div>
+                  )}
+                </div>
+              );
+            })}
+            <StatBox label="Bullish Leaders" value={String(leaders.bullish_count)} cls="text-green-400" />
+            <StatBox label="Bearish Leaders" value={String(leaders.bearish_count)} cls="text-red-400" />
+          </div>
+        </div>
+      )}
+
+      {as_of && (
+        <p className="text-xs text-gray-600">
+          As of: <span className="font-mono text-gray-500">{utcShort(as_of)}</span>
+          {" · "}
+          <span className="italic">{regime.disclaimer}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
 // ── Monitoring panel ──────────────────────────────────────────────────────────
 
 function MonitoringPanel({ monitoring }: { monitoring: MonitoringStatus | null }) {
@@ -1315,7 +1483,7 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2F
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2H
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
@@ -1332,6 +1500,17 @@ export default function Home() {
           </span>
         </h2>
         <MonitoringPanel monitoring={monitoring} />
+      </section>
+
+      {/* Market Regime */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Market Regime
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            observational only · breadth/risk context · no strategy changes
+          </span>
+        </h2>
+        <MarketRegimePanel regime={dashboard?.market_regime ?? null} />
       </section>
 
       {/* Session Readiness */}

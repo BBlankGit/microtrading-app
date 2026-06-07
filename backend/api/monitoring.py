@@ -101,6 +101,43 @@ async def monitoring_status():
             f"Retention policy is read-only (JOURNAL_RETENTION_DAYS={settings.JOURNAL_RETENTION_DAYS})."
         )
 
+    # ── Market regime ─────────────────────────────────────────────────────────
+    regime_summary: dict = {"enabled": settings.MARKET_REGIME_ENABLED}
+    if settings.MARKET_REGIME_ENABLED:
+        try:
+            from market.regime import get_market_regime
+            regime_data = await get_market_regime()
+            risk = regime_data.get("risk", {})
+            regime_summary.update({
+                "regime": risk.get("regime"),
+                "risk_on_score": risk.get("risk_on_score"),
+                "confidence": risk.get("confidence"),
+                "as_of": regime_data.get("as_of"),
+                "symbols_fetched": len(regime_data.get("symbols_fetched", [])),
+                "symbols_failed": len(regime_data.get("symbols_failed", [])),
+                "error": regime_data.get("error"),
+            })
+            regime = risk.get("regime")
+            confidence = risk.get("confidence")
+            score = risk.get("risk_on_score")
+            if regime_data.get("error"):
+                warnings.append(
+                    "Market regime data fetch error — check Polygon API configuration."
+                )
+            elif regime == "risk_off":
+                warnings.append(
+                    f"Market regime is RISK_OFF (score {score}) — "
+                    "observational only, no strategy changes."
+                )
+            elif confidence in ("unknown", "low"):
+                warnings.append(
+                    f"Market regime confidence is {confidence} — "
+                    "insufficient symbol data fetched."
+                )
+        except Exception as exc:
+            regime_summary["error"] = f"{type(exc).__name__}: {exc}"
+            warnings.append("Market regime monitor unavailable — check Polygon API configuration.")
+
     return {
         "backend_ok": True,
         "paper_running": paper_running,
@@ -113,6 +150,7 @@ async def monitoring_status():
         "last_journal_ok": last_journal_ok,
         "last_error": last_error,
         "market_session": ms,
+        "market_regime": regime_summary,
         "warnings": warnings,
     }
 

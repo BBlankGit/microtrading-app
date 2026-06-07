@@ -392,6 +392,22 @@ async def run_tick() -> dict[str, Any]:
     except Exception as exc:
         result["journal"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ── 7. Market regime metadata (observational only — no strategy changes) ──
+    result["market_regime"] = None
+    try:
+        from core.config import settings as _settings
+        if _settings.MARKET_REGIME_ENABLED:
+            from market.regime import get_market_regime
+            regime_data = await get_market_regime()
+            result["market_regime"] = {
+                "regime": regime_data["risk"]["regime"],
+                "risk_on_score": regime_data["risk"]["risk_on_score"],
+                "confidence": regime_data["risk"]["confidence"],
+                "as_of": regime_data["as_of"],
+            }
+    except Exception:
+        pass
+
     return result
 
 
