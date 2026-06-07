@@ -7,6 +7,7 @@ from api.market import router as market_router
 from api.quality import router as quality_router
 from api.stream import router as stream_router
 from api.universe import router as universe_router
+from core.config import settings
 
 app = FastAPI(
     title="Microtrading App",
@@ -16,9 +17,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=settings.allowed_origins_list(),
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 app.include_router(catalysts_router)
@@ -39,12 +41,13 @@ async def status():
     return {
         "app_name": "Microtrading App",
         "version": "0.1.0",
-        "mode": "paper",
+        "mode": "research",
+        "execution_enabled": False,
+        "paper_trading_enabled": False,
         "live_trading_enabled": False,
         "broker_connected": False,
         "message": (
-            "Phase 0 foundation is running. "
-            "No live trading is enabled. "
-            "Paper trading only — no broker connection, no real-money execution."
+            "Research-only foundation is running. "
+            "No paper trading, broker connection, live trading, or order execution is implemented."
         ),
     }

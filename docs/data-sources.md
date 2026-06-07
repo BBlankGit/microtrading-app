@@ -44,6 +44,19 @@ The API key is never logged or returned by any endpoint.
 
 ---
 
+## Phase 1G-H1 — Security & Reliability Hardening (Implemented)
+
+Security and reliability hardening applied across the backend. No new data sources or trading features.
+
+- **CORS restricted**: `allow_origins` driven by `ALLOWED_ORIGINS` env var (default `http://localhost:3000`). Wildcard `"*"` removed.
+- **Stream start/stop protected**: `POST /api/stream/start` and `POST /api/stream/stop` require `Authorization: Bearer <ADMIN_API_TOKEN>`. Returns `503` if token not configured; `401` if missing or wrong.
+- **Redis crash-safe**: `redis_client.py` provides `redis_ping_status()` (never raises) and `make_redis()` (raises `ValueError` if URL is missing/invalid for safe wrapping). `GET /api/stream/status` always returns `200` with `redis_connected: false` if Redis is unavailable.
+- **Key preview hidden by default**: `/api/data/status` no longer returns `polygon_key_preview` unless `EXPOSE_KEY_PREVIEW=true`.
+- **Status wording corrected**: `/api/status` now returns `mode: research` with `execution_enabled: false`, `paper_trading_enabled: false` — no implied paper trading layer.
+- **Baseline tests**: `backend/tests/` covers config, data/status, stream auth, Redis status, and safety invariants.
+
+---
+
 ## Phase 1G — Catalyst Event-Type Classifier (Implemented)
 
 Deterministic event-type classification is implemented in `backend/catalysts/event_classifier.py`.

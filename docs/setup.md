@@ -22,12 +22,57 @@ cd microtrading-app
 # Set up environment
 cp .env.example .env
 
-# Edit .env — set your Polygon API key:
+# Edit .env — set required values:
 #   POLYGON_API_KEY=your_actual_key_here
+#   ADMIN_API_TOKEN=your_chosen_secret_here     # required for stream start/stop
+#   ALLOWED_ORIGINS=http://localhost:3000       # comma-separated CORS origins
+#   EXPOSE_KEY_PREVIEW=false                    # set true only in dev if needed
 
 # Build and start all services
 cd infra/docker
 docker-compose up --build
+```
+
+---
+
+## Phase 1G-H1 — Security & Reliability Hardening
+
+### CORS
+
+CORS origins are controlled by `ALLOWED_ORIGINS` in `.env`. Default is `http://localhost:3000`.
+Multiple origins: `ALLOWED_ORIGINS=http://localhost:3000,https://app.example.com`
+
+The API never returns `Access-Control-Allow-Origin: *`.
+
+### Admin token (stream start/stop)
+
+`POST /api/stream/start` and `POST /api/stream/stop` require a Bearer token:
+
+```bash
+# Set the token in .env first:
+#   ADMIN_API_TOKEN=your_chosen_secret_here
+
+# Then call with the token:
+curl -X POST http://SERVER_IP:8000/api/stream/start \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+
+curl -X POST http://SERVER_IP:8000/api/stream/stop \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+```
+
+Without a configured token, both endpoints return `503`.
+With wrong/missing token, both endpoints return `401`.
+
+### Key preview exposure
+
+`/api/data/status` does **not** return `polygon_key_preview` by default.
+To enable in dev: `EXPOSE_KEY_PREVIEW=true` in `.env`.
+
+### Run baseline tests
+
+```bash
+cd /opt/microtrading-app/backend
+pytest -q
 ```
 
 ---

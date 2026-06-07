@@ -7,3 +7,6 @@ httpx
 asyncpg
 redis
 websockets
+pytest
+pytest-asyncio
+anyio[trio]

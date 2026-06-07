@@ -9,6 +9,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed, WebSocketException
 
 from core.config import settings
+from data.redis_client import make_redis
 from data.stream_normalizer import normalize_message
 
 logger = logging.getLogger(__name__)
@@ -39,10 +40,6 @@ def get_state() -> dict[str, Any]:
     return dict(_state)
 
 
-def _make_redis() -> aioredis.Redis:
-    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-
 def _subscribe_params(symbols: list[str]) -> str:
     # AM (minute aggregates) requires a higher Polygon plan tier; T and Q are standard.
     channels: list[str] = []
@@ -51,7 +48,9 @@ def _subscribe_params(symbols: list[str]) -> str:
     return ",".join(channels)
 
 
-async def _redis_store(redis: aioredis.Redis, key: str, value: dict[str, Any]) -> None:
+async def _redis_store(redis: aioredis.Redis | None, key: str, value: dict[str, Any]) -> None:
+    if redis is None:
+        return
     try:
         await redis.setex(key, _REDIS_TTL, json.dumps(value))
     except Exception as exc:
@@ -92,7 +91,12 @@ async def _stream_loop(symbols: list[str]) -> None:
     reconnect_delay = 1
 
     while not _stop_event.is_set():
-        redis = _make_redis()
+        redis: aioredis.Redis | None = None
+        try:
+            redis = make_redis()
+        except Exception as exc:
+            logger.warning("Redis unavailable — stream data will not be cached: %s", exc)
+
         try:
             logger.info("Connecting to Polygon WebSocket...")
             async with websockets.connect(
@@ -172,7 +176,9 @@ async def _stream_loop(symbols: list[str]) -> None:
             logger.error("Stream error: %s", exc, exc_info=True)
 
         finally:
-            await redis.aclose()
+            if redis is not None:
+                await redis.aclose()
+            redis = None
             _state["connected"] = False
 
         if _stop_event.is_set():

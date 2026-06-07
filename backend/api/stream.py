@@ -1,28 +1,12 @@
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
-import redis.asyncio as aioredis
-
-from core.config import settings
+from api.dependencies import require_admin_token
 from data import polygon_ws
+from data.redis_client import make_redis, redis_ping_status, redis_url_valid
 
 router = APIRouter(prefix="/api/stream")
-
-
-def _make_redis() -> aioredis.Redis:
-    return aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-
-
-async def _redis_connected() -> bool:
-    r = _make_redis()
-    try:
-        await r.ping()
-        return True
-    except Exception:
-        return False
-    finally:
-        await r.aclose()
 
 
 def _build_status() -> dict:
@@ -41,37 +25,49 @@ def _build_status() -> dict:
 @router.get("/status")
 async def stream_status():
     status = _build_status()
-    status["redis_connected"] = await _redis_connected()
+    ping = await redis_ping_status()
+    status["redis_connected"] = ping["redis_connected"]
+    if not ping["redis_connected"] and ping.get("redis_error"):
+        status["redis_error"] = ping["redis_error"]
     return status
 
 
 @router.post("/start")
-async def stream_start():
+async def stream_start(_: None = Depends(require_admin_token)):
     try:
         await polygon_ws.start_stream()
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     status = _build_status()
-    status["redis_connected"] = await _redis_connected()
+    ping = await redis_ping_status()
+    status["redis_connected"] = ping["redis_connected"]
     return status
 
 
 @router.post("/stop")
-async def stream_stop():
+async def stream_stop(_: None = Depends(require_admin_token)):
     await polygon_ws.stop_stream()
     status = _build_status()
-    status["redis_connected"] = await _redis_connected()
+    ping = await redis_ping_status()
+    status["redis_connected"] = ping["redis_connected"]
     return status
 
 
 @router.get("/latest/{symbol}")
 async def stream_latest(symbol: str):
     sym = symbol.upper().strip()
-    r = _make_redis()
+    if not redis_url_valid():
+        raise HTTPException(
+            status_code=503,
+            detail="Redis is not available. Configure REDIS_URL to use stream data.",
+        )
+    r = make_redis()
     try:
         trade_raw = await r.get(f"stream:latest:{sym}:trade")
         quote_raw = await r.get(f"stream:latest:{sym}:quote")
         agg_raw = await r.get(f"stream:latest:{sym}:aggregate")
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Redis error: {exc}")
     finally:
         await r.aclose()
 

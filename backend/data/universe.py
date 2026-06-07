@@ -3,10 +3,8 @@ import json
 import logging
 from typing import Any
 
-import redis.asyncio as aioredis
-
-from core.config import settings
 from data import polygon_client
+from data.redis_client import make_redis
 from data.polygon_client import PolygonError
 from data.market_quality import evaluate_market_quality
 
@@ -69,7 +67,7 @@ async def build_universe(symbols: list[str] | None = None) -> dict[str, Any]:
 
     # Best-effort Redis cache — never fail the caller if Redis is unavailable
     try:
-        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+        r = make_redis()
         await r.setex(_REDIS_KEY, _REDIS_TTL, json.dumps(result))
         await r.aclose()
     except Exception as exc:

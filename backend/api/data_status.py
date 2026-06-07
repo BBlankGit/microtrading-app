@@ -8,9 +8,8 @@ router = APIRouter()
 
 @router.get("/api/data/status")
 async def data_status():
-    return {
+    result = {
         "polygon_configured": polygon_client.is_configured(),
-        "polygon_key_preview": settings.polygon_key_preview(),
         "trading_mode": settings.TRADING_MODE,
         "live_trading_enabled": settings.LIVE_TRADING_ENABLED,
         "message": (
@@ -18,3 +17,6 @@ async def data_status():
             "Polygon REST connectivity available if API key is configured."
         ),
     }
+    if settings.EXPOSE_KEY_PREVIEW:
+        result["polygon_key_preview"] = settings.polygon_key_preview()
+    return result
