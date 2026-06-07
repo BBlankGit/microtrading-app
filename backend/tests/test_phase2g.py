@@ -256,16 +256,24 @@ async def test_try_reinit_does_not_raise_on_db_error(monkeypatch):
     assert journal._journal_enabled is False
 
 
-async def test_persist_attempts_reinit_when_disabled(monkeypatch):
-    from paper import journal, db as _db
-    from core.config import settings
+async def test_persist_skips_reinit_when_no_database_url(monkeypatch):
+    """No DATABASE_URL → reinit must NOT be attempted (avoids noisy reconnects)."""
+    import core.config as _cfg
+    from unittest.mock import MagicMock
+    from paper import journal
+
     monkeypatch.setattr(journal, "_journal_enabled", False)
     monkeypatch.setattr(journal, "_last_retry_at", None)
+
+    fake_settings = MagicMock()
+    fake_settings.DATABASE_URL = ""
+    fake_settings.JOURNAL_RETRY_SECONDS = 30
+    monkeypatch.setattr(_cfg, "settings", fake_settings)
 
     reinit_called = {"n": 0}
     async def mock_reinit():
         reinit_called["n"] += 1
-        return False  # still fails, but was called
+        return False
     monkeypatch.setattr(journal, "try_reinit", mock_reinit)
 
     result = await journal.persist_tick_result(
@@ -277,8 +285,41 @@ async def test_persist_attempts_reinit_when_disabled(monkeypatch):
          "unrealized_pnl": 0, "total_pnl": 0, "total_pnl_percent": 0},
         None,
     )
-    assert result["skipped"] is True
-    assert reinit_called["n"] == 1  # reinit was attempted
+    assert result.get("skipped") is True
+    assert reinit_called["n"] == 0, "reinit must not be called when DATABASE_URL is empty"
+
+
+async def test_persist_attempts_reinit_when_database_url_configured(monkeypatch):
+    """Non-empty DATABASE_URL → reinit IS attempted once when journal is disabled."""
+    import core.config as _cfg
+    from unittest.mock import MagicMock
+    from paper import journal
+
+    monkeypatch.setattr(journal, "_journal_enabled", False)
+    monkeypatch.setattr(journal, "_last_retry_at", None)
+
+    fake_settings = MagicMock()
+    fake_settings.DATABASE_URL = "postgresql://dummy:dummy@localhost/testdb"
+    fake_settings.JOURNAL_RETRY_SECONDS = 30
+    monkeypatch.setattr(_cfg, "settings", fake_settings)
+
+    reinit_called = {"n": 0}
+    async def mock_reinit():
+        reinit_called["n"] += 1
+        return False  # fails — no real DB needed
+    monkeypatch.setattr(journal, "try_reinit", mock_reinit)
+
+    result = await journal.persist_tick_result(
+        {"tick_at": "2026-01-01T10:00:00+00:00", "symbols_evaluated": 0,
+         "entries": [], "exits": [], "candidates": [], "errors": [],
+         "entries_made": 0, "exits_made": 0, "universe_active_count": 0,
+         "universe_refresh_reason": "test"},
+        {"cash": 1000, "equity": 1000, "realized_pnl": 0,
+         "unrealized_pnl": 0, "total_pnl": 0, "total_pnl_percent": 0},
+        None,
+    )
+    assert result.get("skipped") is True
+    assert reinit_called["n"] == 1, "reinit must be attempted once when DATABASE_URL is set"
 
 
 # ── Journal status endpoint ───────────────────────────────────────────────────
@@ -365,3 +406,78 @@ def test_get_journal_status_has_last_retry_at():
     from paper.journal import get_journal_status
     j = get_journal_status()
     assert "last_retry_at" in j
+
+
+# ── Performance attribution grouping ─────────────────────────────────────────
+
+async def test_performance_groups_by_catalyst_and_score_when_attribution_present(monkeypatch):
+    """Exit rows that carry catalyst_type and total_score produce correct buckets."""
+    from paper import db as _db
+
+    exit_rows = [
+        {"pnl": 10.0, "catalyst_type": "news",    "total_score": 85},
+        {"pnl": -5.0, "catalyst_type": "gap_up",  "total_score": 75},
+        {"pnl":  3.0, "catalyst_type": "news",    "total_score": 62},
+    ]
+
+    class FakeConn:
+        async def fetch(self, *a, **kw): return exit_rows
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+
+    class FakePoolCtx:
+        async def __aenter__(self): return FakeConn()
+        async def __aexit__(self, *a): pass
+
+    class FakePool:
+        def acquire(self): return FakePoolCtx()
+
+    async def async_get_pool(): return FakePool()
+    monkeypatch.setattr(_db, "get_pool", async_get_pool)
+
+    from api.journal import journal_performance
+    result = await journal_performance()
+
+    assert result["total_trades"] == 3
+
+    cats = {r["type"]: r for r in result["pnl_by_catalyst_type"]}
+    assert "news" in cats, "news catalyst should be present"
+    assert "gap_up" in cats, "gap_up catalyst should be present"
+    assert cats["news"]["count"] == 2
+    assert abs(cats["news"]["total_pnl"] - 13.0) < 0.01
+    assert "unknown" not in cats, "unknown catalyst must not appear when attribution is present"
+
+    buckets = {r["bucket"]: r for r in result["pnl_by_score_bucket"]}
+    assert "80+" in buckets,    "score 85 → 80+ bucket"
+    assert "70-79" in buckets,  "score 75 → 70-79 bucket"
+    assert "50-69" in buckets,  "score 62 → 50-69 bucket"
+    assert "no_score" not in buckets, "no_score bucket absent when all exits have scores"
+
+
+# ── Monitoring: high candidate count warning ──────────────────────────────────
+
+def test_monitoring_warns_high_candidate_count(client, monkeypatch):
+    """Monitoring warns when candidate row count exceeds the implemented threshold."""
+    from paper import db as _db, journal as _journal
+
+    monkeypatch.setattr(_journal, "_journal_enabled", True)
+
+    class FakeConn:
+        async def fetchval(self, *a, **kw): return 200_000
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): pass
+
+    class FakePoolCtx:
+        async def __aenter__(self): return FakeConn()
+        async def __aexit__(self, *a): pass
+
+    class FakePool:
+        def acquire(self): return FakePoolCtx()
+
+    fake_pool = FakePool()
+    monkeypatch.setattr(_db, "_pool", fake_pool)
+
+    resp = client.get("/api/monitoring/status")
+    data = resp.json()
+    assert any("candidate" in w.lower() for w in data["warnings"]), \
+        f"Expected high-candidate warning, got: {data['warnings']}"
