@@ -8,6 +8,7 @@ import redis.asyncio as aioredis
 from core.config import settings
 from data import polygon_client
 from data.polygon_client import PolygonError
+from catalysts.filters import filter_catalysts
 from catalysts.schemas import normalize_news_catalyst
 
 logger = logging.getLogger(__name__)
@@ -33,12 +34,16 @@ async def _collect_symbol(symbol: str, limit: int) -> tuple[str, list[dict[str, 
 async def collect_news_for_symbols(
     symbols: list[str],
     limit_per_symbol: int = 5,
+    apply_filter: bool = False,
+    max_age_hours: int = 24,
 ) -> dict[str, Any]:
     """
     Collect recent news catalysts for a list of symbols.
 
     Deduplicates and uppercases symbols. Caps at _MAX_SYMBOLS.
     Continues processing remaining symbols if any individual symbol fails.
+    When apply_filter=True, runs deterministic freshness/relevance filtering
+    and adds a 'filter' key to the result.
     Caches result in Redis under catalysts:latest (best-effort, TTL 300s).
     """
     seen: set[str] = set()
@@ -69,6 +74,9 @@ async def collect_news_for_symbols(
         "catalysts": all_catalysts,
         "errors": errors,
     }
+
+    if apply_filter:
+        result["filter"] = filter_catalysts(all_catalysts, max_age_hours)
 
     # Best-effort Redis cache — never fail the caller if Redis is unavailable
     try:

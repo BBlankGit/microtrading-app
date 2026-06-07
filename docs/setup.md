@@ -97,6 +97,21 @@ curl -X POST http://SERVER_IP:8000/api/stream/stop
 
 ---
 
+## Verify the Stack — Phase 1F (Catalyst Filtering Layer)
+
+```bash
+# Apply filter to default universe catalysts (24h freshness window)
+curl "http://SERVER_IP:8000/api/catalysts/news/default?apply_filter=true"
+
+# Apply filter with a shorter freshness window (12h)
+curl "http://SERVER_IP:8000/api/catalysts/news/default?apply_filter=true&max_age_hours=12"
+
+# Apply filter to a custom symbol list
+curl "http://SERVER_IP:8000/api/catalysts/news/check?symbols=AAPL,NVDA,SOFI&limit=5&apply_filter=true&max_age_hours=24"
+```
+
+---
+
 ## Verify the Stack — Phase 1E (Catalyst News Collection)
 
 ```bash

@@ -44,6 +44,19 @@ The API key is never logged or returned by any endpoint.
 
 ---
 
+## Phase 1F — Catalyst Filtering Layer (Implemented)
+
+Deterministic catalyst filtering is implemented in `backend/catalysts/filters.py`.
+
+- Operates on normalized catalyst records produced by Phase 1E.
+- Filtering is opt-in: `?apply_filter=true` on any catalyst endpoint.
+- `max_age_hours` is configurable per request (1–168h, default 24h).
+- Returns a `filter` block with `accepted`, `rejected`, counts, and per-record `rejection_reasons`.
+
+No AI interpretation, no sentiment scoring, no trading action.
+
+---
+
 ## Phase 1E — Catalyst News Collection (Implemented)
 
 Catalyst collection is implemented in `backend/catalysts/news_collector.py` and exposed via:

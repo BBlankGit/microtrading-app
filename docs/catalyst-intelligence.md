@@ -13,6 +13,27 @@ make the final decision.
 
 ---
 
+## Phase 1F — Catalyst Filtering Layer (Implemented)
+
+Deterministic catalyst filtering is implemented in `backend/catalysts/filters.py`.
+
+Filter rules applied in order:
+1. **Deduplication** — reject second+ occurrences of the same `catalyst_id`.
+2. **Title** — reject if `title` is missing or empty.
+3. **Published timestamp** — reject if `published_utc` is missing or unparseable.
+4. **Freshness** — reject if age exceeds `max_age_hours` (default 24h).
+5. **Relevance hint** — reject if `raw_relevance_hint` is not `"direct"`.
+
+Accepted records gain: `freshness_age_hours` (float, 2dp) and `filter_status = "accepted"`.
+
+Filtering is opt-in via `?apply_filter=true`. `max_age_hours` is configurable (1–168h).
+
+- No AI interpretation.
+- No sentiment scoring.
+- No trading action.
+
+---
+
 ## Phase 1E — Polygon News Collection (Implemented)
 
 Polygon news collection is implemented in `backend/catalysts/news_collector.py`.
@@ -53,13 +74,13 @@ Polygon news collection is implemented in `backend/catalysts/news_collector.py`.
 
 All catalyst records produced by this layer must be **normalized structured records** containing at minimum:
 
-- `ticker` — the affected equity symbol
+- `symbol` — the affected equity symbol
 - `source` — origin of the information
 - `event_type` — classification (news, filing, insider, earnings, etc.)
-- `headline` or `summary` — brief description of the event
-- `raw_text` — original source text (where available)
+- `title` — headline of the event
+- `description` — extended summary (where available)
 - `collected_at` — UTC timestamp of collection
-- `relevance_score` — initial relevance signal (0.0–1.0)
+- `raw_relevance_hint` — initial relevance signal (`"direct"` or `"related"`)
 
 Downstream AI and scoring modules consume these records.
 Raw or unstructured data must not pass through to the engine.
