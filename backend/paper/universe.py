@@ -1,6 +1,8 @@
 """
 Dynamic paper universe builder — fake-money research only.
 No broker. No real orders. REST data only. No AI/LLM calls.
+Includes market-wide movers discovery (Phase 2J) to expand candidate pool.
+Discovery does not bypass quality gates, scoring, or any fake-money limits.
 """
 
 import asyncio
@@ -61,12 +63,39 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
     # Dynamic disabled — fall back to first N base symbols
     if not settings.PAPER_DYNAMIC_UNIVERSE_ENABLED:
         active = base[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
-        result = _make_result(base, [], active, now, "disabled", [])
+        result = _make_result(base, [], active, now, "disabled", [], None)
         _universe_cache = result
         _cache_built_at = now
         return result
 
-    # Fetch quality for all base symbols concurrently
+    # ── Market-wide discovery (Phase 2J) ──────────────────────────────────────
+    discovery_result: dict | None = None
+    discovered_syms: list[str] = []
+    if settings.PAPER_MARKET_DISCOVERY_ENABLED:
+        try:
+            from paper.discovery import discover_market_movers
+            discovery_result = await discover_market_movers(force_refresh=force_refresh)
+            discovered_syms = discovery_result.get("discovered_symbols") or []
+        except Exception as exc:
+            logger.warning("Universe: discovery call failed: %s", exc)
+            discovery_result = {
+                "enabled": True,
+                "discovered_symbols": [],
+                "discovered_count": 0,
+                "errors": [f"{type(exc).__name__}: {exc}"],
+                "warnings": [],
+            }
+
+    # Merge: discovered movers first (priority), then base symbols, dedup, cap
+    seen_merge: set[str] = set()
+    candidate_pool: list[str] = []
+    for sym in discovered_syms + base:
+        if sym not in seen_merge:
+            seen_merge.add(sym)
+            candidate_pool.append(sym)
+    candidate_pool = candidate_pool[: settings.PAPER_MAX_UNIVERSE_SIZE]
+
+    # Fetch quality for all candidate symbols concurrently
     quality_map: dict[str, dict] = {}
     errors: list[dict] = []
 
@@ -81,20 +110,20 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
         except Exception as exc:
             errors.append({"symbol": sym, "error": f"{type(exc).__name__}: {exc}"})
 
-    await asyncio.gather(*[_fetch(sym) for sym in base])
+    await asyncio.gather(*[_fetch(sym) for sym in candidate_pool])
 
     # All fetches failed — fall back
     if not quality_map:
         active = base[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
-        result = _make_result(base, [], active, now, f"{reason}_fallback", errors)
+        result = _make_result(base, [], active, now, f"{reason}_fallback", errors, discovery_result)
         _universe_cache = result
         _cache_built_at = now
         return result
 
-    # Apply eligibility filters
+    # Apply eligibility filters against the merged candidate pool
     filtered: list[tuple[str, dict]] = [
         (sym, quality_map[sym])
-        for sym in base
+        for sym in candidate_pool
         if sym in quality_map and _passes_eligibility(quality_map[sym])
     ]
 
@@ -109,7 +138,7 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
         active = base[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
         reason = f"{reason}_fallback"
 
-    result = _make_result(base, dynamic_syms, active, now, reason, errors)
+    result = _make_result(base, dynamic_syms, active, now, reason, errors, discovery_result)
     _universe_cache = result
     _cache_built_at = now
     return result
@@ -166,7 +195,25 @@ def _make_result(
     ts: datetime,
     reason: str,
     errors: list[dict],
+    discovery: dict | None,
 ) -> dict[str, Any]:
+    discovery_summary: dict[str, Any] = {
+        "enabled": False,
+        "discovered_count": 0,
+        "discovered_symbols": [],
+        "refresh_reason": None,
+        "errors": [],
+        "warnings": [],
+    }
+    if discovery is not None:
+        discovery_summary = {
+            "enabled": discovery.get("enabled", False),
+            "discovered_count": discovery.get("discovered_count", 0),
+            "discovered_symbols": (discovery.get("discovered_symbols") or [])[:50],
+            "refresh_reason": discovery.get("refresh_reason"),
+            "errors": discovery.get("errors") or [],
+            "warnings": discovery.get("warnings") or [],
+        }
     return {
         "base_symbols": base,
         "dynamic_symbols": dynamic,
@@ -176,4 +223,5 @@ def _make_result(
         "last_refreshed_at": ts.isoformat(),
         "refresh_reason": reason,
         "errors": errors,
+        "discovery": discovery_summary,
     }

@@ -311,6 +311,7 @@ async def test_build_dynamic_universe_returns_cached_within_ttl(monkeypatch, res
     monkeypatch.setattr(config.settings, "PAPER_MAX_PRICE", 1000.0)
     monkeypatch.setattr(config.settings, "PAPER_MIN_DAY_VOLUME", 500_000)
     monkeypatch.setattr(config.settings, "PAPER_MIN_CHANGE_ABS_PERCENT", 0.5)
+    monkeypatch.setattr(config.settings, "PAPER_MARKET_DISCOVERY_ENABLED", False)
 
     import paper.universe as uni
 
@@ -348,6 +349,7 @@ async def test_build_dynamic_universe_force_refresh_bypasses_cache(monkeypatch, 
     monkeypatch.setattr(config.settings, "PAPER_MAX_PRICE", 1000.0)
     monkeypatch.setattr(config.settings, "PAPER_MIN_DAY_VOLUME", 500_000)
     monkeypatch.setattr(config.settings, "PAPER_MIN_CHANGE_ABS_PERCENT", 0.5)
+    monkeypatch.setattr(config.settings, "PAPER_MARKET_DISCOVERY_ENABLED", False)
 
     import paper.universe as uni
 

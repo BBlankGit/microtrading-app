@@ -61,6 +61,29 @@ def normalize_previous_close(raw: dict[str, Any], symbol: str) -> dict[str, Any]
     }
 
 
+def normalize_mover_snapshot(ticker: dict[str, Any], direction: str = "") -> dict[str, Any]:
+    """Normalize a Polygon gainers/losers ticker entry."""
+    day = ticker.get("day", {})
+    last_trade = ticker.get("lastTrade", {})
+    last_quote = ticker.get("lastQuote", {})
+    prev_day = ticker.get("prevDay", {})
+    return {
+        "symbol": ticker.get("ticker", ""),
+        "change_percent": ticker.get("todaysChangePerc"),
+        "change": ticker.get("todaysChange"),
+        "last_trade_price": last_trade.get("p"),
+        "bid": last_quote.get("p"),
+        "ask": last_quote.get("P"),
+        "day_volume": day.get("v"),
+        "day_high": day.get("h"),
+        "day_low": day.get("l"),
+        "day_open": day.get("o"),
+        "day_close": day.get("c"),
+        "prev_close": prev_day.get("c"),
+        "direction": direction,
+    }
+
+
 def normalize_news_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item.get("id"),

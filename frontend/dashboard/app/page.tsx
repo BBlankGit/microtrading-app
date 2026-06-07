@@ -172,6 +172,15 @@ interface Analytics {
   market_session: MarketSession;
 }
 
+interface UniverseDiscovery {
+  enabled: boolean;
+  discovered_count: number;
+  discovered_symbols: string[];
+  refresh_reason: string | null;
+  errors: string[];
+  warnings: string[];
+}
+
 interface UniverseInfo {
   base_symbols: string[];
   dynamic_symbols: string[];
@@ -181,6 +190,7 @@ interface UniverseInfo {
   last_refreshed_at: string | null;
   refresh_reason: string;
   errors: Array<{ symbol?: string; error: string }>;
+  discovery: UniverseDiscovery | null;
 }
 
 interface MarketRegimeLeader {
@@ -1046,6 +1056,124 @@ function UniverseSection({ universe }: { universe: UniverseInfo | null }) {
   );
 }
 
+// ── Market Discovery panel ────────────────────────────────────────────────────
+
+function MarketDiscoveryPanel({
+  discovery,
+  token,
+  onRefresh,
+}: {
+  discovery: UniverseDiscovery | null;
+  token: string;
+  onRefresh: () => void;
+}) {
+  const [msg, setMsg] = useState<string | null>(null);
+
+  async function handleRefresh() {
+    if (!token) { setMsg("Paste ADMIN_API_TOKEN above first."); return; }
+    setMsg("Refreshing discovery…");
+    try {
+      const r = await fetch("/api/paper/discovery/refresh", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setMsg(`Discovery refreshed — ${body.discovered_count ?? 0} symbols found.`);
+        onRefresh();
+      } else {
+        setMsg(`Error: ${r.status}`);
+      }
+    } catch (e) {
+      setMsg(`Network error: ${e}`);
+    }
+  }
+
+  if (!discovery) {
+    return (
+      <p className="text-gray-500 text-sm">
+        Discovery data unavailable. Run ⚡ Tick or 🌐 Universe Refresh first.
+      </p>
+    );
+  }
+
+  const first50 = (discovery.discovered_symbols ?? []).slice(0, 50);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs text-gray-500 italic">
+        Discovery expands the candidate pool only. It does not bypass quality gates,
+        scoring, sentiment checks, or fake-money limits.
+      </p>
+
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+          discovery.enabled
+            ? "bg-blue-900 text-blue-300 border-blue-700"
+            : "bg-gray-800 text-gray-400 border-gray-600"
+        }`}>
+          Discovery: {discovery.enabled ? "● ENABLED" : "○ DISABLED"}
+        </span>
+        {discovery.refresh_reason && (
+          <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
+            reason: {discovery.refresh_reason}
+          </span>
+        )}
+        <button
+          onClick={handleRefresh}
+          className="px-3 py-0.5 bg-indigo-700 hover:bg-indigo-600 rounded text-xs font-semibold transition-colors"
+        >
+          🔍 Refresh Discovery
+        </button>
+        {msg && <span className="text-xs text-yellow-300 font-mono">{msg}</span>}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        <StatBox label="Discovered Symbols" value={String(discovery.discovered_count)} cls="text-blue-300" />
+        <StatBox label="Errors" value={String(discovery.errors.length)} cls={discovery.errors.length > 0 ? "text-yellow-400" : "text-green-400"} />
+        <StatBox label="Warnings" value={String(discovery.warnings.length)} cls={discovery.warnings.length > 0 ? "text-gray-400" : "text-green-400"} />
+      </div>
+
+      {first50.length > 0 && (
+        <div>
+          <p className="text-xs text-gray-400 mb-1">
+            Discovered symbols ({first50.length}{discovery.discovered_count > 50 ? ` of ${discovery.discovered_count} shown` : ""}):
+          </p>
+          <div className="flex flex-wrap gap-1">
+            {first50.map((sym) => (
+              <span key={sym} className="text-xs font-mono bg-indigo-900 text-indigo-300 rounded px-1.5 py-0.5">
+                {sym}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {discovery.errors.length > 0 && (
+        <details className="text-xs text-gray-500">
+          <summary className="cursor-pointer text-yellow-600 hover:text-yellow-400">
+            {discovery.errors.length} discovery error(s) — click to expand
+          </summary>
+          <ul className="mt-1 space-y-0.5 font-mono text-red-400">
+            {discovery.errors.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
+        </details>
+      )}
+
+      {discovery.warnings.length > 0 && (
+        <details className="text-xs text-gray-600">
+          <summary className="cursor-pointer hover:text-gray-400">
+            {discovery.warnings.length} warning(s)
+          </summary>
+          <ul className="mt-1 space-y-0.5 font-mono">
+            {discovery.warnings.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+
 // ── Market regime panel ───────────────────────────────────────────────────────
 
 function regimeColor(regime: string | null | undefined): string {
@@ -1658,6 +1786,21 @@ export default function Home() {
           </span>
         </h2>
         <UniverseSection universe={dashboard?.universe ?? null} />
+      </section>
+
+      {/* Market Discovery */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Market Discovery
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            movers expansion · candidate pool only · no gate bypass
+          </span>
+        </h2>
+        <MarketDiscoveryPanel
+          discovery={dashboard?.universe?.discovery ?? null}
+          token={token}
+          onRefresh={refresh}
+        />
       </section>
 
       {/* Analytics */}

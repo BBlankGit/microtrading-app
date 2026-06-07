@@ -4,7 +4,7 @@ from typing import Any
 import httpx
 
 from core.config import settings
-from data.schemas import normalize_news_item, normalize_previous_close, normalize_snapshot
+from data.schemas import normalize_mover_snapshot, normalize_news_item, normalize_previous_close, normalize_snapshot
 
 _BASE_URL = "https://api.polygon.io"
 _TIMEOUT = 10.0
@@ -78,6 +78,20 @@ async def get_previous_close(symbol: str) -> dict[str, Any]:
     sym = _validate_symbol(symbol)
     raw = await _get(f"/v2/aggs/ticker/{sym}/prev", params={"adjusted": "true"})
     return normalize_previous_close(raw, sym)
+
+
+async def get_market_movers(direction: str) -> list[dict[str, Any]]:
+    """
+    Fetch top gainers or losers from Polygon.
+    direction must be 'gainers' or 'losers'.
+    Returns list of normalized mover dicts. Never returns raw Polygon payload.
+    """
+    _assert_configured()
+    if direction not in ("gainers", "losers"):
+        raise PolygonError(f"Invalid mover direction: '{direction}'. Must be 'gainers' or 'losers'.")
+    raw = await _get(f"/v2/snapshot/locale/us/markets/stocks/{direction}")
+    tickers = raw.get("tickers", [])
+    return [normalize_mover_snapshot(t, direction) for t in tickers]
 
 
 async def get_ticker_news(symbol: str, limit: int = 10) -> list[dict[str, Any]]:

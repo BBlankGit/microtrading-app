@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     PAPER_REJECT_STRONG_BEARISH_CATALYST: bool = True
     PAPER_BEARISH_CATALYST_REJECT_MATERIALITY: float = 0.8
 
+    # Market-wide movers discovery (Phase 2J — no broker, no real orders)
+    PAPER_MARKET_DISCOVERY_ENABLED: bool = True
+    PAPER_MARKET_DISCOVERY_MAX_SYMBOLS: int = 100
+    PAPER_MARKET_DISCOVERY_REFRESH_SECONDS: int = 300
+    PAPER_MARKET_DISCOVERY_INCLUDE_GAINERS: bool = True
+    PAPER_MARKET_DISCOVERY_INCLUDE_LOSERS: bool = True
+    PAPER_MARKET_DISCOVERY_INCLUDE_MOST_ACTIVE: bool = True
+    PAPER_MARKET_DISCOVERY_MIN_PRICE: float = 1.00
+    PAPER_MARKET_DISCOVERY_MAX_PRICE: float = 1000.00
+    PAPER_MARKET_DISCOVERY_MIN_VOLUME: int = 500_000
+    PAPER_MARKET_DISCOVERY_MIN_ABS_CHANGE_PERCENT: float = 1.0
+
     def paper_universe_list(self) -> list[str]:
         return [s.strip().upper() for s in self.PAPER_DEFAULT_UNIVERSE.split(",") if s.strip()]
 

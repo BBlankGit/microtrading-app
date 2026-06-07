@@ -189,6 +189,9 @@ async def run_tick() -> dict[str, Any]:
         "universe_symbols": [],
         "universe_last_refreshed_at": None,
         "universe_refresh_reason": None,
+        "discovery_enabled": False,
+        "discovery_count": 0,
+        "discovery_errors_count": 0,
     }
 
     # ── 0. Resolve active universe ────────────────────────────────────────────
@@ -199,6 +202,10 @@ async def run_tick() -> dict[str, Any]:
         result["universe_symbols"] = list(symbols)
         result["universe_last_refreshed_at"] = _uni.get("last_refreshed_at")
         result["universe_refresh_reason"] = _uni.get("refresh_reason")
+        _disc = _uni.get("discovery") or {}
+        result["discovery_enabled"] = bool(_disc.get("enabled", False))
+        result["discovery_count"] = int(_disc.get("discovered_count", 0))
+        result["discovery_errors_count"] = len(_disc.get("errors") or [])
     except Exception as exc:
         symbols = settings.paper_base_universe_list()[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
         result["universe_refresh_reason"] = "error_fallback"

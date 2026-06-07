@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends
 from api.dependencies import require_admin_token
 from paper import simulator
 from paper.analytics import get_trade_analytics
+from paper.discovery import discover_market_movers
 from paper.universe import build_dynamic_universe, get_active_paper_universe, get_cached_universe
 
 router = APIRouter(prefix="/api/paper")
@@ -93,6 +94,16 @@ async def paper_stop(_: None = Depends(require_admin_token)):
 async def paper_reset(_: None = Depends(require_admin_token)):
     await simulator.reset_simulator()
     return simulator.get_status()
+
+
+@router.get("/discovery")
+async def paper_discovery():
+    return await discover_market_movers()
+
+
+@router.post("/discovery/refresh")
+async def paper_discovery_refresh(_: None = Depends(require_admin_token)):
+    return await discover_market_movers(force_refresh=True)
 
 
 @router.post("/tick")
