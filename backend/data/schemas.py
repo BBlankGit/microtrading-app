@@ -33,9 +33,10 @@ def normalize_snapshot(raw: dict[str, Any], symbol: str) -> dict[str, Any]:
             "timestamp": last_trade.get("t"),
         },
         "last_quote": {
-            "bid": last_quote.get("P"),
+            "bid": last_quote.get("p"),
             "ask": last_quote.get("P"),
-            "bid_size": last_quote.get("S"),
+            "bid_size": last_quote.get("s"),
+            "ask_size": last_quote.get("S"),
         },
         "change_percent": ticker.get("todaysChangePerc"),
         "change": ticker.get("todaysChange"),
