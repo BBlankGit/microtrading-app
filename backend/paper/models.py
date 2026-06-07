@@ -10,6 +10,7 @@ class Position:
     cost_basis: float
     entry_time: str       # ISO UTC
     entry_catalyst_type: str
+    entry_score: int | None = None
 
     def unrealized_pnl(self, current_price: float) -> float:
         return (current_price - self.entry_price) * self.shares
@@ -37,6 +38,7 @@ class ClosedTrade:
     exit_reason: str
     entry_catalyst_type: str
     hold_minutes: float
+    entry_score: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)

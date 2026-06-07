@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 from fastapi.responses import Response
 
+from core.config import settings
 from paper import db as _db
 from paper.journal import get_journal_status
 
@@ -20,7 +21,57 @@ router = APIRouter(prefix="/api/journal", tags=["journal"])
 
 @router.get("/status")
 async def journal_status():
-    return get_journal_status()
+    from paper.journal import try_reinit
+    j = get_journal_status()
+    if not j["enabled"] and settings.DATABASE_URL:
+        await try_reinit()
+        j = get_journal_status()
+    return {
+        **j,
+        "retention_days": settings.JOURNAL_RETENTION_DAYS,
+        "auto_cleanup_enabled": False,
+    }
+
+
+@router.get("/retention/status")
+async def journal_retention_status():
+    base = {
+        "retention_days": settings.JOURNAL_RETENTION_DAYS,
+        "auto_cleanup_enabled": False,
+    }
+    pool = await _db.get_pool()
+    if pool is None:
+        return {**base, "total_ticks": None, "total_candidates": None,
+                "oldest_tick_at": None, "newest_tick_at": None}
+    try:
+        async with pool.acquire() as conn:
+            tick_row = await conn.fetchrow(
+                """
+                SELECT COUNT(*)::int AS total_ticks,
+                       MIN(created_at) AS oldest_tick_at,
+                       MAX(created_at) AS newest_tick_at
+                FROM paper_ticks
+                """
+            )
+            total_candidates = await conn.fetchval(
+                "SELECT COUNT(*)::int FROM paper_candidates"
+            ) or 0
+        return {
+            **base,
+            "total_ticks": tick_row["total_ticks"] or 0,
+            "total_candidates": total_candidates,
+            "oldest_tick_at": tick_row["oldest_tick_at"].isoformat() if tick_row["oldest_tick_at"] else None,
+            "newest_tick_at": tick_row["newest_tick_at"].isoformat() if tick_row["newest_tick_at"] else None,
+        }
+    except Exception as exc:
+        return {
+            **base,
+            "total_ticks": None,
+            "total_candidates": None,
+            "oldest_tick_at": None,
+            "newest_tick_at": None,
+            "error": str(exc),
+        }
 
 
 @router.get("/summary")

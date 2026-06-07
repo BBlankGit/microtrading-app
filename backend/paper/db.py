@@ -104,6 +104,18 @@ CREATE INDEX IF NOT EXISTS idx_paper_trades_created_at
     ON paper_trades_journal (created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_paper_universe_created_at
     ON paper_universe_snapshots (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_paper_candidates_created_at
+    ON paper_candidates (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_paper_candidates_symbol_created_at
+    ON paper_candidates (symbol, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_paper_candidates_tick_created_at
+    ON paper_candidates (tick_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_paper_candidates_rejection_reason
+    ON paper_candidates (rejection_reason);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_event_created_at
+    ON paper_trades_journal (event, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_event_symbol_created_at
+    ON paper_trades_journal (event, symbol, created_at DESC);
 """
 
 

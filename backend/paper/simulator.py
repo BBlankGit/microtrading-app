@@ -283,6 +283,8 @@ async def run_tick() -> dict[str, Any]:
                         "pnl": round(trade.pnl, 4),
                         "pnl_percent": round(trade.pnl_percent, 4),
                         "hold_minutes": trade.hold_minutes,
+                        "catalyst_type": trade.entry_catalyst_type,
+                        "total_score": trade.entry_score,
                     })
 
         # Entries
@@ -352,6 +354,7 @@ async def run_tick() -> dict[str, Any]:
                             sym, entry_price,
                             settings.PAPER_MAX_POSITION_SIZE_USD,
                             cat_type or "unknown",
+                            entry_score=scoring["total_score"],
                         )
                         if pos:
                             candidate["action"] = "entered"

@@ -192,6 +192,10 @@ interface JournalStatus {
   database_connected: boolean;
   tables_ready: boolean;
   last_error: string | null;
+  last_persist_ok: boolean | null;
+  last_retry_at: number | null;
+  retention_days: number;
+  auto_cleanup_enabled: boolean;
 }
 
 interface JournalSummary {
@@ -772,6 +776,15 @@ function JournalPanel({ journal }: { journal: JournalData | null }) {
         }`}>
           DB: {status.database_connected ? "connected" : "not connected"}
         </span>
+        {status.last_persist_ok === true && (
+          <span className="text-xs px-2 py-0.5 rounded border bg-green-950 text-green-400 border-green-800">last write OK</span>
+        )}
+        {status.last_persist_ok === false && (
+          <span className="text-xs px-2 py-0.5 rounded border bg-red-950 text-red-400 border-red-800">last write FAILED</span>
+        )}
+        <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
+          retention: {status.retention_days ?? 14}d · auto-cleanup: {status.auto_cleanup_enabled ? "on" : "off"}
+        </span>
         {status.last_error && (
           <span className="text-xs text-red-400 font-mono bg-red-950 px-2 py-0.5 rounded border border-red-800 truncate max-w-xs">
             ERR: {status.last_error}
@@ -893,6 +906,13 @@ function JournalPanel({ journal }: { journal: JournalData | null }) {
             </table>
           </div>
         </div>
+      )}
+
+      {/* Attribution note */}
+      {status.enabled && summary && summary.total_closed_trades === 0 && (
+        <p className="text-xs text-blue-500 border border-blue-900 rounded px-3 py-2 bg-blue-950">
+          ℹ No closed trades yet. Performance attribution by catalyst type and score bucket will appear once trades close.
+        </p>
       )}
 
       {!summary && !recentTicks.length && status.enabled && (

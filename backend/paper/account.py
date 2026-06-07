@@ -60,6 +60,7 @@ class PaperAccount:
         entry_price: float,
         max_size_usd: float,
         catalyst_type: str,
+        entry_score: int | None = None,
     ) -> Optional[Position]:
         if entry_price <= 0:
             return None
@@ -76,6 +77,7 @@ class PaperAccount:
             cost_basis=cost_basis,
             entry_time=datetime.now(timezone.utc).isoformat(),
             entry_catalyst_type=catalyst_type,
+            entry_score=entry_score,
         )
         self.positions[symbol] = position
         self.cash -= cost_basis
@@ -108,6 +110,7 @@ class PaperAccount:
             exit_reason=reason,
             entry_catalyst_type=position.entry_catalyst_type,
             hold_minutes=round(hold_minutes, 1),
+            entry_score=position.entry_score,
         )
         self.cash += proceeds
         self.trades.append(trade)

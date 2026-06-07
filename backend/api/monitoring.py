@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter
 
 from core.config import settings
+from paper import db as _db
 from paper.journal import get_journal_status
 
 router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
@@ -57,6 +58,19 @@ async def monitoring_status():
     # ── Market session ────────────────────────────────────────────────────────
     ms = _market_session_now()
 
+    # ── Candidate count for retention warning ─────────────────────────────────
+    total_candidates: int | None = None
+    try:
+        if journal_db_connected:
+            pool = await _db.get_pool()
+            if pool:
+                async with pool.acquire() as conn:
+                    total_candidates = await conn.fetchval(
+                        "SELECT COUNT(*)::int FROM paper_candidates"
+                    )
+    except Exception:
+        pass
+
     # ── Warnings ─────────────────────────────────────────────────────────────
     warnings: list[str] = []
 
@@ -67,6 +81,9 @@ async def monitoring_status():
     elif not journal_tables_ready:
         warnings.append("Journal: tables not ready.")
 
+    if last_journal_ok is False:
+        warnings.append("Last journal write failed — check database connectivity and logs.")
+
     if paper_running and not last_tick_fresh:
         warnings.append(
             f"Simulator is running but last tick is stale "
@@ -76,6 +93,12 @@ async def monitoring_status():
     if ms["is_regular_session_now"] and not paper_running:
         warnings.append(
             "Market session is currently open but the paper simulator is stopped."
+        )
+
+    if total_candidates is not None and total_candidates > 100_000:
+        warnings.append(
+            f"High candidate row count ({total_candidates:,}) with no auto-cleanup enabled. "
+            f"Retention policy is read-only (JOURNAL_RETENTION_DAYS={settings.JOURNAL_RETENTION_DAYS})."
         )
 
     return {

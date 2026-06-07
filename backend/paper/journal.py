@@ -7,6 +7,7 @@ All writes are non-fatal: if Postgres is unavailable the simulator continues nor
 
 import json
 import logging
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _journal_enabled: bool = False
 _last_persist_ok: bool | None = None
+_last_retry_at: float | None = None
 
 
 async def init_journal() -> None:
@@ -39,7 +41,30 @@ def get_journal_status() -> dict:
         "tables_ready": _db.is_ready(),
         "last_error": _db.last_error(),
         "last_persist_ok": _last_persist_ok,
+        "last_retry_at": _last_retry_at,
     }
+
+
+async def try_reinit() -> bool:
+    """
+    Attempt lazy re-initialization if journal was disabled at startup.
+    Respects JOURNAL_RETRY_SECONDS cooldown. Non-fatal.
+    """
+    global _journal_enabled, _last_retry_at
+    from core.config import settings
+    now = time.monotonic()
+    if _last_retry_at is not None and now - _last_retry_at < settings.JOURNAL_RETRY_SECONDS:
+        return False
+    _last_retry_at = now
+    try:
+        ok = await _db.init_tables()
+        if ok:
+            _journal_enabled = True
+            logger.info("Paper journal: re-initialized successfully on retry.")
+        return ok
+    except Exception as exc:
+        logger.warning("Paper journal: retry failed: %s", exc)
+        return False
 
 
 async def persist_tick_result(
@@ -53,7 +78,11 @@ async def persist_tick_result(
     """
     global _last_persist_ok
     if not _journal_enabled:
-        return {"ok": False, "skipped": True, "reason": "journal disabled"}
+        from core.config import settings
+        if settings.DATABASE_URL:
+            await try_reinit()
+        if not _journal_enabled:
+            return {"ok": False, "skipped": True, "reason": "journal disabled"}
 
     pool = await _db.get_pool()
     if pool is None:
@@ -168,8 +197,8 @@ async def persist_tick_result(
                         INSERT INTO paper_trades_journal (
                             tick_id, symbol, side, event,
                             entry_price, exit_price, pnl, pnl_percent,
-                            exit_reason, closed_at
-                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8)
+                            exit_reason, catalyst_type, total_score, closed_at
+                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10)
                         """,
                         tick_id,
                         exit_.get("symbol"),
@@ -178,6 +207,8 @@ async def persist_tick_result(
                         _float(exit_.get("pnl")),
                         _float(exit_.get("pnl_percent")),
                         exit_.get("exit_reason"),
+                        exit_.get("catalyst_type"),
+                        _int(exit_.get("total_score")),
                         now,
                     )
 
