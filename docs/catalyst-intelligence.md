@@ -13,6 +13,20 @@ make the final decision.
 
 ---
 
+## Phase 1E — Polygon News Collection (Implemented)
+
+Polygon news collection is implemented in `backend/catalysts/news_collector.py`.
+
+- News articles are fetched from the Polygon REST news endpoint for a configured list of symbols.
+- Each article is normalized into a structured catalyst record by `backend/catalysts/schemas.py`.
+- Catalyst records include: `catalyst_id`, `symbol`, `source`, `event_type`, `title`, `description`, `publisher`, `author`, `article_url`, `published_utc`, `collected_at`, `tickers`, `keywords`, and `raw_relevance_hint`.
+- No AI interpretation is applied at this stage.
+- No catalyst score is computed.
+- No trading action is taken or recommended.
+- Latest result is cached in Redis under `catalysts:latest` (TTL 300s, best-effort).
+
+---
+
 ## Initial Sources (V1)
 
 | Source | Description |

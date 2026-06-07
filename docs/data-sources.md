@@ -44,6 +44,20 @@ The API key is never logged or returned by any endpoint.
 
 ---
 
+## Phase 1E — Catalyst News Collection (Implemented)
+
+Catalyst collection is implemented in `backend/catalysts/news_collector.py` and exposed via:
+
+- `GET /api/catalysts/news/default` — collects news for the default 10-symbol universe (5 articles per symbol)
+- `GET /api/catalysts/news/check?symbols=A,B,C&limit=N` — collects news for a custom symbol list (max 25 symbols, max 20 per symbol)
+
+- Uses the Polygon REST news endpoint only (`/v2/reference/news`).
+- Does not require WebSocket access.
+- Symbols that fail API calls or validation appear in `errors` without stopping the batch.
+- Latest result cached in Redis under `catalysts:latest` (TTL 300s, best-effort).
+
+---
+
 ## Phase 1D — Tradable Universe Builder (Implemented)
 
 The universe builder is implemented in `backend/data/universe.py` and exposed via:

@@ -97,6 +97,21 @@ curl -X POST http://SERVER_IP:8000/api/stream/stop
 
 ---
 
+## Verify the Stack — Phase 1E (Catalyst News Collection)
+
+```bash
+# Collect news catalysts for the default universe
+curl http://SERVER_IP:8000/api/catalysts/news/default
+
+# Collect 3 articles per symbol for a custom list
+curl "http://SERVER_IP:8000/api/catalysts/news/check?symbols=AAPL,NVDA,SOFI&limit=3"
+
+# Mixed valid/invalid — invalid symbols appear in errors
+curl "http://SERVER_IP:8000/api/catalysts/news/check?symbols=AAPL,INVALID123,NVDA&limit=3"
+```
+
+---
+
 ## Verify the Stack — Phase 1D (Tradable Universe Builder)
 
 ```bash
