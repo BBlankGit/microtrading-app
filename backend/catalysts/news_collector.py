@@ -8,6 +8,7 @@ import redis.asyncio as aioredis
 from core.config import settings
 from data import polygon_client
 from data.polygon_client import PolygonError
+from catalysts.event_classifier import classify_catalyst_event
 from catalysts.filters import filter_catalysts
 from catalysts.schemas import normalize_news_catalyst
 
@@ -36,6 +37,7 @@ async def collect_news_for_symbols(
     limit_per_symbol: int = 5,
     apply_filter: bool = False,
     max_age_hours: int = 24,
+    classify_events: bool = False,
 ) -> dict[str, Any]:
     """
     Collect recent news catalysts for a list of symbols.
@@ -44,6 +46,8 @@ async def collect_news_for_symbols(
     Continues processing remaining symbols if any individual symbol fails.
     When apply_filter=True, runs deterministic freshness/relevance filtering
     and adds a 'filter' key to the result.
+    When classify_events=True, adds deterministic event-type classification
+    fields to each catalyst record (and to filter.accepted if filtering is on).
     Caches result in Redis under catalysts:latest (best-effort, TTL 300s).
     """
     seen: set[str] = set()
@@ -67,6 +71,9 @@ async def collect_news_for_symbols(
             errors.append({"symbol": sym, "error": error})
         else:
             all_catalysts.extend(catalysts)
+
+    if classify_events:
+        all_catalysts = [classify_catalyst_event(c) for c in all_catalysts]
 
     result: dict[str, Any] = {
         "symbols_requested": clean,

@@ -44,6 +44,19 @@ The API key is never logged or returned by any endpoint.
 
 ---
 
+## Phase 1G — Catalyst Event-Type Classifier (Implemented)
+
+Deterministic event-type classification is implemented in `backend/catalysts/event_classifier.py`.
+
+- Operates on normalized Phase 1E catalyst records. Can be combined with Phase 1F filtering.
+- Classification is opt-in: `?classify_events=true` on any catalyst endpoint.
+- Uses keyword/rule matching on `title`, `description`, and `keywords` fields only.
+- Priority-ordered rules — first match wins. Falls back to `generic_news` when no rule matches.
+- Adds `classified_event_type`, `event_confidence`, `matched_rules`, `classification_method` to each record.
+- No AI, no LLM, no sentiment scoring, no trading action.
+
+---
+
 ## Phase 1F — Catalyst Filtering Layer (Implemented)
 
 Deterministic catalyst filtering is implemented in `backend/catalysts/filters.py`.

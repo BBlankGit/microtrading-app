@@ -97,6 +97,21 @@ curl -X POST http://SERVER_IP:8000/api/stream/stop
 
 ---
 
+## Verify the Stack — Phase 1G (Catalyst Event-Type Classifier)
+
+```bash
+# Classify events for a custom symbol list (with filter)
+curl "http://SERVER_IP:8000/api/catalysts/news/check?symbols=AAPL,NVDA,SOFI&limit=5&apply_filter=true&classify_events=true&max_age_hours=24"
+
+# Classify events for the default universe (with filter)
+curl "http://SERVER_IP:8000/api/catalysts/news/default?apply_filter=true&classify_events=true&max_age_hours=24"
+
+# Classify without filtering (all raw catalysts get classified)
+curl "http://SERVER_IP:8000/api/catalysts/news/check?symbols=AAPL,NVDA&limit=5&classify_events=true"
+```
+
+---
+
 ## Verify the Stack — Phase 1F (Catalyst Filtering Layer)
 
 ```bash

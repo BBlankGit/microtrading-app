@@ -12,12 +12,14 @@ _MAX_SYMBOLS = 25
 async def catalysts_news_default(
     apply_filter: bool = Query(default=False),
     max_age_hours: int = Query(default=24, ge=1, le=168),
+    classify_events: bool = Query(default=False),
 ):
     return await collect_news_for_symbols(
         DEFAULT_UNIVERSE,
         limit_per_symbol=5,
         apply_filter=apply_filter,
         max_age_hours=max_age_hours,
+        classify_events=classify_events,
     )
 
 
@@ -27,6 +29,7 @@ async def catalysts_news_check(
     limit: int = Query(default=5, ge=1, le=20),
     apply_filter: bool = Query(default=False),
     max_age_hours: int = Query(default=24, ge=1, le=168),
+    classify_events: bool = Query(default=False),
 ):
     parts = [s.strip().upper() for s in symbols.split(",")]
     valid = [s for s in parts if s]
@@ -45,4 +48,5 @@ async def catalysts_news_check(
         limit_per_symbol=limit,
         apply_filter=apply_filter,
         max_age_hours=max_age_hours,
+        classify_events=classify_events,
     )
