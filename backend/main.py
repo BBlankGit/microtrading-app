@@ -45,11 +45,13 @@ async def status():
         "version": "0.1.0",
         "mode": "research",
         "execution_enabled": False,
-        "paper_trading_enabled": False,
+        "paper_simulator_available": True,
+        "paper_trading_real_broker": False,
         "live_trading_enabled": False,
         "broker_connected": False,
         "message": (
             "Research-only foundation is running. "
-            "No paper trading, broker connection, live trading, or order execution is implemented."
+            "A fake-money paper simulator is available. "
+            "No broker connection, live trading, real orders, or real-money execution is implemented."
         ),
     }

@@ -36,7 +36,9 @@ _state: dict[str, Any] = {
     "last_tick_at": None,
     "last_error": None,
     "last_candidates": [],
-    "persistence": "memory",
+    "snapshot_storage": "memory",
+    "state_restored_from_snapshot": False,
+    "restart_persistent": False,
 }
 
 
@@ -65,7 +67,9 @@ def get_status() -> dict[str, Any]:
         "running": get_state()["running"],
         "last_tick_at": _state["last_tick_at"],
         "last_error": _state["last_error"],
-        "persistence": _state["persistence"],
+        "snapshot_storage": _state["snapshot_storage"],
+        "state_restored_from_snapshot": False,
+        "restart_persistent": False,
         "mode": "research_paper_simulation",
         "live_trading_enabled": False,
         "broker_connected": False,
@@ -100,7 +104,7 @@ async def reset_simulator() -> None:
         _state["last_tick_at"] = None
         _state["last_error"] = None
         _state["last_candidates"] = []
-        _state["persistence"] = "memory"
+        _state["snapshot_storage"] = "memory"
     await _save_state()
 
 
@@ -355,6 +359,6 @@ async def _save_state() -> None:
         r = make_redis()
         await r.set(_REDIS_KEY, json.dumps(snapshot))
         await r.aclose()
-        _state["persistence"] = "redis"
+        _state["snapshot_storage"] = "redis_best_effort"
     except Exception:
-        _state["persistence"] = "memory"
+        _state["snapshot_storage"] = "memory"

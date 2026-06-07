@@ -264,3 +264,388 @@ def test_paper_module_no_ai_llm_imports():
             if re.search(pattern, text, re.MULTILINE):
                 violations.append(f"{path.name}: '{pattern}'")
     assert not violations, "AI/LLM imports in paper module:\n" + "\n".join(violations)
+
+
+# ── Persistence / snapshot field tests ──────────────────────────────────────
+
+def test_status_snapshot_fields(client):
+    resp = client.get("/api/paper/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "snapshot_storage" in data
+    assert data["snapshot_storage"] in ("memory", "redis_best_effort")
+    assert data["state_restored_from_snapshot"] is False
+    assert data["restart_persistent"] is False
+    assert "persistence" not in data
+
+
+def test_dashboard_snapshot_fields(client):
+    resp = client.get("/api/paper/dashboard")
+    assert resp.status_code == 200
+    s = resp.json()["status"]
+    assert "snapshot_storage" in s
+    assert s["restart_persistent"] is False
+
+
+# ── /api/status global endpoint ──────────────────────────────────────────────
+
+def test_global_status_paper_simulator_available(client):
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["paper_simulator_available"] is True
+    assert data["paper_trading_real_broker"] is False
+    assert data["live_trading_enabled"] is False
+    assert data["broker_connected"] is False
+    assert "fake-money" in data["message"]
+
+
+# ── Dashboard disclaimer test ─────────────────────────────────────────────────
+
+def test_dashboard_disclaimer_content(client):
+    resp = client.get("/api/paper/dashboard")
+    assert resp.status_code == 200
+    body = resp.json()
+    disc = body.get("disclaimer", "")
+    assert "fake-money" in disc.lower() or "no broker" in disc.lower()
+    assert "no live trading" in disc.lower() or "no real orders" in disc.lower()
+
+
+# ── Entry / exit price selection (via account directly) ──────────────────────
+
+def test_entry_uses_ask_price():
+    """When ask is available, entry_price == ask."""
+    acct = _make_account(1000.0)
+    ask = 150.25
+    pos = acct.enter_position("AAPL", ask, 300.0, "earnings")
+    assert pos is not None
+    assert pos.entry_price == ask
+
+
+def test_entry_fallback_to_last_trade_price():
+    """Simulate ask-unavailable path: caller passes last_trade_price as entry_price."""
+    acct = _make_account(1000.0)
+    last_trade = 148.50
+    pos = acct.enter_position("AAPL", last_trade, 300.0, "earnings")
+    assert pos is not None
+    assert pos.entry_price == last_trade
+
+
+def test_entry_rejected_when_price_zero():
+    acct = _make_account(1000.0)
+    result = acct.enter_position("AAPL", 0.0, 300.0, "earnings")
+    assert result is None
+
+
+def test_exit_uses_bid_price():
+    """When bid is available, exit_price == bid."""
+    acct = _make_account(1000.0)
+    acct.enter_position("MSFT", 100.0, 200.0, "earnings")
+    bid = 100.80
+    trade = acct.exit_position("MSFT", bid, "take_profit")
+    assert trade is not None
+    assert trade.exit_price == bid
+
+
+def test_exit_fallback_to_last_trade_price():
+    """Simulate bid-unavailable: caller passes last_trade_price as exit_price."""
+    acct = _make_account(1000.0)
+    acct.enter_position("MSFT", 100.0, 200.0, "earnings")
+    last_trade = 99.50
+    trade = acct.exit_position("MSFT", last_trade, "stop_loss")
+    assert trade is not None
+    assert trade.exit_price == last_trade
+
+
+# ── Tick-level tests using mocked Polygon + quality + catalysts ──────────────
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
+
+
+def _quality_pass(symbol: str, ask: float = 100.0, bid: float = 99.9,
+                  change_pct: float = 1.0, spread_pct: float = 0.10,
+                  volume_ratio: float = 1.2) -> dict:
+    return {
+        "symbol": symbol,
+        "tradable": True,
+        "ask": ask,
+        "bid": bid,
+        "last_trade_price": (ask + bid) / 2,
+        "spread_percent": spread_pct,
+        "change_percent": change_pct,
+        "volume_ratio": volume_ratio,
+        "rejection_reasons": [],
+    }
+
+
+def _catalyst(symbol: str, event_type: str = "earnings") -> dict:
+    return {
+        "symbol": symbol,
+        "title": f"{symbol} catalyst",
+        "classified_event_type": event_type,
+        "raw_relevance_hint": "direct",
+    }
+
+
+def _patch_tick(quality_map: dict, catalyst_map: dict):
+    """Context manager that patches Polygon + catalysts for run_tick."""
+    import paper.simulator as sim_mod
+
+    async def fake_fetch_quality(sym):
+        snapshot_mock = {}
+        prev_mock = {}
+        return snapshot_mock, prev_mock
+
+    # We patch at the right level: the internal _fetch_quality closure
+    # isn't patchable directly, so we patch the outer functions it calls.
+    async def fake_snapshot(sym):
+        return {}
+
+    async def fake_prev(sym):
+        return {}
+
+    def fake_evaluate(snapshot, prev):
+        sym = quality_map.get("_sym_hint")
+        return quality_map.get(sym, {"tradable": False, "rejection_reasons": ["mocked"]})
+
+    async def fake_collect(symbols, **kwargs):
+        accepted = []
+        for s in symbols:
+            for c in catalyst_map.get(s, []):
+                accepted.append(c)
+        return {"filter": {"accepted": accepted}}
+
+    return (
+        patch.object(sim_mod.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim_mod.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", side_effect=lambda snap, prev: {"tradable": False}),
+        patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
+    )
+
+
+def _run(coro):
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+@pytest.fixture(autouse=False)
+def reset_simulator_state():
+    """Reset the global simulator account before and after each tick test."""
+    import paper.simulator as sim
+    sim._account.reset()
+    sim._last_prices.clear()
+    sim._state["last_candidates"] = []
+    sim._state["last_tick_at"] = None
+    sim._state["last_error"] = None
+    yield
+    sim._account.reset()
+    sim._last_prices.clear()
+
+
+@pytest.mark.asyncio
+async def test_tick_take_profit_exits_position(reset_simulator_state):
+    """Tick detects take-profit threshold and exits."""
+    import paper.simulator as sim
+
+    sym = "AAPL"
+    entry_price = 100.0
+    # Manually put a position in the account at entry_price
+    sim._account.enter_position(sym, entry_price, 200.0, "earnings")
+    sim._last_prices[sym] = entry_price
+
+    # bid is above take-profit threshold
+    tp_price = entry_price * (1 + sim.settings.PAPER_TAKE_PROFIT_PERCENT / 100) + 0.01
+    q = _quality_pass(sym, ask=tp_price + 0.05, bid=tp_price)
+
+    async def fake_snapshot(s):
+        return {}
+
+    async def fake_prev(s):
+        return {}
+
+    with (
+        patch.object(sim.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", return_value=q),
+        patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
+        patch("paper.simulator._save_state", new=AsyncMock()),
+    ):
+        result = await sim.run_tick()
+
+    assert len(result["exits"]) == 1
+    assert result["exits"][0]["exit_reason"] == "take_profit"
+    assert sym not in sim._account.positions
+
+
+@pytest.mark.asyncio
+async def test_tick_stop_loss_exits_position(reset_simulator_state):
+    """Tick detects stop-loss threshold and exits."""
+    import paper.simulator as sim
+
+    sym = "TSLA"
+    entry_price = 200.0
+    sim._account.enter_position(sym, entry_price, 200.0, "earnings")
+    sim._last_prices[sym] = entry_price
+
+    sl_price = entry_price * (1 - sim.settings.PAPER_STOP_LOSS_PERCENT / 100) - 0.01
+    q = _quality_pass(sym, ask=sl_price + 0.05, bid=sl_price)
+
+    async def fake_snapshot(s):
+        return {}
+
+    async def fake_prev(s):
+        return {}
+
+    with (
+        patch.object(sim.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", return_value=q),
+        patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
+        patch("paper.simulator._save_state", new=AsyncMock()),
+    ):
+        result = await sim.run_tick()
+
+    assert len(result["exits"]) == 1
+    assert result["exits"][0]["exit_reason"] == "stop_loss"
+
+
+@pytest.mark.asyncio
+async def test_tick_max_hold_time_exits_position(reset_simulator_state):
+    """Tick detects max hold time exceeded and exits."""
+    import paper.simulator as sim
+    from paper.models import Position
+
+    sym = "NVDA"
+    entry_price = 150.0
+    sim._account.enter_position(sym, entry_price, 200.0, "earnings")
+    # Backdate the entry time to exceed max hold
+    old_time = (datetime.now(timezone.utc) - timedelta(minutes=sim.settings.PAPER_MAX_HOLD_MINUTES + 1)).isoformat()
+    sim._account.positions[sym].entry_time = old_time
+    sim._last_prices[sym] = entry_price
+
+    q = _quality_pass(sym, ask=entry_price + 0.10, bid=entry_price)  # neutral price
+
+    async def fake_snapshot(s):
+        return {}
+
+    async def fake_prev(s):
+        return {}
+
+    with (
+        patch.object(sim.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", return_value=q),
+        patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
+        patch("paper.simulator._save_state", new=AsyncMock()),
+    ):
+        result = await sim.run_tick()
+
+    assert any(e["exit_reason"] == "max_hold_time" for e in result["exits"])
+
+
+@pytest.mark.asyncio
+async def test_tick_respects_max_positions(reset_simulator_state):
+    """Tick does not open more positions than max_positions allows."""
+    import paper.simulator as sim
+
+    # Fill positions to the max with symbols from the default universe
+    universe = sim.settings.paper_universe_list()
+    for sym in universe[:sim.settings.PAPER_MAX_POSITIONS]:
+        sim._account.enter_position(sym, 100.0, 50.0, "earnings")
+
+    # Make every symbol in the universe look eligible
+    def fake_evaluate(snap, prev):
+        s = snap.get("_sym", "")
+        return _quality_pass(s) if s else {"tradable": False, "rejection_reasons": ["no sym"]}
+
+    async def fake_snapshot(s):
+        return {"_sym": s}
+
+    async def fake_prev(s):
+        return {}
+
+    all_cats = [_catalyst(s) for s in universe]
+
+    with (
+        patch.object(sim.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", side_effect=fake_evaluate),
+        patch("paper.simulator.collect_news_for_symbols",
+              new=AsyncMock(return_value={"filter": {"accepted": all_cats}})),
+        patch("paper.simulator._save_state", new=AsyncMock()),
+    ):
+        result = await sim.run_tick()
+
+    assert len(result["entries"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_tick_no_duplicate_position_same_symbol(reset_simulator_state):
+    """Tick will not open a second position for a symbol already held."""
+    import paper.simulator as sim
+
+    sym = "AAPL"
+    sim._account.enter_position(sym, 100.0, 200.0, "earnings")
+
+    def fake_evaluate(snap, prev):
+        s = snap.get("_sym", "")
+        if s == sym:
+            return _quality_pass(s)
+        return {"tradable": False, "rejection_reasons": ["test-mock"]}
+
+    async def fake_snapshot(s):
+        return {"_sym": s}
+
+    async def fake_prev(s):
+        return {}
+
+    with (
+        patch.object(sim.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", side_effect=fake_evaluate),
+        patch("paper.simulator.collect_news_for_symbols",
+              new=AsyncMock(return_value={"filter": {"accepted": [_catalyst(sym)]}})),
+        patch("paper.simulator._save_state", new=AsyncMock()),
+    ):
+        result = await sim.run_tick()
+
+    assert len(result["entries"]) == 0
+    blocked = [c for c in result["candidates"] if c["symbol"] == sym]
+    assert blocked and "blocked" in (blocked[0].get("action") or "")
+
+
+# ── Background loop: no duplicate tasks ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_start_twice_no_duplicate_task(reset_simulator_state):
+    """Calling start_simulator() twice should not spawn a second background task."""
+    import paper.simulator as sim
+
+    with patch("paper.simulator._loop", new=AsyncMock()):
+        await sim.start_simulator()
+        task_after_first = sim._simulator_task
+        await sim.start_simulator()  # should be a no-op
+        task_after_second = sim._simulator_task
+        assert task_after_first is task_after_second
+        await sim.stop_simulator()
+
+
+@pytest.mark.asyncio
+async def test_reset_while_running_stops_loop_and_clears_state(reset_simulator_state):
+    """reset_simulator() stops the background loop and returns account to initial state."""
+    import paper.simulator as sim
+
+    with patch("paper.simulator._loop", new=AsyncMock()):
+        await sim.start_simulator()
+        assert sim._state["running"] is True
+
+    # Enter a position so there's something to clear
+    sim._account.enter_position("AAPL", 100.0, 200.0, "earnings")
+
+    with patch("paper.simulator._save_state", new=AsyncMock()):
+        await sim.reset_simulator()
+
+    assert sim._state["running"] is False
+    assert sim._account.positions == {}
+    assert sim._account.cash == sim._account.starting_cash

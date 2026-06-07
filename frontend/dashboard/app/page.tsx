@@ -19,7 +19,9 @@ interface PaperStatus {
   max_trades_per_day: number;
   last_tick_at: string | null;
   last_error: string | null;
-  persistence: string;
+  snapshot_storage: string;
+  state_restored_from_snapshot: boolean;
+  restart_persistent: boolean;
   mode: string;
   live_trading_enabled: boolean;
   broker_connected: boolean;
@@ -302,9 +304,11 @@ export default function Home() {
       </div>
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
-      <p className="text-gray-400 text-sm mb-6">
-        Paper simulator — Phase 2A · Auto-refreshes every 30s ·{" "}
-        Last: <span className="font-mono text-gray-300">{lastRefresh || "—"}</span>
+      <p className="text-gray-400 text-sm mb-1">
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2A
+      </p>
+      <p className="text-gray-500 text-xs mb-6">
+        Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
       </p>
 
       {loading && <p className="text-gray-400 animate-pulse">Loading…</p>}
@@ -338,13 +342,14 @@ export default function Home() {
             <StatBox label="Trades Today" value={`${s.daily_trade_count} / ${s.max_trades_per_day}`} />
           </div>
 
-          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
             <StatBox label="Open Positions" value={String(s.open_position_count)} />
             <StatBox label="Closed Trades" value={String(s.closed_trade_count)} />
             <StatBox label="Take Profit" value={`+${s.take_profit_percent}%`} />
             <StatBox label="Stop Loss" value={`-${s.stop_loss_percent}%`} />
             <StatBox label="Max Hold" value={`${s.max_hold_minutes}m`} />
-            <StatBox label="Persist" value={s.persistence} />
+            <StatBox label="Snapshot Storage" value={s.snapshot_storage ?? "memory"} />
+            <StatBox label="Restart Persistent" value="false" cls="text-red-400" />
           </div>
           {s.last_tick_at && (
             <p className="text-xs text-gray-500 mt-2">Last tick: {utcShort(s.last_tick_at)}</p>
@@ -408,11 +413,15 @@ export default function Home() {
         <CandidatesTable candidates={dashboard?.last_candidates ?? []} />
       </section>
 
-      <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4">
-        {dashboard?.disclaimer} ·{" "}
-        mode: {s?.mode ?? "—"} ·{" "}
-        live_trading: {String(s?.live_trading_enabled ?? false)} ·{" "}
-        broker: {String(s?.broker_connected ?? false)}
+      <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4 space-y-1">
+        <p>{dashboard?.disclaimer}</p>
+        <p>
+          mode: {s?.mode ?? "—"} · live_trading: {String(s?.live_trading_enabled ?? false)} ·{" "}
+          broker: {String(s?.broker_connected ?? false)} · restart_persistent: false
+        </p>
+        <p className="text-gray-700">
+          Redis is used only for best-effort latest-state snapshot. Simulator state is not restored after container restart.
+        </p>
       </footer>
     </main>
   );
