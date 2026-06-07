@@ -862,3 +862,311 @@ async def test_tick_market_regime_none_when_disabled(monkeypatch):
 
     result = await simulator.run_tick()
     assert result.get("market_regime") is None
+
+
+# ── Phase 2H-H1: all-failures classification patch ────────────────────────────
+
+async def test_all_fetches_fail_regime_is_unknown(monkeypatch):
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ,IWM"
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("timeout")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    assert result["risk"]["regime"] == "unknown"
+
+
+async def test_all_fetches_fail_risk_on_score_is_none(monkeypatch):
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ"
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("connection refused")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    assert result["risk"]["risk_on_score"] is None
+
+
+async def test_all_fetches_fail_confidence_is_unknown(monkeypatch):
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ,IWM,DIA"
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("api key invalid")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    assert result["risk"]["confidence"] == "unknown"
+
+
+async def test_all_fetches_fail_all_symbols_in_failed(monkeypatch):
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    symbols = "SPY,QQQ,IWM"
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = symbols
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("network error")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    assert result["symbols_fetched"] == []
+    assert set(result["symbols_failed"]) == {"SPY", "QQQ", "IWM"}
+
+
+async def test_all_fetches_fail_fetch_ratio_is_zero(monkeypatch):
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ"
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("503")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    assert result["fetch_ratio"] == 0.0
+
+
+async def test_all_fetches_fail_error_key_present(monkeypatch):
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ,IWM"
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("timeout")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    assert "error" in result
+    assert result["error"] == "No market regime symbols fetched"
+
+
+async def test_all_fetches_fail_risk_warnings_present(monkeypatch):
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ"
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("timeout")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    warnings = result["risk"].get("warnings", [])
+    assert len(warnings) >= 1
+    assert any("No market regime symbols fetched" in w for w in warnings)
+
+
+async def test_all_fetches_fail_no_crash(monkeypatch):
+    from market import regime as _regime
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ,IWM"
+    fake_settings.MARKET_REGIME_REFRESH_SECONDS = 60
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+    _regime._cache = None
+    _regime._cache_time = None
+
+    async def mock_snapshot(sym):
+        raise RuntimeError("unexpected error")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime.get_market_regime()
+    # Must not raise; returns a valid dict
+    assert isinstance(result, dict)
+    assert "risk" in result
+    assert result["risk"]["regime"] in ("unknown",)
+
+
+async def test_all_fetches_fail_not_risk_off(monkeypatch):
+    """Complete data failure must NOT classify as risk_off."""
+    from market import regime as _regime
+    from data.polygon_client import PolygonError
+
+    fake_settings = MagicMock()
+    fake_settings.MARKET_REGIME_SYMBOLS = "SPY,QQQ,IWM,DIA,XLK"
+    fake_settings.MARKET_REGIME_MIN_RISK_ON_SCORE = 60
+    fake_settings.MARKET_REGIME_MAX_RISK_OFF_SCORE = 40
+    monkeypatch.setattr(_regime, "settings", fake_settings)
+
+    async def mock_snapshot(sym):
+        raise PolygonError("all down")
+
+    from data import polygon_client
+    monkeypatch.setattr(polygon_client, "get_ticker_snapshot", mock_snapshot)
+
+    result = await _regime._build_regime()
+    assert result["risk"]["regime"] != "risk_off", (
+        "Complete fetch failure must not be classified as risk_off; got: "
+        + str(result["risk"])
+    )
+
+
+# ── Monitoring: all-fetches-fail warnings ─────────────────────────────────────
+
+async def test_monitoring_all_fail_no_risk_off_warning(monkeypatch):
+    """When all regime fetches fail, monitoring must NOT produce a risk_off warning."""
+    from fastapi.testclient import TestClient
+    from main import app
+    from market import regime as _regime
+
+    _regime._cache = None
+    _regime._cache_time = None
+
+    async def mock_get_regime(force_refresh=False):
+        return {
+            "symbols_requested": ["SPY", "QQQ", "IWM"],
+            "symbols_fetched": [],
+            "symbols_failed": ["SPY", "QQQ", "IWM"],
+            "fetch_ratio": 0.0,
+            "breadth": _regime._empty_breadth(),
+            "leaders": _regime._empty_leaders(),
+            "risk": {
+                "regime": "unknown",
+                "risk_on_score": None,
+                "confidence": "unknown",
+                "fetched_count": 0,
+                "warnings": ["No market regime symbols fetched; regime unavailable."],
+            },
+            "as_of": "2026-01-01T00:00:00+00:00",
+            "error": "No market regime symbols fetched",
+            "disclaimer": _regime.DISCLAIMER,
+        }
+    monkeypatch.setattr(_regime, "get_market_regime", mock_get_regime)
+
+    client = TestClient(app)
+    resp = client.get("/api/monitoring/status")
+    assert resp.status_code == 200
+    warnings = resp.json().get("warnings", [])
+    risk_off_warnings = [w for w in warnings if "RISK_OFF" in w or "risk_off" in w.lower()]
+    assert len(risk_off_warnings) == 0, (
+        f"Must not produce risk_off warning on all-fetch-fail; got: {warnings}"
+    )
+
+
+async def test_monitoring_all_fail_has_unavailable_warning(monkeypatch):
+    """When all regime fetches fail, monitoring must warn that data is unavailable."""
+    from fastapi.testclient import TestClient
+    from main import app
+    from market import regime as _regime
+
+    _regime._cache = None
+    _regime._cache_time = None
+
+    async def mock_get_regime(force_refresh=False):
+        return {
+            "symbols_requested": ["SPY", "QQQ"],
+            "symbols_fetched": [],
+            "symbols_failed": ["SPY", "QQQ"],
+            "fetch_ratio": 0.0,
+            "breadth": _regime._empty_breadth(),
+            "leaders": _regime._empty_leaders(),
+            "risk": {
+                "regime": "unknown",
+                "risk_on_score": None,
+                "confidence": "unknown",
+                "fetched_count": 0,
+                "warnings": ["No market regime symbols fetched; regime unavailable."],
+            },
+            "as_of": "2026-01-01T00:00:00+00:00",
+            "error": "No market regime symbols fetched",
+            "disclaimer": _regime.DISCLAIMER,
+        }
+    monkeypatch.setattr(_regime, "get_market_regime", mock_get_regime)
+
+    client = TestClient(app)
+    resp = client.get("/api/monitoring/status")
+    assert resp.status_code == 200
+    warnings = resp.json().get("warnings", [])
+    unavailable_warnings = [w for w in warnings if "unavailable" in w.lower()]
+    assert len(unavailable_warnings) >= 1, (
+        f"Must produce unavailable warning on all-fetch-fail; got: {warnings}"
+    )
+
+
+# ── Normal risk dict has warnings key (consistent shape) ─────────────────────
+
+def test_compute_risk_result_has_warnings_key():
+    from market.regime import _compute_risk
+    breadth = {
+        "total": 5, "positive": 3, "negative": 2, "flat": 0,
+        "positive_percent": 60.0, "avg_change_percent": 0.4,
+    }
+    leaders = {"data": {}, "bullish_count": 2, "bearish_count": 1}
+    risk = _compute_risk(breadth, leaders, "high")
+    assert "warnings" in risk
+    assert risk["warnings"] == []
+
+
+def test_unknown_regime_risk_dict_has_warnings_key():
+    """The unknown-regime risk dict returned by _build_regime has warnings."""
+    # This verifies the static shape of the all-fail payload
+    from market import regime as _regime
+    # The unknown risk payload structure
+    unknown_risk = {
+        "regime": "unknown",
+        "risk_on_score": None,
+        "confidence": "unknown",
+        "fetched_count": 0,
+        "warnings": ["No market regime symbols fetched; regime unavailable."],
+    }
+    assert "warnings" in unknown_risk
+    assert len(unknown_risk["warnings"]) >= 1

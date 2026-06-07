@@ -91,6 +91,29 @@ async def _build_regime() -> dict[str, Any]:
     total_fetched = len(valid)
     fetch_ratio = total_fetched / total_requested if total_requested > 0 else 0.0
 
+    # When no symbols were fetched, scoring is meaningless — return explicit unknown.
+    # Calling _compute_risk() on empty data would produce a score of 20 → risk_off,
+    # which is misleading: complete data failure is not the same as a bearish market.
+    if total_fetched == 0:
+        return {
+            "symbols_requested": symbols,
+            "symbols_fetched": [],
+            "symbols_failed": failed,
+            "fetch_ratio": 0.0,
+            "breadth": _empty_breadth(),
+            "leaders": _empty_leaders(),
+            "risk": {
+                "regime": "unknown",
+                "risk_on_score": None,
+                "confidence": "unknown",
+                "fetched_count": 0,
+                "warnings": ["No market regime symbols fetched; regime unavailable."],
+            },
+            "as_of": datetime.now(timezone.utc).isoformat(),
+            "error": "No market regime symbols fetched",
+            "disclaimer": DISCLAIMER,
+        }
+
     breadth = _compute_breadth(valid)
     leaders = _compute_leaders(valid)
     confidence = _data_confidence(fetch_ratio)
@@ -214,6 +237,7 @@ def _compute_risk(
         "risk_on_score": risk_on_score,
         "confidence": confidence,
         "fetched_count": breadth.get("total", 0),
+        "warnings": [],
     }
 
 

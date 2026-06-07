@@ -122,7 +122,7 @@ async def monitoring_status():
             score = risk.get("risk_on_score")
             if regime_data.get("error"):
                 warnings.append(
-                    "Market regime data fetch error — check Polygon API configuration."
+                    "Market regime data unavailable — check Polygon API configuration."
                 )
             elif regime == "risk_off":
                 warnings.append(
