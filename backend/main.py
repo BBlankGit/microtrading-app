@@ -1,8 +1,11 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.catalysts import router as catalysts_router
 from api.data_status import router as data_status_router
+from api.journal import router as journal_router
 from api.market import router as market_router
 from api.paper import router as paper_router
 from api.quality import router as quality_router
@@ -10,10 +13,19 @@ from api.stream import router as stream_router
 from api.universe import router as universe_router
 from core.config import settings
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    from paper.journal import init_journal
+    await init_journal()
+    yield
+
+
 app = FastAPI(
     title="Microtrading App",
     description="Cloud-only automated U.S. equities microtrading research platform",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -26,6 +38,7 @@ app.add_middleware(
 
 app.include_router(catalysts_router)
 app.include_router(data_status_router)
+app.include_router(journal_router)
 app.include_router(market_router)
 app.include_router(paper_router)
 app.include_router(quality_router)

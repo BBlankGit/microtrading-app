@@ -185,6 +185,61 @@ interface Dashboard {
   disclaimer: string;
 }
 
+// ── Journal types ─────────────────────────────────────────────────────────────
+
+interface JournalStatus {
+  enabled: boolean;
+  database_connected: boolean;
+  tables_ready: boolean;
+  last_error: string | null;
+}
+
+interface JournalSummary {
+  total_ticks: number;
+  total_candidates: number;
+  total_entries: number;
+  total_exits: number;
+  total_closed_trades: number;
+  first_tick_at: string | null;
+  last_tick_at: string | null;
+  error?: string;
+}
+
+interface JournalTick {
+  tick_id: string;
+  started_at: string;
+  completed_at: string | null;
+  symbols_evaluated: number;
+  universe_active_count: number;
+  universe_refresh_reason: string | null;
+  entries_made: number;
+  exits_made: number;
+  errors_count: number;
+  account_cash: number | null;
+  total_pnl: number | null;
+  created_at: string;
+}
+
+interface JournalPerformance {
+  total_trades: number;
+  win_rate: number | null;
+  avg_win: number | null;
+  avg_loss: number | null;
+  profit_factor: number | null;
+  best_trade: number | null;
+  worst_trade: number | null;
+  pnl_by_catalyst_type: Array<{ type: string; count: number; total_pnl: number }>;
+  pnl_by_score_bucket: Array<{ bucket: string; count: number; total_pnl: number }>;
+  error?: string;
+}
+
+interface JournalData {
+  status: JournalStatus;
+  summary: JournalSummary | null;
+  recentTicks: JournalTick[];
+  performance: JournalPerformance | null;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number | null | undefined, decimals = 2): string {
@@ -220,6 +275,31 @@ async function fetchDashboard(): Promise<Dashboard | null> {
     const r = await fetch("/api/paper/dashboard");
     if (!r.ok) return null;
     return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchJournal(): Promise<JournalData | null> {
+  try {
+    const [statusR, summaryR, ticksR, perfR] = await Promise.all([
+      fetch("/api/journal/status"),
+      fetch("/api/journal/summary"),
+      fetch("/api/journal/ticks?limit=10"),
+      fetch("/api/journal/performance"),
+    ]);
+    const [status, summary, recentTicks, performance] = await Promise.all([
+      statusR.json(),
+      summaryR.json(),
+      ticksR.json(),
+      perfR.json(),
+    ]);
+    return {
+      status,
+      summary: summary.error ? null : summary,
+      recentTicks: Array.isArray(recentTicks) ? recentTicks : [],
+      performance: performance.error ? null : performance,
+    };
   } catch {
     return null;
   }
@@ -570,6 +650,163 @@ function AnalyticsPanel({ analytics }: { analytics: Analytics | null }) {
   );
 }
 
+function JournalPanel({ journal }: { journal: JournalData | null }) {
+  if (!journal) {
+    return <p className="text-gray-500 text-sm">Journal data unavailable.</p>;
+  }
+
+  const { status, summary, recentTicks, performance } = journal;
+
+  return (
+    <div className="space-y-6">
+
+      {/* Status bar */}
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+          status.enabled && status.tables_ready
+            ? "bg-green-900 text-green-300 border-green-700"
+            : "bg-gray-800 text-gray-400 border-gray-600"
+        }`}>
+          Journal: {status.enabled && status.tables_ready ? "● ENABLED" : "○ DISABLED"}
+        </span>
+        <span className={`text-xs px-2 py-0.5 rounded border ${
+          status.database_connected
+            ? "bg-blue-900 text-blue-300 border-blue-700"
+            : "bg-gray-800 text-gray-500 border-gray-600"
+        }`}>
+          DB: {status.database_connected ? "connected" : "not connected"}
+        </span>
+        {status.last_error && (
+          <span className="text-xs text-red-400 font-mono bg-red-950 px-2 py-0.5 rounded border border-red-800 truncate max-w-xs">
+            ERR: {status.last_error}
+          </span>
+        )}
+        {!status.enabled && (
+          <span className="text-xs text-gray-500">
+            In-memory simulation only — journal requires PostgreSQL
+          </span>
+        )}
+      </div>
+
+      {/* Summary stats */}
+      {summary && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Session Summary</h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+            <StatBox label="Total Ticks" value={String(summary.total_ticks)} />
+            <StatBox label="Candidates" value={String(summary.total_candidates)} />
+            <StatBox label="Entries" value={String(summary.total_entries)} cls="text-green-400" />
+            <StatBox label="Exits" value={String(summary.total_exits)} />
+            <StatBox label="Closed Trades" value={String(summary.total_closed_trades)} />
+            <StatBox label="First Tick" value={summary.first_tick_at ? utcShort(summary.first_tick_at) : "—"} />
+            <StatBox label="Last Tick" value={summary.last_tick_at ? utcShort(summary.last_tick_at) : "—"} />
+          </div>
+        </div>
+      )}
+
+      {/* Historical performance */}
+      {performance && performance.total_trades > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">
+            Historical Performance ({performance.total_trades} closed trades)
+          </h3>
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-3">
+            <StatBox label="Win Rate" value={performance.win_rate != null ? `${fmt(performance.win_rate)}%` : "—"} cls={performance.win_rate != null ? (performance.win_rate >= 50 ? "text-green-400" : "text-yellow-400") : ""} />
+            <StatBox label="Avg Win" value={performance.avg_win != null ? fmtUSD(performance.avg_win) : "—"} cls="text-green-400" />
+            <StatBox label="Avg Loss" value={performance.avg_loss != null ? fmtUSD(performance.avg_loss) : "—"} cls="text-red-400" />
+            <StatBox label="Profit Factor" value={performance.profit_factor != null ? fmt(performance.profit_factor) : "—"} cls={performance.profit_factor != null ? (performance.profit_factor >= 1 ? "text-green-400" : "text-red-400") : ""} />
+            <StatBox label="Best Trade" value={performance.best_trade != null ? fmtUSD(performance.best_trade) : "—"} cls="text-green-400" />
+            <StatBox label="Worst Trade" value={performance.worst_trade != null ? fmtUSD(performance.worst_trade) : "—"} cls="text-red-400" />
+          </div>
+          {performance.pnl_by_catalyst_type.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <p className="text-xs text-gray-500 mb-1">P&L by catalyst type</p>
+                <table className="text-xs w-full">
+                  <thead><tr className="text-gray-500 border-b border-gray-700">
+                    <th className="pb-1 text-left font-medium">Type</th>
+                    <th className="pb-1 text-right font-medium">Trades</th>
+                    <th className="pb-1 text-right font-medium">P&L</th>
+                  </tr></thead>
+                  <tbody>
+                    {performance.pnl_by_catalyst_type.map((r) => (
+                      <tr key={r.type} className="border-b border-gray-800">
+                        <td className="py-1 text-blue-300">{r.type}</td>
+                        <td className="py-1 text-right font-mono">{r.count}</td>
+                        <td className={`py-1 text-right font-mono ${pnlClass(r.total_pnl)}`}>{fmtUSD(r.total_pnl)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {performance.pnl_by_score_bucket.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-500 mb-1">P&L by score bucket</p>
+                  <table className="text-xs w-full">
+                    <thead><tr className="text-gray-500 border-b border-gray-700">
+                      <th className="pb-1 text-left font-medium">Bucket</th>
+                      <th className="pb-1 text-right font-medium">Trades</th>
+                      <th className="pb-1 text-right font-medium">P&L</th>
+                    </tr></thead>
+                    <tbody>
+                      {performance.pnl_by_score_bucket.map((r) => (
+                        <tr key={r.bucket} className="border-b border-gray-800">
+                          <td className="py-1 text-gray-300">{r.bucket}</td>
+                          <td className="py-1 text-right font-mono">{r.count}</td>
+                          <td className={`py-1 text-right font-mono ${pnlClass(r.total_pnl)}`}>{fmtUSD(r.total_pnl)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Recent tick history */}
+      {recentTicks.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">
+            Recent Ticks ({recentTicks.length} shown)
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left">
+              <thead className="text-gray-400 border-b border-gray-700">
+                <tr>
+                  {["Started","Symbols","Universe","Entries","Exits","Errors","Cash","P&L"].map((h) => (
+                    <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {recentTicks.map((t) => (
+                  <tr key={t.tick_id} className="border-b border-gray-800 hover:bg-gray-800">
+                    <td className="py-1.5 pr-4 font-mono text-gray-400 whitespace-nowrap">{utcShort(t.started_at)}</td>
+                    <td className="py-1.5 pr-4 font-mono">{t.symbols_evaluated}</td>
+                    <td className="py-1.5 pr-4 font-mono">{t.universe_active_count}</td>
+                    <td className={`py-1.5 pr-4 font-mono ${t.entries_made > 0 ? "text-green-400" : "text-gray-500"}`}>{t.entries_made}</td>
+                    <td className="py-1.5 pr-4 font-mono">{t.exits_made}</td>
+                    <td className={`py-1.5 pr-4 font-mono ${t.errors_count > 0 ? "text-yellow-400" : "text-gray-500"}`}>{t.errors_count}</td>
+                    <td className="py-1.5 pr-4 font-mono">{t.account_cash != null ? `$${fmt(t.account_cash)}` : "—"}</td>
+                    <td className={`py-1.5 pr-4 font-mono ${t.total_pnl != null ? pnlClass(t.total_pnl) : ""}`}>{t.total_pnl != null ? fmtUSD(t.total_pnl) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {!summary && !recentTicks.length && status.enabled && (
+        <p className="text-gray-500 text-sm">No journal data yet. Run ⚡ Tick to start logging.</p>
+      )}
+
+    </div>
+  );
+}
+
 function UniverseSection({ universe }: { universe: UniverseInfo | null }) {
   if (!universe) {
     return (
@@ -628,14 +865,16 @@ function UniverseSection({ universe }: { universe: UniverseInfo | null }) {
 
 export default function Home() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [journal, setJournal] = useState<JournalData | null>(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState("");
   const [actionMsg, setActionMsg] = useState("");
   const [lastRefresh, setLastRefresh] = useState("");
 
   const refresh = useCallback(async () => {
-    const data = await fetchDashboard();
+    const [data, jdata] = await Promise.all([fetchDashboard(), fetchJournal()]);
     setDashboard(data);
+    setJournal(jdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -672,7 +911,7 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2C
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2E
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
@@ -807,6 +1046,17 @@ export default function Home() {
           </span>
         </h2>
         <AnalyticsPanel analytics={dashboard?.analytics ?? null} />
+      </section>
+
+      {/* Journal / History */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Journal / History
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            persistent PostgreSQL log · fake-money · no broker
+          </span>
+        </h2>
+        <JournalPanel journal={journal} />
       </section>
 
       <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4 space-y-1">

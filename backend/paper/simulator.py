@@ -19,8 +19,9 @@ from data.market_quality import evaluate_market_quality
 from data.polygon_client import PolygonError
 from data.redis_client import make_redis
 from paper.account import PaperAccount
+from paper.journal import persist_tick_result as _persist_journal_tick
 from paper.scoring import score_candidate
-from paper.universe import get_active_paper_universe
+from paper.universe import get_active_paper_universe, get_cached_universe
 
 logger = logging.getLogger(__name__)
 
@@ -378,6 +379,15 @@ async def run_tick() -> dict[str, Any]:
     _state["last_tick_at"] = tick_start.isoformat()
     _state["last_error"] = None
     _state["last_candidates"] = result["candidates"]
+
+    # ── 6. Journal write (non-fatal, must not affect simulation) ─────────────
+    result["journal"] = {"ok": False, "skipped": True, "reason": "not attempted"}
+    try:
+        result["journal"] = await _persist_journal_tick(
+            result, get_status(), get_cached_universe()
+        )
+    except Exception as exc:
+        result["journal"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     return result
 
