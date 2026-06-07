@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends
 
 from api.dependencies import require_admin_token
 from core.config import settings
+from paper.runtime_config import effective_value as _cfg
 
 router = APIRouter(prefix="/api/market/regime", tags=["market_regime"])
 
@@ -18,7 +19,7 @@ async def get_market_regime():
     Return current market regime data (cached, refreshes on TTL expiry).
     No auth required — read-only observational data.
     """
-    if not settings.MARKET_REGIME_ENABLED:
+    if not _cfg("MARKET_REGIME_ENABLED"):
         return {
             "enabled": False,
             "regime": None,
@@ -38,7 +39,7 @@ async def refresh_market_regime(_: None = Depends(require_admin_token)):
     Force-refresh cached market regime data.
     Requires ADMIN_API_TOKEN.
     """
-    if not settings.MARKET_REGIME_ENABLED:
+    if not _cfg("MARKET_REGIME_ENABLED"):
         return {
             "enabled": False,
             "refreshed": False,

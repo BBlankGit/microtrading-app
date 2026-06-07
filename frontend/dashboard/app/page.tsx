@@ -1356,8 +1356,9 @@ function StrategySettingsPanel({
   return (
     <div className="space-y-4">
       <p className="text-xs text-gray-500 italic">
-        Runtime settings affect fake-money simulation only. No broker, no live trading, no real orders.
-        Changes take effect on the next tick.
+        All editable settings in this panel are applied at runtime to fake-money simulation only.
+        No broker, no live trading, no real orders.
+        Changes take effect on the next tick and do not retroactively affect existing open positions.
       </p>
 
       {/* Status row */}

@@ -102,8 +102,9 @@ async def monitoring_status():
         )
 
     # ── Market regime ─────────────────────────────────────────────────────────
-    regime_summary: dict = {"enabled": settings.MARKET_REGIME_ENABLED}
-    if settings.MARKET_REGIME_ENABLED:
+    from paper.runtime_config import effective_value as _cfg
+    regime_summary: dict = {"enabled": _cfg("MARKET_REGIME_ENABLED")}
+    if _cfg("MARKET_REGIME_ENABLED"):
         try:
             from market.regime import get_market_regime
             regime_data = await get_market_regime()

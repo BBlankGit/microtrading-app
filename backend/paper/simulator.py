@@ -389,9 +389,14 @@ async def run_tick() -> dict[str, Any]:
                 if can:
                     entry_price = q.get("ask") or q.get("last_trade_price", 0)
                     if entry_price and entry_price > 0:
+                        # Compute position budget from runtime position-size percent,
+                        # capped by the hard PAPER_MAX_POSITION_SIZE_USD ceiling.
+                        pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
+                        budget_pct = _account.cash * (pos_pct / 100.0)
+                        position_budget = min(budget_pct, settings.PAPER_MAX_POSITION_SIZE_USD)
                         pos = _account.enter_position(
                             sym, entry_price,
-                            settings.PAPER_MAX_POSITION_SIZE_USD,
+                            position_budget,
                             cat_type or "unknown",
                             entry_score=scoring["total_score"],
                         )
@@ -434,8 +439,7 @@ async def run_tick() -> dict[str, Any]:
     # ── 7. Market regime metadata (observational only — no strategy changes) ──
     result["market_regime"] = None
     try:
-        from core.config import settings as _settings
-        if _settings.MARKET_REGIME_ENABLED:
+        if _cfg("MARKET_REGIME_ENABLED"):
             from market.regime import get_market_regime
             regime_data = await get_market_regime()
             result["market_regime"] = {

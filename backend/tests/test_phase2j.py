@@ -144,8 +144,7 @@ def test_filter_movers_deduplication_not_in_filter():
 async def test_discovery_disabled_returns_disabled_shape():
     from paper.discovery import discover_market_movers, clear_cache
     clear_cache()
-    with patch("paper.discovery.settings") as mock_settings:
-        mock_settings.PAPER_MARKET_DISCOVERY_ENABLED = False
+    with patch("paper.discovery._cfg", side_effect=lambda k: False if k == "PAPER_MARKET_DISCOVERY_ENABLED" else None):
         result = await discover_market_movers()
     assert result["enabled"] is False
     assert result["discovered_count"] == 0
@@ -368,12 +367,16 @@ async def test_universe_result_has_discovery_key():
     uni_mod._universe_cache = None
     uni_mod._cache_built_at = None
 
-    with patch("paper.universe.settings") as ms:
-        ms.PAPER_DYNAMIC_UNIVERSE_ENABLED = False
-        ms.PAPER_MARKET_DISCOVERY_ENABLED = False
-        ms.PAPER_DYNAMIC_REFRESH_SECONDS = 9999
-        ms.PAPER_MAX_SYMBOLS_PER_TICK = 5
-        ms.PAPER_MAX_UNIVERSE_SIZE = 150
+    cfg_values = {
+        "PAPER_DYNAMIC_UNIVERSE_ENABLED": False,
+        "PAPER_MARKET_DISCOVERY_ENABLED": False,
+        "PAPER_DYNAMIC_REFRESH_SECONDS": 9999,
+        "PAPER_MAX_SYMBOLS_PER_TICK": 5,
+        "PAPER_MAX_UNIVERSE_SIZE": 150,
+    }
+
+    with patch("paper.universe.settings") as ms, \
+         patch("paper.universe._cfg", side_effect=lambda k: cfg_values.get(k)):
         ms.paper_base_universe_list = MagicMock(return_value=["AAPL"])
 
         result = await build_dynamic_universe(force_refresh=True)

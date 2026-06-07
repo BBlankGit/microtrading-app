@@ -17,6 +17,7 @@ from typing import Any
 from core.config import settings
 from data import polygon_client
 from data.polygon_client import PolygonError
+from paper.runtime_config import effective_value as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -49,13 +50,13 @@ async def discover_market_movers(force_refresh: bool = False) -> dict[str, Any]:
     """
     global _cache, _cache_time
 
-    if not settings.PAPER_MARKET_DISCOVERY_ENABLED:
+    if not _cfg("PAPER_MARKET_DISCOVERY_ENABLED"):
         return _disabled_result()
 
     now_mono = time.monotonic()
 
     if not force_refresh and _cache is not None and _cache_time is not None:
-        if now_mono - _cache_time < settings.PAPER_MARKET_DISCOVERY_REFRESH_SECONDS:
+        if now_mono - _cache_time < _cfg("PAPER_MARKET_DISCOVERY_REFRESH_SECONDS"):
             return dict(_cache, refresh_reason="cached")
 
     refresh_reason = "startup" if _cache is None else ("manual" if force_refresh else "ttl")
@@ -103,7 +104,7 @@ async def _build_discovery(refresh_reason: str) -> dict[str, Any]:
     # ── Most active ───────────────────────────────────────────────────────────
     # Polygon REST does not expose a dedicated "most_active" movers endpoint.
     # Gainers + losers already cover high-movement active symbols.
-    if settings.PAPER_MARKET_DISCOVERY_INCLUDE_MOST_ACTIVE:
+    if settings.PAPER_MARKET_DISCOVERY_INCLUDE_MOST_ACTIVE:  # base only — not runtime-tunable
         warnings.append(
             "most_active: no dedicated Polygon REST endpoint available; "
             "gainers and losers already cover the most active movers."
@@ -118,7 +119,7 @@ async def _build_discovery(refresh_reason: str) -> dict[str, Any]:
                 seen.add(sym)
                 discovered.append(sym)
 
-    discovered = discovered[: settings.PAPER_MARKET_DISCOVERY_MAX_SYMBOLS]
+    discovered = discovered[: _cfg("PAPER_MARKET_DISCOVERY_MAX_SYMBOLS")]
 
     return {
         "enabled": True,
@@ -136,10 +137,10 @@ async def _build_discovery(refresh_reason: str) -> dict[str, Any]:
 def _filter_movers(movers: list[dict]) -> list[str]:
     """Apply price/volume/change filters and return valid symbol strings."""
     result: list[str] = []
-    min_price = settings.PAPER_MARKET_DISCOVERY_MIN_PRICE
-    max_price = settings.PAPER_MARKET_DISCOVERY_MAX_PRICE
-    min_volume = settings.PAPER_MARKET_DISCOVERY_MIN_VOLUME
-    min_abs_change = settings.PAPER_MARKET_DISCOVERY_MIN_ABS_CHANGE_PERCENT
+    min_price = _cfg("PAPER_MARKET_DISCOVERY_MIN_PRICE")
+    max_price = _cfg("PAPER_MARKET_DISCOVERY_MAX_PRICE")
+    min_volume = _cfg("PAPER_MARKET_DISCOVERY_MIN_VOLUME")
+    min_abs_change = _cfg("PAPER_MARKET_DISCOVERY_MIN_ABS_CHANGE_PERCENT")
 
     for m in movers:
         sym = m.get("symbol", "")

@@ -14,6 +14,7 @@ from typing import Any
 
 from core.config import settings
 from data import polygon_client
+from paper.runtime_config import effective_value as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ async def get_market_regime(force_refresh: bool = False) -> dict[str, Any]:
 
     if not force_refresh and _cache is not None and _cache_time is not None:
         elapsed = time.monotonic() - _cache_time
-        if elapsed < settings.MARKET_REGIME_REFRESH_SECONDS:
+        if elapsed < _cfg("MARKET_REGIME_REFRESH_SECONDS"):
             return dict(_cache)
 
     try:
@@ -225,9 +226,9 @@ def _compute_risk(
 
     risk_on_score = min(100, max(0, round(score)))
 
-    if risk_on_score >= settings.MARKET_REGIME_MIN_RISK_ON_SCORE:
+    if risk_on_score >= _cfg("MARKET_REGIME_MIN_RISK_ON_SCORE"):
         regime = "risk_on"
-    elif risk_on_score <= settings.MARKET_REGIME_MAX_RISK_OFF_SCORE:
+    elif risk_on_score <= _cfg("MARKET_REGIME_MAX_RISK_OFF_SCORE"):
         regime = "risk_off"
     else:
         regime = "neutral"

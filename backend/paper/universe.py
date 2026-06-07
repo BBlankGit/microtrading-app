@@ -14,6 +14,7 @@ from core.config import settings
 from data import polygon_client
 from data.market_quality import evaluate_market_quality
 from data.polygon_client import PolygonError
+from paper.runtime_config import effective_value as _cfg
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +56,14 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
     # Return cached result if within TTL
     if not force_refresh and _universe_cache is not None and _cache_built_at is not None:
         elapsed = (now - _cache_built_at).total_seconds()
-        if elapsed < settings.PAPER_DYNAMIC_REFRESH_SECONDS:
+        if elapsed < _cfg("PAPER_DYNAMIC_REFRESH_SECONDS"):
             return dict(_universe_cache, refresh_reason="cached")
 
     base = get_base_universe()
 
     # Dynamic disabled — fall back to first N base symbols
-    if not settings.PAPER_DYNAMIC_UNIVERSE_ENABLED:
-        active = base[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
+    if not _cfg("PAPER_DYNAMIC_UNIVERSE_ENABLED"):
+        active = base[:_cfg("PAPER_MAX_SYMBOLS_PER_TICK")]
         result = _make_result(base, [], active, now, "disabled", [], None)
         _universe_cache = result
         _cache_built_at = now
@@ -71,7 +72,7 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
     # ── Market-wide discovery (Phase 2J) ──────────────────────────────────────
     discovery_result: dict | None = None
     discovered_syms: list[str] = []
-    if settings.PAPER_MARKET_DISCOVERY_ENABLED:
+    if _cfg("PAPER_MARKET_DISCOVERY_ENABLED"):
         try:
             from paper.discovery import discover_market_movers
             discovery_result = await discover_market_movers(force_refresh=force_refresh)
@@ -93,7 +94,7 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
         if sym not in seen_merge:
             seen_merge.add(sym)
             candidate_pool.append(sym)
-    candidate_pool = candidate_pool[: settings.PAPER_MAX_UNIVERSE_SIZE]
+    candidate_pool = candidate_pool[: _cfg("PAPER_MAX_UNIVERSE_SIZE")]
 
     # Fetch quality for all candidate symbols concurrently
     quality_map: dict[str, dict] = {}
@@ -114,7 +115,7 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
 
     # All fetches failed — fall back
     if not quality_map:
-        active = base[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
+        active = base[:_cfg("PAPER_MAX_SYMBOLS_PER_TICK")]
         result = _make_result(base, [], active, now, f"{reason}_fallback", errors, discovery_result)
         _universe_cache = result
         _cache_built_at = now
@@ -131,11 +132,11 @@ async def build_dynamic_universe(force_refresh: bool = False) -> dict[str, Any]:
     filtered.sort(key=lambda x: _rank_key(x[1]), reverse=True)
 
     dynamic_syms = [sym for sym, _ in filtered]
-    active = dynamic_syms[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
+    active = dynamic_syms[:_cfg("PAPER_MAX_SYMBOLS_PER_TICK")]
 
     # Nothing survived filtering — fall back to first N base symbols
     if not active:
-        active = base[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
+        active = base[:_cfg("PAPER_MAX_SYMBOLS_PER_TICK")]
         reason = f"{reason}_fallback"
 
     result = _make_result(base, dynamic_syms, active, now, reason, errors, discovery_result)
@@ -219,7 +220,7 @@ def _make_result(
         "dynamic_symbols": dynamic,
         "active_symbols": active,
         "active_count": len(active),
-        "max_symbols_per_tick": settings.PAPER_MAX_SYMBOLS_PER_TICK,
+        "max_symbols_per_tick": _cfg("PAPER_MAX_SYMBOLS_PER_TICK"),
         "last_refreshed_at": ts.isoformat(),
         "refresh_reason": reason,
         "errors": errors,
