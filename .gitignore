@@ -1,0 +1,35 @@
+# Environment — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Node
+node_modules/
+.next/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Logs & databases
+logs/
+*.log
+*.db
+*.sqlite
+
+# Secrets & certs
+secrets/
+*.pem
+*.key
+*.crt
+
+# Docker volumes
+postgres-data/
+redis-data/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store

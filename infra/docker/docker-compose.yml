@@ -1,0 +1,51 @@
+version: "3.9"
+
+services:
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ../../.env
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  frontend:
+    image: node:22-slim
+    working_dir: /app
+    volumes:
+      - ../../frontend/dashboard:/app
+    ports:
+      - "3000:3000"
+    command: sh -c "npm install && npm run dev"
+    environment:
+      - NODE_ENV=development
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: microtrader
+      POSTGRES_PASSWORD: microtrader_password
+      POSTGRES_DB: microtrading
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-data:

@@ -1,0 +1,36 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI(
+    title="Microtrading App",
+    description="Cloud-only automated U.S. equities microtrading research platform",
+    version="0.1.0",
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/status")
+async def status():
+    return {
+        "app_name": "Microtrading App",
+        "version": "0.1.0",
+        "mode": "paper",
+        "live_trading_enabled": False,
+        "broker_connected": False,
+        "message": (
+            "Phase 0 foundation is running. "
+            "No live trading is enabled. "
+            "Paper trading only — no broker connection, no real-money execution."
+        ),
+    }
