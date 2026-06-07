@@ -1,0 +1,120 @@
+"""
+Monitoring status endpoint for the paper simulator.
+No auth required (read-only; no sensitive data exposed).
+Research-only fake-money simulation. No live trading. No real orders.
+"""
+
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter
+
+from core.config import settings
+from paper.journal import get_journal_status
+
+router = APIRouter(prefix="/api/monitoring", tags=["monitoring"])
+
+
+@router.get("/status")
+async def monitoring_status():
+    # ── Simulator state ───────────────────────────────────────────────────────
+    sim_status: dict = {}
+    try:
+        import paper.simulator as _sim
+        sim_status = _sim.get_status()
+    except Exception:
+        pass
+
+    paper_running: bool = bool(sim_status.get("running", False))
+    last_tick_at: str | None = sim_status.get("last_tick_at")
+    last_error: str | None = sim_status.get("last_error")
+
+    # ── Tick age and freshness ────────────────────────────────────────────────
+    age: float | None = None
+    if last_tick_at:
+        try:
+            lt = datetime.fromisoformat(last_tick_at)
+            if lt.tzinfo is None:
+                lt = lt.replace(tzinfo=timezone.utc)
+            age = round((datetime.now(timezone.utc) - lt).total_seconds(), 1)
+        except Exception:
+            pass
+
+    stale_threshold = 2 * settings.PAPER_POLL_INTERVAL_SECONDS + 30
+    if not paper_running:
+        last_tick_fresh = True
+    elif age is None:
+        last_tick_fresh = True  # running but no tick yet — expected at startup
+    else:
+        last_tick_fresh = age <= stale_threshold
+
+    # ── Journal state ─────────────────────────────────────────────────────────
+    j = get_journal_status()
+    journal_enabled: bool = j["enabled"]
+    journal_db_connected: bool = j["database_connected"]
+    journal_tables_ready: bool = j["tables_ready"]
+    last_journal_ok: bool | None = j.get("last_persist_ok")
+
+    # ── Market session ────────────────────────────────────────────────────────
+    ms = _market_session_now()
+
+    # ── Warnings ─────────────────────────────────────────────────────────────
+    warnings: list[str] = []
+
+    if not journal_enabled:
+        warnings.append("Journal is disabled — tick data is not being persisted to PostgreSQL.")
+    elif not journal_db_connected:
+        warnings.append("Journal: database not connected.")
+    elif not journal_tables_ready:
+        warnings.append("Journal: tables not ready.")
+
+    if paper_running and not last_tick_fresh:
+        warnings.append(
+            f"Simulator is running but last tick is stale "
+            f"({age:.0f}s old; threshold {stale_threshold}s)."
+        )
+
+    if ms["is_regular_session_now"] and not paper_running:
+        warnings.append(
+            "Market session is currently open but the paper simulator is stopped."
+        )
+
+    return {
+        "backend_ok": True,
+        "paper_running": paper_running,
+        "journal_enabled": journal_enabled,
+        "journal_database_connected": journal_db_connected,
+        "journal_tables_ready": journal_tables_ready,
+        "last_tick_at": last_tick_at,
+        "last_tick_age_seconds": age,
+        "last_tick_fresh": last_tick_fresh,
+        "last_journal_ok": last_journal_ok,
+        "last_error": last_error,
+        "market_session": ms,
+        "warnings": warnings,
+    }
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _market_session_now() -> dict:
+    from datetime import time
+    try:
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+        now_ny = datetime.now(ny_tz)
+        tz_label = "America/New_York"
+    except Exception:
+        now_ny = datetime.now(timezone(timedelta(hours=-4)))
+        tz_label = "UTC-4 (approximate)"
+
+    is_weekday = now_ny.weekday() < 5
+    t = now_ny.time()
+    is_session = is_weekday and time(9, 30) <= t < time(16, 0)
+
+    return {
+        "timezone": tz_label,
+        "is_regular_session_now": is_session,
+        "regular_open": "09:30",
+        "regular_close": "16:00",
+        "note": "Best-effort weekday/session check; holidays not included yet.",
+    }

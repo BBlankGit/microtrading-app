@@ -16,6 +16,7 @@ from paper import db as _db
 logger = logging.getLogger(__name__)
 
 _journal_enabled: bool = False
+_last_persist_ok: bool | None = None
 
 
 async def init_journal() -> None:
@@ -37,6 +38,7 @@ def get_journal_status() -> dict:
         "database_connected": _db.pool_exists(),
         "tables_ready": _db.is_ready(),
         "last_error": _db.last_error(),
+        "last_persist_ok": _last_persist_ok,
     }
 
 
@@ -49,6 +51,7 @@ async def persist_tick_result(
     Write one tick's data to PostgreSQL journal tables.
     Returns a summary dict with ok/skipped/error. Never raises to caller.
     """
+    global _last_persist_ok
     if not _journal_enabled:
         return {"ok": False, "skipped": True, "reason": "journal disabled"}
 
@@ -197,6 +200,7 @@ async def persist_tick_result(
                         json.dumps(universe.get("errors") or []),
                     )
 
+        _last_persist_ok = True
         return {
             "ok": True,
             "tick_id": tick_id,
@@ -204,6 +208,7 @@ async def persist_tick_result(
         }
 
     except Exception as exc:
+        _last_persist_ok = False
         logger.warning("Paper journal: write failed: %s", exc)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 

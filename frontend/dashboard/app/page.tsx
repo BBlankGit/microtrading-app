@@ -240,6 +240,81 @@ interface JournalData {
   performance: JournalPerformance | null;
 }
 
+// ── Phase 2F types ────────────────────────────────────────────────────────────
+
+interface MonitoringStatus {
+  backend_ok: boolean;
+  paper_running: boolean;
+  journal_enabled: boolean;
+  journal_database_connected: boolean;
+  journal_tables_ready: boolean;
+  last_tick_at: string | null;
+  last_tick_age_seconds: number | null;
+  last_tick_fresh: boolean;
+  last_journal_ok: boolean | null;
+  last_error: string | null;
+  market_session: MarketSession;
+  warnings: string[];
+}
+
+interface TodaySummary {
+  trading_date: string;
+  total_ticks_today: number;
+  total_candidates_today: number;
+  total_entries_today: number;
+  total_exits_today: number;
+  unique_symbols_seen_today: number;
+  open_positions_current: number;
+  closed_trades_today: number;
+  realized_pnl_today: number | null;
+  win_rate_today: number | null;
+  profit_factor_today: number | null;
+  first_tick_at: string | null;
+  last_tick_at: string | null;
+  last_tick_age_seconds: number | null;
+  journal_healthy: boolean;
+  notes: string[];
+  error?: string;
+}
+
+interface TodayCatalyst {
+  type: string;
+  candidate_count: number;
+  entries: number;
+  exits: number;
+}
+
+interface TodaySymbol {
+  symbol: string;
+  candidate_count: number;
+  entries: number;
+  exits: number;
+  avg_score: number | null;
+  last_seen_at: string | null;
+}
+
+interface TodayRejection {
+  reason: string;
+  count: number;
+}
+
+interface TodayReport {
+  summary: TodaySummary;
+  top_rejections: TodayRejection[];
+  catalysts: TodayCatalyst[];
+  symbols: TodaySymbol[];
+  latest_ticks: Array<{
+    started_at: string;
+    symbols_evaluated: number;
+    entries_made: number;
+    exits_made: number;
+    errors_count: number;
+    account_cash: number | null;
+    total_pnl: number | null;
+  }>;
+  error?: string;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function fmt(n: number | null | undefined, decimals = 2): string {
@@ -300,6 +375,27 @@ async function fetchJournal(): Promise<JournalData | null> {
       recentTicks: Array.isArray(recentTicks) ? recentTicks : [],
       performance: performance.error ? null : performance,
     };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchMonitoringStatus(): Promise<MonitoringStatus | null> {
+  try {
+    const r = await fetch("/api/monitoring/status");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTodayReport(): Promise<TodayReport | null> {
+  try {
+    const r = await fetch("/api/journal/today/report");
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data.error ? null : data;
   } catch {
     return null;
   }
@@ -861,20 +957,308 @@ function UniverseSection({ universe }: { universe: UniverseInfo | null }) {
   );
 }
 
+// ── Monitoring panel ──────────────────────────────────────────────────────────
+
+function MonitoringPanel({ monitoring }: { monitoring: MonitoringStatus | null }) {
+  if (!monitoring) return <p className="text-gray-500 text-sm">Monitoring data unavailable.</p>;
+
+  const {
+    backend_ok, paper_running, journal_enabled, journal_database_connected,
+    journal_tables_ready, last_tick_at, last_tick_age_seconds, last_tick_fresh,
+    last_journal_ok, last_error, market_session, warnings,
+  } = monitoring;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+          backend_ok ? "bg-green-900 text-green-300 border-green-700" : "bg-red-900 text-red-300 border-red-700"
+        }`}>
+          Backend: {backend_ok ? "● OK" : "✗ DOWN"}
+        </span>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+          paper_running ? "bg-green-900 text-green-300 border-green-700" : "bg-gray-800 text-gray-400 border-gray-600"
+        }`}>
+          Simulator: {paper_running ? "● RUNNING" : "○ STOPPED"}
+        </span>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+          market_session.is_regular_session_now
+            ? "bg-blue-900 text-blue-300 border-blue-700"
+            : "bg-gray-800 text-gray-500 border-gray-600"
+        }`}>
+          Market: {market_session.is_regular_session_now ? "● OPEN" : "○ CLOSED"}
+        </span>
+        <span className={`text-xs px-2 py-0.5 rounded border ${
+          journal_enabled && journal_tables_ready
+            ? "bg-green-900 text-green-300 border-green-700"
+            : "bg-gray-800 text-gray-400 border-gray-600"
+        }`}>
+          Journal: {journal_enabled && journal_tables_ready ? "● enabled" : "○ disabled"}
+        </span>
+        <span className={`text-xs px-2 py-0.5 rounded border ${
+          journal_database_connected
+            ? "bg-blue-900 text-blue-300 border-blue-700"
+            : "bg-gray-800 text-gray-500 border-gray-600"
+        }`}>
+          DB: {journal_database_connected ? "connected" : "not connected"}
+        </span>
+        {last_journal_ok === true && (
+          <span className="text-xs px-2 py-0.5 rounded border bg-green-950 text-green-400 border-green-800">last write OK</span>
+        )}
+        {last_journal_ok === false && (
+          <span className="text-xs px-2 py-0.5 rounded border bg-red-950 text-red-400 border-red-800">last write FAILED</span>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatBox label="Last Tick" value={last_tick_at ? utcShort(last_tick_at) : "—"} />
+        <StatBox
+          label="Tick Age"
+          value={last_tick_age_seconds != null ? `${last_tick_age_seconds}s` : "—"}
+          cls={last_tick_fresh ? "text-green-400" : "text-red-400"}
+        />
+        <StatBox
+          label="Tick Fresh"
+          value={last_tick_fresh ? "● fresh" : "✗ stale"}
+          cls={last_tick_fresh ? "text-green-400" : "text-red-400"}
+        />
+        <StatBox label="Session Hours" value={`${market_session.regular_open} – ${market_session.regular_close} ET`} />
+      </div>
+
+      {last_error && (
+        <div className="text-xs font-mono text-red-400 bg-red-950 border border-red-800 rounded px-3 py-2 truncate">
+          ERR: {last_error}
+        </div>
+      )}
+
+      {warnings.length > 0 && (
+        <div className="space-y-1">
+          {warnings.map((w, i) => (
+            <div key={i} className="text-xs text-yellow-300 bg-yellow-950 border border-yellow-800 rounded px-3 py-1.5">
+              ⚠ {w}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {market_session.note && <p className="text-xs text-gray-600">{market_session.note}</p>}
+    </div>
+  );
+}
+
+// ── Today / Session report panel ──────────────────────────────────────────────
+
+function TodayReportPanel({ report }: { report: TodayReport | null }) {
+  if (!report) {
+    return (
+      <p className="text-gray-500 text-sm">
+        Today&apos;s report unavailable — journal may be disabled or no data yet.
+      </p>
+    );
+  }
+
+  const { summary, top_rejections, catalysts, symbols, latest_ticks } = report;
+
+  return (
+    <div className="space-y-6">
+
+      {/* Summary */}
+      <div>
+        <div className="flex items-center gap-3 mb-2">
+          <h3 className="text-sm font-semibold text-gray-300">Today — {summary.trading_date}</h3>
+          <span className={`text-xs px-2 py-0.5 rounded border ${
+            summary.journal_healthy
+              ? "bg-green-900 text-green-300 border-green-700"
+              : "bg-yellow-900 text-yellow-300 border-yellow-700"
+          }`}>
+            {summary.journal_healthy ? "● healthy" : "⚠ degraded"}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          <StatBox label="Ticks Today" value={String(summary.total_ticks_today)} />
+          <StatBox label="Candidates" value={String(summary.total_candidates_today)} />
+          <StatBox label="Entries" value={String(summary.total_entries_today)} cls="text-green-400" />
+          <StatBox label="Exits" value={String(summary.total_exits_today)} />
+          <StatBox label="Uniq Symbols" value={String(summary.unique_symbols_seen_today)} />
+          <StatBox label="Open Pos." value={String(summary.open_positions_current)} />
+          <StatBox label="Closed Trades" value={String(summary.closed_trades_today)} />
+          <StatBox
+            label="Realized P&L"
+            value={summary.realized_pnl_today != null ? fmtUSD(summary.realized_pnl_today) : "—"}
+            cls={summary.realized_pnl_today != null ? pnlClass(summary.realized_pnl_today) : ""}
+          />
+        </div>
+        {(summary.win_rate_today != null || summary.profit_factor_today != null) && (
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+            <StatBox
+              label="Win Rate Today"
+              value={summary.win_rate_today != null ? `${fmt(summary.win_rate_today)}%` : "—"}
+              cls={summary.win_rate_today != null ? (summary.win_rate_today >= 50 ? "text-green-400" : "text-yellow-400") : ""}
+            />
+            <StatBox
+              label="Profit Factor Today"
+              value={summary.profit_factor_today != null ? fmt(summary.profit_factor_today) : "—"}
+              cls={summary.profit_factor_today != null ? (summary.profit_factor_today >= 1 ? "text-green-400" : "text-red-400") : ""}
+            />
+            <StatBox label="First Tick" value={summary.first_tick_at ? utcShort(summary.first_tick_at) : "—"} />
+            <StatBox label="Last Tick" value={summary.last_tick_at ? utcShort(summary.last_tick_at) : "—"} />
+          </div>
+        )}
+        {summary.notes.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {summary.notes.map((n, i) => (
+              <p key={i} className="text-xs text-blue-400">ℹ {n}</p>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Rejections + Catalysts */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Top Rejection Reasons Today</h3>
+          {top_rejections.length === 0
+            ? <p className="text-gray-500 text-xs">No rejection data today.</p>
+            : (
+              <table className="text-xs w-full">
+                <thead><tr className="text-gray-500 border-b border-gray-700">
+                  <th className="pb-1 text-left font-medium">Reason</th>
+                  <th className="pb-1 text-right font-medium">Count</th>
+                </tr></thead>
+                <tbody>
+                  {top_rejections.map((r, i) => (
+                    <tr key={i} className="border-b border-gray-800">
+                      <td className="py-1 text-gray-300 max-w-xs truncate">{r.reason}</td>
+                      <td className="py-1 text-right font-mono text-white">{r.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Catalyst Breakdown Today</h3>
+          {catalysts.length === 0
+            ? <p className="text-gray-500 text-xs">No catalyst data today.</p>
+            : (
+              <table className="text-xs w-full">
+                <thead><tr className="text-gray-500 border-b border-gray-700">
+                  <th className="pb-1 text-left font-medium">Type</th>
+                  <th className="pb-1 text-right font-medium">Candidates</th>
+                  <th className="pb-1 text-right font-medium">Entries</th>
+                  <th className="pb-1 text-right font-medium">Exits</th>
+                </tr></thead>
+                <tbody>
+                  {catalysts.map((c) => (
+                    <tr key={c.type} className="border-b border-gray-800">
+                      <td className="py-1 text-blue-300">{c.type}</td>
+                      <td className="py-1 text-right font-mono">{c.candidate_count}</td>
+                      <td className="py-1 text-right font-mono text-green-400">{c.entries}</td>
+                      <td className="py-1 text-right font-mono">{c.exits}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+        </div>
+      </div>
+
+      {/* Symbol table */}
+      {symbols.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">
+            Symbols Seen Today ({symbols.length})
+            <a
+              href="/api/journal/today/report.csv"
+              className="ml-2 text-xs text-blue-400 hover:text-blue-300"
+              download
+            >
+              ↓ CSV
+            </a>
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left">
+              <thead className="text-gray-400 border-b border-gray-700">
+                <tr>
+                  {["Symbol","Candidates","Entries","Exits","Avg Score","Last Seen"].map((h) => (
+                    <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {symbols.map((sym) => (
+                  <tr key={sym.symbol} className="border-b border-gray-800 hover:bg-gray-800">
+                    <td className="py-1.5 pr-4 font-semibold text-yellow-300">{sym.symbol}</td>
+                    <td className="py-1.5 pr-4 font-mono">{sym.candidate_count}</td>
+                    <td className={`py-1.5 pr-4 font-mono ${sym.entries > 0 ? "text-green-400" : "text-gray-500"}`}>{sym.entries}</td>
+                    <td className="py-1.5 pr-4 font-mono">{sym.exits}</td>
+                    <td className="py-1.5 pr-4 font-mono">{sym.avg_score != null ? fmt(sym.avg_score, 1) : "—"}</td>
+                    <td className="py-1.5 pr-4 text-gray-400 text-xs">{utcShort(sym.last_seen_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Latest ticks */}
+      {latest_ticks.length > 0 && (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">
+            Latest Ticks Today ({latest_ticks.length} shown)
+          </h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs text-left">
+              <thead className="text-gray-400 border-b border-gray-700">
+                <tr>
+                  {["Time","Symbols","Entries","Exits","Errors","Cash","P&L"].map((h) => (
+                    <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {latest_ticks.map((t, i) => (
+                  <tr key={i} className="border-b border-gray-800 hover:bg-gray-800">
+                    <td className="py-1.5 pr-4 font-mono text-gray-400 whitespace-nowrap">{utcShort(t.started_at)}</td>
+                    <td className="py-1.5 pr-4 font-mono">{t.symbols_evaluated}</td>
+                    <td className={`py-1.5 pr-4 font-mono ${t.entries_made > 0 ? "text-green-400" : "text-gray-500"}`}>{t.entries_made}</td>
+                    <td className="py-1.5 pr-4 font-mono">{t.exits_made}</td>
+                    <td className={`py-1.5 pr-4 font-mono ${t.errors_count > 0 ? "text-yellow-400" : "text-gray-500"}`}>{t.errors_count}</td>
+                    <td className="py-1.5 pr-4 font-mono">{t.account_cash != null ? `$${fmt(t.account_cash)}` : "—"}</td>
+                    <td className={`py-1.5 pr-4 font-mono ${t.total_pnl != null ? pnlClass(t.total_pnl) : ""}`}>{t.total_pnl != null ? fmtUSD(t.total_pnl) : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [journal, setJournal] = useState<JournalData | null>(null);
+  const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
+  const [todayReport, setTodayReport] = useState<TodayReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState("");
   const [actionMsg, setActionMsg] = useState("");
   const [lastRefresh, setLastRefresh] = useState("");
 
   const refresh = useCallback(async () => {
-    const [data, jdata] = await Promise.all([fetchDashboard(), fetchJournal()]);
+    const [data, jdata, mdata, tdata] = await Promise.all([
+      fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(),
+    ]);
     setDashboard(data);
     setJournal(jdata);
+    setMonitoring(mdata);
+    setTodayReport(tdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -911,13 +1295,24 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2E
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2F
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
       </p>
 
       {loading && <p className="text-gray-400 animate-pulse">Loading…</p>}
+
+      {/* Monitoring Status */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Monitoring Status
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            backend · simulator · journal · market session
+          </span>
+        </h2>
+        <MonitoringPanel monitoring={monitoring} />
+      </section>
 
       {/* Session Readiness */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
@@ -1046,6 +1441,17 @@ export default function Home() {
           </span>
         </h2>
         <AnalyticsPanel analytics={dashboard?.analytics ?? null} />
+      </section>
+
+      {/* Today / Session Report */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Today / Session Report
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            daily journal · fake-money · no broker
+          </span>
+        </h2>
+        <TodayReportPanel report={todayReport} />
       </section>
 
       {/* Journal / History */}

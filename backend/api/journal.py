@@ -1,13 +1,16 @@
 """
 Read-only journal API endpoints for the paper simulator history.
 No auth required (read-only; no sensitive data exposed).
-No broker. No real orders. Research-only fake-money simulation.
+Research-only fake-money simulation. No live trading. No real orders.
 """
 
-from datetime import datetime
+import csv
+import io
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Query
+from fastapi.responses import Response
 
 from paper import db as _db
 from paper.journal import get_journal_status
@@ -260,4 +263,350 @@ def _row(record: Any) -> dict:
     for k, v in d.items():
         if isinstance(v, datetime):
             d[k] = v.isoformat()
+        elif hasattr(v, "__float__") and type(v).__name__ == "Decimal":
+            d[k] = float(v)
     return d
+
+
+# ── Today / session helpers ───────────────────────────────────────────────────
+
+def _today_range() -> tuple[datetime, datetime, str]:
+    """Return (today_start, today_end, date_str) using America/New_York trading date."""
+    try:
+        from zoneinfo import ZoneInfo
+        ny_tz = ZoneInfo("America/New_York")
+    except Exception:
+        ny_tz = timezone(timedelta(hours=-4))
+    now_ny = datetime.now(ny_tz)
+    today_ny = now_ny.date()
+    today_start = datetime(today_ny.year, today_ny.month, today_ny.day, tzinfo=ny_tz)
+    today_end = today_start + timedelta(days=1)
+    return today_start, today_end, today_ny.isoformat()
+
+
+def _perf_stats(pnls: list[float]) -> dict:
+    """Compute performance metrics from a list of closed-trade PnLs."""
+    if not pnls:
+        return {
+            "win_rate_today": None,
+            "average_win_today": None,
+            "average_loss_today": None,
+            "profit_factor_today": None,
+        }
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    decided = len(wins) + len(losses)
+    return {
+        "win_rate_today": round(len(wins) / decided * 100, 2) if decided > 0 else None,
+        "average_win_today": round(sum(wins) / len(wins), 4) if wins else None,
+        "average_loss_today": round(sum(losses) / len(losses), 4) if losses else None,
+        "profit_factor_today": (
+            round(sum(wins) / abs(sum(losses)), 4) if wins and losses else None
+        ),
+    }
+
+
+def _tick_age(last_tick_at_str: str | None) -> float | None:
+    if not last_tick_at_str:
+        return None
+    try:
+        lt = datetime.fromisoformat(last_tick_at_str)
+        if lt.tzinfo is None:
+            lt = lt.replace(tzinfo=timezone.utc)
+        return round((datetime.now(timezone.utc) - lt).total_seconds(), 1)
+    except Exception:
+        return None
+
+
+# ── Today endpoints ───────────────────────────────────────────────────────────
+
+@router.get("/today/summary")
+async def today_summary():
+    pool = await _db.get_pool()
+    if pool is None:
+        return _disabled()
+    today_start, today_end, date_str = _today_range()
+    try:
+        async with pool.acquire() as conn:
+            tr = await conn.fetchrow(
+                """
+                SELECT COUNT(*)::int AS total_ticks,
+                       COALESCE(SUM(symbols_evaluated),0)::int AS symbols_evaluated,
+                       COALESCE(SUM(entries_made),0)::int    AS total_entries,
+                       COALESCE(SUM(exits_made),0)::int      AS total_exits,
+                       MIN(started_at) AS first_tick_at,
+                       MAX(started_at) AS last_tick_at
+                FROM paper_ticks
+                WHERE created_at >= $1 AND created_at < $2
+                """,
+                today_start, today_end,
+            )
+            cr = await conn.fetchrow(
+                """
+                SELECT COUNT(*)::int          AS total_candidates,
+                       COUNT(DISTINCT symbol)::int AS unique_symbols
+                FROM paper_candidates
+                WHERE created_at >= $1 AND created_at < $2
+                """,
+                today_start, today_end,
+            )
+            pnl_rows = await conn.fetch(
+                """
+                SELECT pnl::float AS pnl
+                FROM paper_trades_journal
+                WHERE event = 'exit' AND pnl IS NOT NULL
+                  AND created_at >= $1 AND created_at < $2
+                """,
+                today_start, today_end,
+            )
+
+        pnls = [r["pnl"] for r in pnl_rows]
+        perf = _perf_stats(pnls)
+
+        # Live state from in-memory simulator (non-fatal if unavailable)
+        sim: dict = {}
+        try:
+            import paper.simulator as _sim
+            sim = _sim.get_status()
+        except Exception:
+            pass
+
+        from paper.journal import get_journal_status as _jst
+        js = _jst()
+        journal_healthy = js["enabled"] and js["database_connected"] and js["tables_ready"]
+
+        db_last = tr["last_tick_at"].isoformat() if tr["last_tick_at"] else None
+        live_last = sim.get("last_tick_at") or db_last
+        age = _tick_age(live_last)
+
+        notes: list[str] = []
+        if not tr["total_ticks"]:
+            notes.append("No ticks recorded today yet.")
+        if not journal_healthy:
+            notes.append("Journal unhealthy — tick data may not be persisted.")
+
+        return {
+            "trading_date": date_str,
+            "total_ticks_today": tr["total_ticks"] or 0,
+            "total_candidates_today": cr["total_candidates"] or 0,
+            "total_entries_today": tr["total_entries"] or 0,
+            "total_exits_today": tr["total_exits"] or 0,
+            "symbols_evaluated_today": tr["symbols_evaluated"] or 0,
+            "unique_symbols_seen_today": cr["unique_symbols"] or 0,
+            "open_positions_current": sim.get("open_position_count", 0),
+            "closed_trades_today": len(pnls),
+            "realized_pnl_today": round(sum(pnls), 4) if pnls else None,
+            "unrealized_pnl_current": sim.get("unrealized_pnl"),
+            "total_pnl_current": sim.get("total_pnl"),
+            "best_closed_trade_today": round(max(pnls), 4) if pnls else None,
+            "worst_closed_trade_today": round(min(pnls), 4) if pnls else None,
+            **perf,
+            "first_tick_at": tr["first_tick_at"].isoformat() if tr["first_tick_at"] else None,
+            "last_tick_at": db_last,
+            "last_tick_age_seconds": age,
+            "journal_healthy": journal_healthy,
+            "notes": notes,
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@router.get("/today/rejections")
+async def today_rejections():
+    pool = await _db.get_pool()
+    if pool is None:
+        return _disabled()
+    today_start, today_end, _ = _today_range()
+    try:
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT rejection_reason, COUNT(*)::int AS count
+                FROM paper_candidates
+                WHERE rejection_reason IS NOT NULL
+                  AND created_at >= $1 AND created_at < $2
+                GROUP BY rejection_reason
+                ORDER BY count DESC
+                LIMIT 20
+                """,
+                today_start, today_end,
+            )
+        return [{"reason": r["rejection_reason"], "count": r["count"]} for r in rows]
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@router.get("/today/catalysts")
+async def today_catalysts():
+    pool = await _db.get_pool()
+    if pool is None:
+        return _disabled()
+    today_start, today_end, _ = _today_range()
+    try:
+        async with pool.acquire() as conn:
+            cand_rows = await conn.fetch(
+                """
+                SELECT catalyst_type, COUNT(*)::int AS candidate_count
+                FROM paper_candidates
+                WHERE catalyst_type IS NOT NULL
+                  AND created_at >= $1 AND created_at < $2
+                GROUP BY catalyst_type
+                """,
+                today_start, today_end,
+            )
+            trade_rows = await conn.fetch(
+                """
+                SELECT catalyst_type,
+                       COUNT(*) FILTER (WHERE event='entry')::int AS entries,
+                       COUNT(*) FILTER (WHERE event='exit')::int  AS exits,
+                       COALESCE(SUM(pnl) FILTER (WHERE event='exit'), 0)::float AS realized_pnl
+                FROM paper_trades_journal
+                WHERE catalyst_type IS NOT NULL
+                  AND created_at >= $1 AND created_at < $2
+                GROUP BY catalyst_type
+                """,
+                today_start, today_end,
+            )
+
+        trade_map = {r["catalyst_type"]: r for r in trade_rows}
+        result = []
+        for c in cand_rows:
+            ct = c["catalyst_type"]
+            t = trade_map.get(ct)
+            result.append({
+                "type": ct,
+                "candidate_count": c["candidate_count"],
+                "entries": t["entries"] if t else 0,
+                "exits": t["exits"] if t else 0,
+                "realized_pnl": round(t["realized_pnl"], 4) if t else None,
+            })
+        result.sort(key=lambda x: x["candidate_count"], reverse=True)
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@router.get("/today/symbols")
+async def today_symbols(limit: int = Query(50, ge=1, le=200)):
+    pool = await _db.get_pool()
+    if pool is None:
+        return _disabled()
+    today_start, today_end, _ = _today_range()
+    try:
+        async with pool.acquire() as conn:
+            cand_rows = await conn.fetch(
+                """
+                SELECT symbol,
+                       COUNT(*)::int                              AS candidate_count,
+                       ROUND(AVG(total_score)::numeric, 1)::float AS avg_score,
+                       MAX(created_at)                           AS last_seen_at
+                FROM paper_candidates
+                WHERE created_at >= $1 AND created_at < $2
+                GROUP BY symbol
+                ORDER BY candidate_count DESC
+                LIMIT $3
+                """,
+                today_start, today_end, limit,
+            )
+            trade_rows = await conn.fetch(
+                """
+                SELECT symbol,
+                       COUNT(*) FILTER (WHERE event='entry')::int  AS entries,
+                       COUNT(*) FILTER (WHERE event='exit')::int   AS exits,
+                       COALESCE(SUM(pnl) FILTER (WHERE event='exit'), 0)::float AS realized_pnl
+                FROM paper_trades_journal
+                WHERE created_at >= $1 AND created_at < $2
+                GROUP BY symbol
+                """,
+                today_start, today_end,
+            )
+
+        trade_map = {r["symbol"]: r for r in trade_rows}
+        result = []
+        for c in cand_rows:
+            sym = c["symbol"]
+            t = trade_map.get(sym)
+            result.append({
+                "symbol": sym,
+                "candidate_count": c["candidate_count"],
+                "entries": t["entries"] if t else 0,
+                "exits": t["exits"] if t else 0,
+                "realized_pnl": round(t["realized_pnl"], 4) if t else None,
+                "avg_score": c["avg_score"],
+                "last_seen_at": c["last_seen_at"].isoformat() if c["last_seen_at"] else None,
+            })
+        return result
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@router.get("/today/report")
+async def today_report():
+    pool = await _db.get_pool()
+    if pool is None:
+        return _disabled()
+    today_start, today_end, date_str = _today_range()
+    try:
+        # Reuse individual endpoint logic inline for one DB connection
+        summary_resp = await today_summary()
+        rejections_resp = await today_rejections()
+        catalysts_resp = await today_catalysts()
+        symbols_resp = await today_symbols()
+
+        async with pool.acquire() as conn:
+            tick_rows = await conn.fetch(
+                """
+                SELECT tick_id, started_at, completed_at,
+                       symbols_evaluated, universe_active_count,
+                       universe_refresh_reason, entries_made, exits_made,
+                       errors_count, account_cash, account_equity,
+                       realized_pnl, unrealized_pnl, total_pnl,
+                       total_pnl_percent, created_at
+                FROM paper_ticks
+                WHERE created_at >= $1 AND created_at < $2
+                ORDER BY created_at DESC
+                LIMIT 5
+                """,
+                today_start, today_end,
+            )
+
+        return {
+            "summary": summary_resp,
+            "top_rejections": rejections_resp if isinstance(rejections_resp, list) else [],
+            "catalysts": catalysts_resp if isinstance(catalysts_resp, list) else [],
+            "symbols": symbols_resp if isinstance(symbols_resp, list) else [],
+            "latest_ticks": [_row(r) for r in tick_rows],
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@router.get("/today/report.csv")
+async def today_report_csv():
+    pool = await _db.get_pool()
+    if pool is None:
+        return Response(content="error,journal disabled or database unavailable\n", media_type="text/csv")
+    _, _, date_str = _today_range()
+    try:
+        symbols_resp = await today_symbols(limit=200)
+        if isinstance(symbols_resp, dict) and "error" in symbols_resp:
+            return Response(
+                content=f"error,{symbols_resp['error']}\n", media_type="text/csv"
+            )
+        rows = symbols_resp if isinstance(symbols_resp, list) else []
+
+        out = io.StringIO()
+        fields = ["trading_date", "symbol", "candidate_count",
+                  "entries", "exits", "realized_pnl", "avg_score", "last_seen_at"]
+        writer = csv.DictWriter(out, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        for r in rows:
+            writer.writerow({**r, "trading_date": date_str})
+
+        return Response(
+            content=out.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename=paper_today_{date_str}.csv"},
+        )
+    except Exception as exc:
+        return Response(content=f"error,{exc}\n", media_type="text/csv")
