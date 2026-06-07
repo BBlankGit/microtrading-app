@@ -213,7 +213,7 @@ async def run_tick() -> dict[str, Any]:
         result["discovery_count"] = int(_disc.get("discovered_count", 0))
         result["discovery_errors_count"] = len(_disc.get("errors") or [])
     except Exception as exc:
-        symbols = settings.paper_base_universe_list()[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
+        symbols = settings.paper_base_universe_list()[:int(_cfg("PAPER_MAX_SYMBOLS_PER_TICK"))]
         result["universe_refresh_reason"] = "error_fallback"
         result["errors"].append({"phase": "universe", "error": str(exc)})
 

@@ -486,6 +486,115 @@ PHASE_2K_H1_SOURCE_FILES = [
 ]
 
 
+# ── Phase 2K-H2: simulator fallback runtime consistency ───────────────────────
+
+async def test_simulator_fallback_uses_runtime_max_symbols():
+    """
+    When get_active_paper_universe() raises, the fallback must slice using
+    _cfg("PAPER_MAX_SYMBOLS_PER_TICK"), not bare settings.PAPER_MAX_SYMBOLS_PER_TICK.
+    """
+    import paper.runtime_config as rc
+    import paper.simulator as sim
+
+    rc._runtime_overrides.clear()
+    rc._runtime_overrides["PAPER_MAX_SYMBOLS_PER_TICK"] = 3
+
+    # Build a base universe larger than the override so the slice is observable
+    base_syms = [f"SYM{i:02d}" for i in range(20)]
+
+    async def _boom():
+        raise RuntimeError("universe unavailable")
+
+    async def _fake_snapshot(_sym):
+        return {"ticker": _sym, "last_trade_price": 10.0, "ask": 10.0, "bid": 9.9,
+                "ask_size": 100, "bid_size": 100, "change_percent": 1.0, "day_volume": 1_000_000}
+
+    async def _fake_prev(_sym):
+        return {"close": 9.9}
+
+    async def _fake_news(*_a, **_kw):
+        return {}
+
+    quality_seen: list[str] = []
+
+    def _fake_evaluate(snap, _prev):
+        quality_seen.append(snap.get("ticker", ""))
+        return {"tradable": False, "last_trade_price": 10.0, "ask": 10.0, "bid": 9.9,
+                "ask_size": 100, "bid_size": 100, "change_percent": 1.0, "volume": 1_000_000}
+
+    try:
+        with patch("paper.simulator.get_active_paper_universe", side_effect=_boom), \
+             patch("paper.simulator.settings") as mock_settings, \
+             patch("paper.simulator.polygon_client.get_ticker_snapshot", side_effect=_fake_snapshot), \
+             patch("paper.simulator.polygon_client.get_previous_close", side_effect=_fake_prev), \
+             patch("paper.simulator.collect_news_for_symbols", side_effect=_fake_news), \
+             patch("paper.simulator.evaluate_market_quality", side_effect=_fake_evaluate):
+            mock_settings.paper_base_universe_list = MagicMock(return_value=base_syms)
+            mock_settings.PAPER_MAX_SYMBOLS_PER_TICK = 999   # base value — must NOT be used
+            mock_settings.PAPER_MAX_POSITION_SIZE_USD = 1000.0
+            mock_settings.PAPER_MAX_OPEN_POSITIONS = 2
+            mock_settings.MARKET_REGIME_ENABLED = False
+
+            result = await sim.run_tick()
+
+        # Fallback should have sliced to runtime override (3), not base setting (999)
+        assert len(quality_seen) == 3, (
+            f"Fallback used {len(quality_seen)} symbols instead of runtime override 3"
+        )
+        assert result["universe_refresh_reason"] == "error_fallback"
+        assert "universe" in str(result["errors"])
+    finally:
+        rc._runtime_overrides.clear()
+
+
+# ── Position sizing runtime override test ─────────────────────────────────────
+
+def test_position_sizing_respects_runtime_percent_and_usd_cap():
+    """
+    enter_position receives min(cash * pos_pct/100, PAPER_MAX_POSITION_SIZE_USD).
+    Test both the percent path and the USD-cap path.
+    """
+    from paper.account import PaperAccount
+
+    acc = PaperAccount(starting_cash=10_000.0)
+
+    # --- Case 1: percent path (5% of 10k = 500, cap=1000 → budget=500) ---
+    pos = acc.enter_position("AAPL", entry_price=100.0,
+                             max_size_usd=500.0, catalyst_type="test")
+    assert pos is not None
+    assert abs(pos.cost_basis - 500.0) < 0.01, f"Expected cost_basis~500, got {pos.cost_basis}"
+    assert abs(pos.shares - 5.0) < 0.001, f"Expected 5 shares, got {pos.shares}"
+    acc.exit_position("AAPL", exit_price=100.0, reason="test")
+
+    # --- Case 2: USD cap path (50% of 10k = 5000, cap=1000 → budget=1000) ---
+    cash_before = acc.cash
+    pos2 = acc.enter_position("AAPL", entry_price=50.0,
+                              max_size_usd=1000.0, catalyst_type="test")
+    assert pos2 is not None
+    assert abs(pos2.cost_basis - 1000.0) < 0.01, f"Expected cost_basis~1000, got {pos2.cost_basis}"
+    assert abs(pos2.shares - 20.0) < 0.001, f"Expected 20 shares, got {pos2.shares}"
+
+
+def test_position_budget_formula():
+    """Position budget formula: min(cash * pct/100, max_usd)."""
+    import paper.runtime_config as rc
+    from core.config import settings
+
+    rc._runtime_overrides.clear()
+    rc._runtime_overrides["PAPER_POSITION_SIZE_PERCENT"] = 5.0
+
+    try:
+        cash = 10_000.0
+        pos_pct = rc.effective_value("PAPER_POSITION_SIZE_PERCENT")
+        max_usd = settings.PAPER_MAX_POSITION_SIZE_USD
+        budget = min(cash * (pos_pct / 100.0), max_usd)
+        # 5% of 10k = 500; should be ≤ max_usd
+        assert budget == min(500.0, max_usd)
+        assert pos_pct == 5.0
+    finally:
+        rc._runtime_overrides.clear()
+
+
 @pytest.mark.parametrize("rel_path", PHASE_2K_H1_SOURCE_FILES)
 def test_no_live_trading_imports(rel_path):
     path = BACKEND_ROOT / rel_path
