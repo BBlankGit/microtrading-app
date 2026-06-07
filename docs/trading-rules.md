@@ -13,6 +13,24 @@
 - No live orders are placed.
 - All execution is simulated through the paper execution layer.
 
+## Market Quality Gate
+
+Before any ticker can be evaluated by future strategy logic, it must pass the market quality gate implemented in `backend/data/market_quality.py`.
+
+The gate checks:
+- **Spread** — bid/ask spread must be within the acceptable threshold
+- **Bid/ask availability** — bid and ask must be present, non-zero, and ask > bid
+- **Trade availability** — a valid last trade price must be present and non-zero
+- **Current session volume** — day volume must meet the minimum threshold
+- **Previous-day volume** — prior session volume must meet the minimum threshold
+- **Basic price sanity** — last trade price must be greater than zero
+
+A ticker is marked `tradable: true` only when all gates pass. If any gate fails, the ticker is marked `tradable: false` and all failing reasons are returned as a list.
+
+This gate does not decide direction. It does not create trades. It is a data quality and liquidity pre-filter only.
+
+---
+
 ## Entry Requirements
 
 A position may only be evaluated for entry if ALL of the following conditions are met:

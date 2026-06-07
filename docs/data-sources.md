@@ -44,6 +44,18 @@ The API key is never logged or returned by any endpoint.
 
 ---
 
+## Phase 1C — Market Quality Gate (Implemented)
+
+The market quality gate is implemented in `backend/data/market_quality.py` and exposed via `GET /api/quality/ticker/{symbol}`.
+
+- Uses Polygon REST snapshot and previous-close endpoints only.
+- Does not require WebSocket access.
+- Evaluates spread, bid/ask validity, last trade price, current volume, and previous-day volume.
+- Returns `tradable: true/false` and a list of `rejection_reasons`.
+- Does not make buy/sell decisions.
+
+---
+
 ## V1 Sources (Full Plan)
 
 | Source | Type | Status |

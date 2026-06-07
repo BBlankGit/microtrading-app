@@ -97,6 +97,21 @@ curl -X POST http://SERVER_IP:8000/api/stream/stop
 
 ---
 
+## Verify the Stack — Phase 1C (Market Quality Gate)
+
+```bash
+# Evaluate market quality for AAPL
+curl http://SERVER_IP:8000/api/quality/ticker/AAPL
+
+# Evaluate market quality for NVDA
+curl http://SERVER_IP:8000/api/quality/ticker/NVDA
+
+# Test an invalid symbol (expects error response)
+curl http://SERVER_IP:8000/api/quality/ticker/INVALID123
+```
+
+---
+
 ## Troubleshooting — WebSocket Policy Violation
 
 If `/api/stream/start` returns or logs a Polygon 1008 policy violation, the API key/account likely does not have WebSocket subscription permission for the requested channels. REST may still work while WebSocket streaming is blocked.
