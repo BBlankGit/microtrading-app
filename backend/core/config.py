@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     REDIS_URL: str = ""
     POLYGON_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
-    TRADING_MODE: str = "paper"
+    TRADING_MODE: str = "research"
     LIVE_TRADING_ENABLED: bool = False
 
     # Security / operational

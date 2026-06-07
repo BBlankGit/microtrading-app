@@ -24,17 +24,27 @@ def redis_url_valid() -> bool:
 
 
 async def redis_ping_status() -> dict[str, Any]:
-    """Return a connectivity status dict. Never raises."""
-    if not redis_url_configured() or not redis_url_valid():
-        return {"redis_connected": False, "redis_error": "REDIS_URL is missing or invalid"}
-    r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
+    """
+    Return a connectivity status dict. Guaranteed to never raise.
+
+    aioredis.from_url() can raise for malformed URLs (e.g. non-numeric port)
+    before any I/O occurs, so client construction is inside the try block.
+    """
+    if not redis_url_configured():
+        return {"redis_connected": False, "redis_error": "REDIS_URL is not configured"}
+    r: aioredis.Redis | None = None
     try:
+        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
         await r.ping()
         return {"redis_connected": True, "redis_error": None}
     except Exception as exc:
         return {"redis_connected": False, "redis_error": str(exc)}
     finally:
-        await r.aclose()
+        if r is not None:
+            try:
+                await r.aclose()
+            except Exception:
+                pass
 
 
 def make_redis() -> aioredis.Redis:

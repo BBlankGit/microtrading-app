@@ -60,6 +60,20 @@ def test_stream_stop_401_when_token_wrong(client, monkeypatch):
     assert resp.status_code == 401
 
 
+# ── hmac.compare_digest path: near-miss tokens still rejected ───────────────
+
+def test_stream_start_401_token_off_by_one(client, monkeypatch):
+    _set_token(monkeypatch, "real-secret-token")
+    resp = client.post("/api/stream/start", headers={"Authorization": "Bearer real-secret-toke"})
+    assert resp.status_code == 401
+
+
+def test_stream_start_401_token_with_extra_char(client, monkeypatch):
+    _set_token(monkeypatch, "real-secret-token")
+    resp = client.post("/api/stream/start", headers={"Authorization": "Bearer real-secret-tokenX"})
+    assert resp.status_code == 401
+
+
 # ── Read-only endpoints are unprotected ─────────────────────────────────────
 
 def test_stream_status_no_auth_required(client):
