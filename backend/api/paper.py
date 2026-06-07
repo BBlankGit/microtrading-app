@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 
 from api.dependencies import require_admin_token
 from paper import simulator
+from paper.analytics import get_trade_analytics
 from paper.universe import build_dynamic_universe, get_active_paper_universe, get_cached_universe
 
 router = APIRouter(prefix="/api/paper")
@@ -32,14 +33,32 @@ async def paper_universe_refresh(_: None = Depends(require_admin_token)):
     return await build_dynamic_universe(force_refresh=True)
 
 
+@router.get("/analytics")
+async def paper_analytics():
+    status = simulator.get_status()
+    return get_trade_analytics(
+        status,
+        simulator.get_positions(),
+        simulator.get_trades(),
+        simulator.get_state()["last_candidates"],
+        get_cached_universe(),
+    )
+
+
 @router.get("/dashboard")
 async def paper_dashboard():
+    status = simulator.get_status()
+    positions = simulator.get_positions()
+    trades = simulator.get_trades()
+    candidates = simulator.get_state()["last_candidates"]
+    universe = get_cached_universe()
     return {
-        "status": simulator.get_status(),
-        "positions": simulator.get_positions(),
-        "trades": simulator.get_trades(),
-        "last_candidates": simulator.get_state()["last_candidates"],
-        "universe": get_cached_universe(),
+        "status": status,
+        "positions": positions,
+        "trades": trades,
+        "last_candidates": candidates,
+        "universe": universe,
+        "analytics": get_trade_analytics(status, positions, trades, candidates, universe),
         "disclaimer": (
             "Research-only fake-money simulation. "
             "No broker. No live trading. No real orders."

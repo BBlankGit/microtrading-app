@@ -83,6 +83,87 @@ interface Candidate {
   decision_reason: string | null;
 }
 
+// ── Analytics types ───────────────────────────────────────────────────────────
+
+interface MarketSession {
+  timezone: string;
+  regular_open: string;
+  regular_close: string;
+  is_regular_session_now: boolean;
+  note: string;
+}
+
+interface SessionInfo {
+  running: boolean;
+  last_tick_at: string | null;
+  daily_trade_count: number;
+  max_trades_per_day: number;
+  open_position_count: number;
+  closed_trade_count: number;
+}
+
+interface PnLInfo {
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  total_pnl_percent: number;
+  best_trade_pnl: number | null;
+  worst_trade_pnl: number | null;
+}
+
+interface PerformanceInfo {
+  wins: number;
+  losses: number;
+  breakeven: number;
+  win_rate_percent: number | null;
+  average_win: number | null;
+  average_loss: number | null;
+  profit_factor: number | null;
+  average_hold_minutes: number | null;
+}
+
+interface CandidateFunnelInfo {
+  total_candidates: number;
+  eligible: number;
+  entered: number;
+  score_rejected: number;
+  hard_rejected: number;
+  blocked: number;
+  entry_failed: number;
+}
+
+interface ScoreDistributionInfo {
+  above_threshold: number;
+  score_80_plus: number;
+  score_70_to_79: number;
+  score_50_to_69: number;
+  below_50: number;
+  average_score: number | null;
+}
+
+interface RejectionItem { reason: string; count: number; }
+interface CatalystTypeItem { type: string; count: number; }
+
+interface UniverseHealthInfo {
+  active_count: number | null;
+  max_symbols_per_tick: number | null;
+  refresh_reason: string;
+  error_count: number;
+  top_errors: Array<{ symbol?: string; error: string }>;
+}
+
+interface Analytics {
+  session: SessionInfo;
+  pnl: PnLInfo;
+  performance: PerformanceInfo;
+  candidate_funnel: CandidateFunnelInfo;
+  score_distribution: ScoreDistributionInfo;
+  rejections: { top_rejection_reasons: RejectionItem[] };
+  catalysts: { by_type: CatalystTypeItem[] };
+  universe_health: UniverseHealthInfo;
+  market_session: MarketSession;
+}
+
 interface UniverseInfo {
   base_symbols: string[];
   dynamic_symbols: string[];
@@ -100,6 +181,7 @@ interface Dashboard {
   trades: Trade[];
   last_candidates: Candidate[];
   universe: UniverseInfo | null;
+  analytics: Analytics | null;
   disclaimer: string;
 }
 
@@ -254,7 +336,7 @@ function scoreColor(score: number | null, threshold: number | null): string {
 
 function fmtComponents(c: ScoreComponents | null): string {
   if (!c) return "—";
-  return `Q:${c.market_quality_score} S:${c.spread_score} M:${c.momentum_score} V:${c.volume_score} C:${c.catalyst_score} R:${c.risk_penalty}`;
+  return `Qual:${c.market_quality_score} Sprd:${c.spread_score} Mom:${c.momentum_score} Vol:${c.volume_score} Cat:${c.catalyst_score} Risk:${c.risk_penalty}`;
 }
 
 function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
@@ -262,6 +344,9 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
     return <p className="text-gray-500 text-sm">No tick data yet. Run ⚡ Tick to see candidates.</p>;
   return (
     <div className="overflow-x-auto">
+      <p className="text-xs text-gray-600 mb-2">
+        Components: Qual=Quality(max 25) · Sprd=Spread(15) · Mom=Momentum(20) · Vol=Volume(15) · Cat=Catalyst(20) · Risk=penalty(−20 max)
+      </p>
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
@@ -299,6 +384,188 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
           ))}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+// ── Analytics panel ───────────────────────────────────────────────────────────
+
+function SessionReadiness({
+  analytics,
+  status,
+}: {
+  analytics: Analytics | null;
+  status: PaperStatus | undefined;
+}) {
+  const ms = analytics?.market_session;
+  const sess = analytics?.session;
+  const uni = analytics?.universe_health;
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-2 items-center">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+          sess?.running
+            ? "bg-green-900 text-green-300 border-green-700"
+            : "bg-gray-800 text-gray-400 border-gray-600"
+        }`}>
+          Simulator: {sess?.running ? "● RUNNING" : "○ STOPPED"}
+        </span>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+          ms?.is_regular_session_now
+            ? "bg-blue-900 text-blue-300 border-blue-700"
+            : "bg-gray-800 text-gray-500 border-gray-600"
+        }`}>
+          Market: {ms?.is_regular_session_now ? "● OPEN" : "○ CLOSED"}
+        </span>
+        <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
+          Mode: fake-money · no broker · no real orders
+        </span>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatBox label="Last Tick" value={sess?.last_tick_at ? utcShort(sess.last_tick_at) : "—"} />
+        <StatBox label="Active Universe" value={uni?.active_count != null ? String(uni.active_count) : "—"} />
+        <StatBox
+          label="Universe Errors"
+          value={String(uni?.error_count ?? 0)}
+          cls={(uni?.error_count ?? 0) > 0 ? "text-yellow-400" : "text-green-400"}
+        />
+        <StatBox label="Market Session" value={`${ms?.regular_open ?? "—"} – ${ms?.regular_close ?? "—"} ET`} />
+      </div>
+      {ms?.note && <p className="text-xs text-gray-600">{ms.note}</p>}
+    </div>
+  );
+}
+
+function AnalyticsPanel({ analytics }: { analytics: Analytics | null }) {
+  if (!analytics) return <p className="text-gray-500 text-sm">No analytics yet. Run ⚡ Tick first.</p>;
+
+  const p = analytics.performance;
+  const pnl = analytics.pnl;
+  const funnel = analytics.candidate_funnel;
+  const dist = analytics.score_distribution;
+
+  return (
+    <div className="space-y-6">
+
+      {/* P&L */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-2">P&L</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <StatBox label="Total P&L" value={fmtUSD(pnl.total_pnl)} cls={pnlClass(pnl.total_pnl)} />
+          <StatBox label="Total P&L %" value={`${fmt(pnl.total_pnl_percent)}%`} cls={pnlClass(pnl.total_pnl)} />
+          <StatBox label="Realized" value={fmtUSD(pnl.realized_pnl)} cls={pnlClass(pnl.realized_pnl)} />
+          <StatBox label="Unrealized" value={fmtUSD(pnl.unrealized_pnl)} cls={pnlClass(pnl.unrealized_pnl)} />
+          <StatBox label="Best Trade" value={pnl.best_trade_pnl != null ? fmtUSD(pnl.best_trade_pnl) : "—"} cls={pnl.best_trade_pnl != null ? pnlClass(pnl.best_trade_pnl) : ""} />
+          <StatBox label="Worst Trade" value={pnl.worst_trade_pnl != null ? fmtUSD(pnl.worst_trade_pnl) : "—"} cls={pnl.worst_trade_pnl != null ? pnlClass(pnl.worst_trade_pnl) : ""} />
+        </div>
+      </div>
+
+      {/* Performance */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-2">Performance</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          <StatBox label="Wins" value={String(p.wins)} cls="text-green-400" />
+          <StatBox label="Losses" value={String(p.losses)} cls="text-red-400" />
+          <StatBox label="Breakeven" value={String(p.breakeven)} />
+          <StatBox label="Win Rate" value={p.win_rate_percent != null ? `${fmt(p.win_rate_percent)}%` : "—"} cls={p.win_rate_percent != null ? (p.win_rate_percent >= 50 ? "text-green-400" : "text-yellow-400") : ""} />
+          <StatBox label="Avg Win" value={p.average_win != null ? fmtUSD(p.average_win) : "—"} cls="text-green-400" />
+          <StatBox label="Avg Loss" value={p.average_loss != null ? fmtUSD(p.average_loss) : "—"} cls="text-red-400" />
+          <StatBox label="Profit Factor" value={p.profit_factor != null ? fmt(p.profit_factor) : "—"} cls={p.profit_factor != null ? (p.profit_factor >= 1 ? "text-green-400" : "text-red-400") : ""} />
+          <StatBox label="Avg Hold" value={p.average_hold_minutes != null ? `${fmt(p.average_hold_minutes)}m` : "—"} />
+        </div>
+      </div>
+
+      {/* Candidate funnel */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-2">Candidate Funnel (last tick)</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          <StatBox label="Total" value={String(funnel.total_candidates)} />
+          <StatBox label="Eligible" value={String(funnel.eligible)} cls="text-green-400" />
+          <StatBox label="Entered" value={String(funnel.entered)} cls="text-blue-400" />
+          <StatBox label="Score Rejected" value={String(funnel.score_rejected)} cls="text-yellow-400" />
+          <StatBox label="Hard Rejected" value={String(funnel.hard_rejected)} cls="text-red-400" />
+          <StatBox label="Blocked" value={String(funnel.blocked)} cls="text-gray-400" />
+          <StatBox label="Entry Failed" value={String(funnel.entry_failed)} cls="text-orange-400" />
+        </div>
+      </div>
+
+      {/* Score distribution */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-2">Score Distribution (last tick)</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <StatBox label="Above Threshold" value={String(dist.above_threshold)} cls="text-green-400" />
+          <StatBox label="Score 80+" value={String(dist.score_80_plus)} cls="text-green-400" />
+          <StatBox label="Score 70–79" value={String(dist.score_70_to_79)} cls="text-yellow-400" />
+          <StatBox label="Score 50–69" value={String(dist.score_50_to_69)} cls="text-orange-400" />
+          <StatBox label="Below 50" value={String(dist.below_50)} cls="text-red-400" />
+          <StatBox label="Avg Score" value={dist.average_score != null ? fmt(dist.average_score) : "—"} />
+        </div>
+      </div>
+
+      {/* Catalyst breakdown + rejections side by side */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Catalyst Breakdown</h3>
+          {analytics.catalysts.by_type.length === 0
+            ? <p className="text-gray-500 text-xs">No catalyst data.</p>
+            : (
+              <table className="text-xs w-full">
+                <thead><tr className="text-gray-500 border-b border-gray-700">
+                  <th className="pb-1 text-left font-medium">Type</th>
+                  <th className="pb-1 text-right font-medium">Count</th>
+                </tr></thead>
+                <tbody>
+                  {analytics.catalysts.by_type.map((r) => (
+                    <tr key={r.type} className="border-b border-gray-800">
+                      <td className="py-1 text-blue-300">{r.type}</td>
+                      <td className="py-1 text-right font-mono text-white">{r.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+        </div>
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Top Rejection Reasons</h3>
+          {analytics.rejections.top_rejection_reasons.length === 0
+            ? <p className="text-gray-500 text-xs">No rejections recorded.</p>
+            : (
+              <table className="text-xs w-full">
+                <thead><tr className="text-gray-500 border-b border-gray-700">
+                  <th className="pb-1 text-left font-medium">Reason</th>
+                  <th className="pb-1 text-right font-medium">Count</th>
+                </tr></thead>
+                <tbody>
+                  {analytics.rejections.top_rejection_reasons.map((r, i) => (
+                    <tr key={i} className="border-b border-gray-800">
+                      <td className="py-1 text-gray-300 max-w-xs truncate">{r.reason}</td>
+                      <td className="py-1 text-right font-mono text-white">{r.count}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+        </div>
+      </div>
+
+      {/* Universe health */}
+      <div>
+        <h3 className="text-sm font-semibold text-gray-300 mb-2">Universe Health</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-2">
+          <StatBox label="Active Count" value={analytics.universe_health.active_count != null ? String(analytics.universe_health.active_count) : "—"} />
+          <StatBox label="Max / Tick" value={analytics.universe_health.max_symbols_per_tick != null ? String(analytics.universe_health.max_symbols_per_tick) : "—"} />
+          <StatBox label="Refresh Reason" value={analytics.universe_health.refresh_reason || "—"} />
+          <StatBox label="Errors" value={String(analytics.universe_health.error_count)} cls={analytics.universe_health.error_count > 0 ? "text-yellow-400" : "text-green-400"} />
+        </div>
+        {analytics.universe_health.top_errors.length > 0 && (
+          <ul className="text-xs font-mono text-red-400 space-y-0.5">
+            {analytics.universe_health.top_errors.map((e, i) => (
+              <li key={i}>{e.symbol ? `${e.symbol}: ` : ""}{e.error}</li>
+            ))}
+          </ul>
+        )}
+      </div>
+
     </div>
   );
 }
@@ -413,6 +680,12 @@ export default function Home() {
 
       {loading && <p className="text-gray-400 animate-pulse">Loading…</p>}
 
+      {/* Session Readiness */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">Session Readiness</h2>
+        <SessionReadiness analytics={dashboard?.analytics ?? null} status={dashboard?.status} />
+      </section>
+
       {/* Account stats */}
       {s && (
         <section className="mb-6">
@@ -523,6 +796,17 @@ export default function Home() {
           </span>
         </h2>
         <UniverseSection universe={dashboard?.universe ?? null} />
+      </section>
+
+      {/* Analytics */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Analytics
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            fake-money · no broker · research-only
+          </span>
+        </h2>
+        <AnalyticsPanel analytics={dashboard?.analytics ?? null} />
       </section>
 
       <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4 space-y-1">
