@@ -13,6 +13,17 @@
 - No live orders are placed.
 - All execution is simulated through the paper execution layer.
 
+## Tradable Universe
+
+The tradable universe builder is implemented in `backend/data/universe.py`. It is a batch application of the market quality gate across a configured list of symbols.
+
+- A ticker must pass the universe builder before future strategy or catalyst logic can consider it.
+- Universe classification checks each symbol individually using the market quality gate (spread, bid/ask, volume, last trade price).
+- If a single symbol fails or errors, the remaining symbols continue to be evaluated.
+- Universe classification does not decide direction. It does not create trades.
+
+---
+
 ## Market Quality Gate
 
 Before any ticker can be evaluated by future strategy logic, it must pass the market quality gate implemented in `backend/data/market_quality.py`.

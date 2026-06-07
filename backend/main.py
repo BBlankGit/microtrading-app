@@ -5,6 +5,7 @@ from api.data_status import router as data_status_router
 from api.market import router as market_router
 from api.quality import router as quality_router
 from api.stream import router as stream_router
+from api.universe import router as universe_router
 
 app = FastAPI(
     title="Microtrading App",
@@ -23,6 +24,7 @@ app.include_router(data_status_router)
 app.include_router(market_router)
 app.include_router(quality_router)
 app.include_router(stream_router)
+app.include_router(universe_router)
 
 
 @app.get("/health")

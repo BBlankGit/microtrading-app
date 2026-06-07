@@ -44,6 +44,21 @@ The API key is never logged or returned by any endpoint.
 
 ---
 
+## Phase 1D — Tradable Universe Builder (Implemented)
+
+The universe builder is implemented in `backend/data/universe.py` and exposed via:
+
+- `GET /api/universe/default` — evaluates the default 10-symbol universe
+- `GET /api/universe/check?symbols=A,B,C` — evaluates a custom symbol list (max 25)
+
+- Uses Polygon REST snapshot and previous-close endpoints only.
+- Uses the Phase 1C market quality gate for each symbol.
+- Does not require WebSocket access.
+- Symbols that fail API calls or validation appear in `errors` without stopping the batch.
+- Latest result is cached in Redis under `universe:latest` (TTL 300s, best-effort).
+
+---
+
 ## Phase 1C — Market Quality Gate (Implemented)
 
 The market quality gate is implemented in `backend/data/market_quality.py` and exposed via `GET /api/quality/ticker/{symbol}`.

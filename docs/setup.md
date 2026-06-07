@@ -97,6 +97,21 @@ curl -X POST http://SERVER_IP:8000/api/stream/stop
 
 ---
 
+## Verify the Stack — Phase 1D (Tradable Universe Builder)
+
+```bash
+# Evaluate the full default universe (AAPL, MSFT, NVDA, TSLA, AMD, META, AMZN, GOOGL, PLTR, SOFI)
+curl http://SERVER_IP:8000/api/universe/default
+
+# Evaluate a custom symbol list
+curl "http://SERVER_IP:8000/api/universe/check?symbols=AAPL,NVDA,SOFI"
+
+# Mixed valid/invalid symbols — invalid symbols appear in errors, valid ones are evaluated
+curl "http://SERVER_IP:8000/api/universe/check?symbols=AAPL,INVALID123,NVDA"
+```
+
+---
+
 ## Verify the Stack — Phase 1C (Market Quality Gate)
 
 ```bash
