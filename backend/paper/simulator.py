@@ -19,6 +19,7 @@ from data.market_quality import evaluate_market_quality
 from data.polygon_client import PolygonError
 from data.redis_client import make_redis
 from paper.account import PaperAccount
+from paper.scoring import score_candidate
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +178,9 @@ async def run_tick() -> dict[str, Any]:
         "tick_at": tick_start.isoformat(),
         "symbols_evaluated": 0,
         "exits": [],
+        "exits_made": 0,
         "entries": [],
+        "entries_made": 0,
         "candidates": [],
         "errors": [],
     }
@@ -271,27 +274,31 @@ async def run_tick() -> dict[str, Any]:
             if not q:
                 continue
             cats = catalyst_map.get(sym, [])
-            rejection: str | None = None
 
+            # Score every candidate (transparent, always computed)
+            scoring = score_candidate(sym, q, cats)
+
+            # Hard safety gates (checked before score)
+            hard_rejection: str | None = None
             if not q.get("tradable"):
                 reasons = q.get("rejection_reasons", [])
-                rejection = f"not tradable: {reasons[0] if reasons else 'failed quality gate'}"
+                hard_rejection = f"not tradable: {reasons[0] if reasons else 'failed quality gate'}"
             elif (q.get("spread_percent") or 999) > 0.50:
-                rejection = f"spread {q.get('spread_percent')}% > 0.50%"
+                hard_rejection = f"spread {q.get('spread_percent')}% > 0.50%"
             elif (q.get("change_percent") or 0) <= 0:
-                rejection = f"change_percent {q.get('change_percent')} not positive"
+                hard_rejection = f"change_percent {q.get('change_percent')} not positive"
             elif q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < 0.8:
-                rejection = f"volume_ratio {q.get('volume_ratio')} < 0.8"
+                hard_rejection = f"volume_ratio {q.get('volume_ratio')} < 0.8"
             elif not cats:
-                rejection = "no accepted catalysts"
+                hard_rejection = "no accepted catalysts"
             elif all(c.get("classified_event_type") == "generic_news" for c in cats):
-                rejection = "only generic_news catalysts"
+                hard_rejection = "only generic_news catalysts"
 
             cat_type = cats[0].get("classified_event_type") if cats else None
             candidate: dict[str, Any] = {
                 "symbol": sym,
-                "eligible": rejection is None,
-                "rejection_reason": rejection,
+                "eligible": hard_rejection is None and scoring["score_pass"],
+                "rejection_reason": hard_rejection,
                 "action": None,
                 "quality_tradable": q.get("tradable"),
                 "spread_percent": q.get("spread_percent"),
@@ -299,9 +306,23 @@ async def run_tick() -> dict[str, Any]:
                 "volume_ratio": q.get("volume_ratio"),
                 "catalyst_count": len(cats),
                 "catalyst_type": cat_type,
+                # Scoring fields
+                "total_score": scoring["total_score"],
+                "score_threshold": scoring["score_threshold"],
+                "score_pass": scoring["score_pass"],
+                "score_components": scoring["components"],
+                "positive_reasons": scoring["positive_reasons"],
+                "negative_reasons": scoring["negative_reasons"],
+                "decision_reason": scoring["decision_reason"],
             }
 
-            if rejection is None:
+            if hard_rejection is not None:
+                # Hard gate failed — don't attempt entry
+                pass
+            elif not scoring["score_pass"]:
+                candidate["action"] = "score_rejected"
+                candidate["rejection_reason"] = scoring["decision_reason"]
+            else:
                 can, block = _account.can_enter(
                     sym,
                     settings.PAPER_MAX_POSITIONS,
@@ -323,6 +344,7 @@ async def run_tick() -> dict[str, Any]:
                                 "shares": round(pos.shares, 6),
                                 "cost_basis": round(pos.cost_basis, 4),
                                 "catalyst_type": cat_type,
+                                "total_score": scoring["total_score"],
                             })
                         else:
                             candidate["action"] = "entry_failed"
@@ -334,6 +356,8 @@ async def run_tick() -> dict[str, Any]:
             result["candidates"].append(candidate)
 
     # ── 5. Persist and update state ───────────────────────────────────────────
+    result["exits_made"] = len(result["exits"])
+    result["entries_made"] = len(result["entries"])
     await _save_state()
     _state["last_tick_at"] = tick_start.isoformat()
     _state["last_error"] = None

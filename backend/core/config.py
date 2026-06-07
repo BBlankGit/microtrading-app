@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     PAPER_MAX_HOLD_MINUTES: int = 15
     PAPER_POLL_INTERVAL_SECONDS: int = 60
     PAPER_DEFAULT_UNIVERSE: str = "AAPL,MSFT,NVDA,TSLA,AMD,META,AMZN,GOOGL,PLTR,SOFI"
+    PAPER_ENTRY_SCORE_THRESHOLD: int = 70
 
     def paper_universe_list(self) -> list[str]:
         return [s.strip().upper() for s in self.PAPER_DEFAULT_UNIVERSE.split(",") if s.strip()]

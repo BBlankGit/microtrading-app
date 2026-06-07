@@ -117,6 +117,48 @@ All state is in-memory only. State is saved to Redis as best-effort JSON on each
 
 ---
 
+## Phase 2B — Candidate Scoring Layer
+
+**Fake-money research simulation only. No broker. No real orders. No AI/LLM calls.**
+
+Each tick, every symbol in the universe receives a transparent deterministic score (0–100).
+Scoring is purely rule-based — no AI, no ML. The score is always computed and returned in
+the candidate record for observability, even when hard gates reject the symbol first.
+
+### Score components
+
+| Component | Max | Condition |
+|---|---|---|
+| `market_quality_score` | 25 | `tradable: true` passes quality gate |
+| `spread_score` | 15 | ≤0.05% → 15; ≤0.15% → 10; ≤0.30% → 5; else 0 |
+| `momentum_score` | 20 | ≥2.0% → 20; ≥1.0% → 15; >0% → 10; else 0 |
+| `volume_score` | 15 | ≥1.5x → 15; ≥1.0x → 10; ≥0.8x → 5; else 0 |
+| `catalyst_score` | 20 | High-value event type → 20; mid-value → 12; generic_news only → 5; none → 0 |
+| `risk_penalty` | −20 | −10 if spread >0.50%; −10 if change_percent <0; −10 if untradable; −5 if vol_ratio <0.8 |
+
+**Total** = sum of components, clamped to [0, 100].
+
+### High-value catalyst event types
+
+`earnings`, `guidance`, `analyst_rating`, `contract_award`, `partnership`,
+`product_launch`, `fda_regulatory`, `m_and_a`
+
+### Mid-value catalyst event types
+
+`management_change`, `financing`, `legal_regulatory`, `sector_news`
+
+### Entry score gate (configurable via `.env`)
+
+| Setting | Default | Description |
+|---|---|---|
+| `PAPER_ENTRY_SCORE_THRESHOLD` | 70 | Minimum composite score required to attempt entry |
+
+A symbol that passes all hard eligibility gates (see Phase 2A) but scores below the
+threshold is marked `action: score_rejected` and does not enter. A symbol that exceeds
+the threshold proceeds to the account capacity check (`can_enter`).
+
+---
+
 ## Position Lifecycle
 
 ```

@@ -57,6 +57,15 @@ interface Trade {
   exit_time: string;
 }
 
+interface ScoreComponents {
+  market_quality_score: number;
+  spread_score: number;
+  momentum_score: number;
+  volume_score: number;
+  catalyst_score: number;
+  risk_penalty: number;
+}
+
 interface Candidate {
   symbol: string;
   eligible: boolean;
@@ -67,6 +76,11 @@ interface Candidate {
   change_percent: number | null;
   catalyst_type: string | null;
   catalyst_count: number;
+  total_score: number | null;
+  score_threshold: number | null;
+  score_pass: boolean | null;
+  score_components: ScoreComponents | null;
+  decision_reason: string | null;
 }
 
 interface Dashboard {
@@ -219,6 +233,18 @@ function TradesTable({ trades }: { trades: Trade[] }) {
   );
 }
 
+function scoreColor(score: number | null, threshold: number | null): string {
+  if (score == null) return "text-gray-400";
+  if (threshold != null && score >= threshold) return "text-green-400";
+  if (score >= 50) return "text-yellow-400";
+  return "text-red-400";
+}
+
+function fmtComponents(c: ScoreComponents | null): string {
+  if (!c) return "—";
+  return `Q:${c.market_quality_score} S:${c.spread_score} M:${c.momentum_score} V:${c.volume_score} C:${c.catalyst_score} R:${c.risk_penalty}`;
+}
+
 function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
   if (candidates.length === 0)
     return <p className="text-gray-500 text-sm">No tick data yet. Run ⚡ Tick to see candidates.</p>;
@@ -227,7 +253,7 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
-            {["Symbol","✓","Action","Spread%","Chg%","Cats","Type","Rejection"].map((h) => (
+            {["Symbol","✓","Action","Score","Components","Spread%","Chg%","Cats","Type","Decision / Rejection"].map((h) => (
               <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
             ))}
           </tr>
@@ -241,14 +267,22 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                   ? <span className="text-green-400 font-bold">✓</span>
                   : <span className="text-red-400 font-bold">✗</span>}
               </td>
-              <td className="py-2 pr-4 text-blue-300">{c.action || "—"}</td>
+              <td className="py-2 pr-4 text-blue-300 whitespace-nowrap">{c.action || "—"}</td>
+              <td className={`py-2 pr-4 font-mono font-semibold whitespace-nowrap ${scoreColor(c.total_score, c.score_threshold)}`}>
+                {c.total_score != null ? `${c.total_score} / ${c.score_threshold ?? "?"}` : "—"}
+              </td>
+              <td className="py-2 pr-4 font-mono text-xs text-gray-400 whitespace-nowrap">
+                {fmtComponents(c.score_components)}
+              </td>
               <td className="py-2 pr-4 font-mono">{fmt(c.spread_percent, 3)}</td>
               <td className={`py-2 pr-4 font-mono ${c.change_percent != null ? pnlClass(c.change_percent) : ""}`}>
                 {fmt(c.change_percent)}%
               </td>
               <td className="py-2 pr-4 font-mono">{c.catalyst_count}</td>
               <td className="py-2 pr-4 text-blue-300">{c.catalyst_type || "—"}</td>
-              <td className="py-2 pr-4 text-gray-400 text-xs max-w-xs truncate">{c.rejection_reason || "—"}</td>
+              <td className="py-2 pr-4 text-gray-400 text-xs max-w-xs truncate">
+                {c.decision_reason || c.rejection_reason || "—"}
+              </td>
             </tr>
           ))}
         </tbody>

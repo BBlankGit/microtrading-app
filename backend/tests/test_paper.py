@@ -625,3 +625,202 @@ async def test_reset_while_running_stops_loop_and_clears_state(reset_simulator_s
     assert sim._state["running"] is False
     assert sim._account.positions == {}
     assert sim._account.cash == sim._account.starting_cash
+
+
+# ── scoring.py unit tests ─────────────────────────────────────────────────────
+
+from paper.scoring import score_candidate
+
+
+def _full_quality(
+    tradable: bool = True,
+    spread_pct: float = 0.03,
+    change_pct: float = 2.5,
+    vol_ratio: float = 1.6,
+) -> dict:
+    return {
+        "tradable": tradable,
+        "spread_percent": spread_pct,
+        "change_percent": change_pct,
+        "volume_ratio": vol_ratio,
+        "rejection_reasons": [] if tradable else ["low volume"],
+    }
+
+
+def test_scoring_high_quality_strong_catalyst_passes():
+    """Tradable + tight spread + strong momentum + high-value catalyst => score >= 70."""
+    q = _full_quality()
+    cats = [{"classified_event_type": "earnings"}]
+    result = score_candidate("AAPL", q, cats)
+    assert result["score_pass"] is True
+    assert result["total_score"] >= 70
+    assert result["components"]["market_quality_score"] == 25
+    assert result["components"]["catalyst_score"] == 20
+
+
+def test_scoring_no_catalyst_gives_zero_catalyst_score():
+    """No catalysts results in catalyst_score == 0 and a negative reason."""
+    q = _full_quality()
+    result = score_candidate("AAPL", q, [])
+    assert result["components"]["catalyst_score"] == 0
+    assert any("catalyst" in r for r in result["negative_reasons"])
+
+
+def test_scoring_negative_change_fails_momentum_and_adds_penalty():
+    """Negative change_percent => momentum_score == 0 and risk_penalty includes price-declining penalty."""
+    q = _full_quality(change_pct=-1.0)
+    cats = [{"classified_event_type": "earnings"}]
+    result = score_candidate("AAPL", q, cats)
+    assert result["components"]["momentum_score"] == 0
+    assert result["components"]["risk_penalty"] <= -10
+    assert any("declining" in r or "non-positive" in r for r in result["negative_reasons"])
+
+
+def test_scoring_wide_spread_gives_zero_spread_score_and_penalty():
+    """Spread > 0.50% => spread_score == 0 and risk_penalty includes spread penalty."""
+    q = _full_quality(spread_pct=0.60)
+    cats = [{"classified_event_type": "earnings"}]
+    result = score_candidate("AAPL", q, cats)
+    assert result["components"]["spread_score"] == 0
+    assert result["components"]["risk_penalty"] <= -10
+    assert any("spread" in r for r in result["negative_reasons"])
+
+
+def test_scoring_untradable_gives_zero_market_quality_and_penalty():
+    """Untradable quality => market_quality_score == 0 and risk_penalty includes untradable penalty."""
+    q = _full_quality(tradable=False)
+    cats = [{"classified_event_type": "earnings"}]
+    result = score_candidate("AAPL", q, cats)
+    assert result["components"]["market_quality_score"] == 0
+    assert result["components"]["risk_penalty"] <= -10
+    assert any("not tradable" in r for r in result["negative_reasons"])
+
+
+def test_scoring_total_score_clamped_to_zero():
+    """Worst-case all-bad inputs: raw total would be negative, clamped to 0."""
+    q = {
+        "tradable": False,
+        "spread_percent": 0.80,
+        "change_percent": -5.0,
+        "volume_ratio": 0.3,
+        "rejection_reasons": ["low volume"],
+    }
+    result = score_candidate("AAPL", q, [])
+    assert result["total_score"] == 0
+    assert result["score_pass"] is False
+
+
+def test_scoring_returns_all_expected_keys():
+    """score_candidate always returns the full expected schema."""
+    result = score_candidate("MSFT", _full_quality(), [])
+    for key in ("symbol", "total_score", "score_threshold", "score_pass",
+                "components", "positive_reasons", "negative_reasons", "decision_reason"):
+        assert key in result, f"Missing key: {key}"
+    for comp in ("market_quality_score", "spread_score", "momentum_score",
+                 "volume_score", "catalyst_score", "risk_penalty"):
+        assert comp in result["components"], f"Missing component: {comp}"
+
+
+# ── Simulator: score gate integration ────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_tick_score_below_threshold_does_not_enter(reset_simulator_state):
+    """Symbol passes all hard gates but composite score < threshold => score_rejected, no entry."""
+    import paper.simulator as sim
+
+    sym = "AAPL"
+    # Quality that passes all hard gates but yields a low score:
+    # spread 0.40% (≤0.50 → hard gate ok, but spread_score=5)
+    # change 0.30% (>0 → hard gate ok, but momentum_score=10)
+    # vol_ratio 0.85 (≥0.8 → hard gate ok, but volume_score=5)
+    # mid-value catalyst → catalyst_score=12
+    # market_quality=25, risk_penalty=0 → total=57 < 70
+    q = {
+        "tradable": True,
+        "ask": 100.10,
+        "bid": 99.70,
+        "last_trade_price": 99.90,
+        "spread_percent": 0.40,
+        "change_percent": 0.30,
+        "volume_ratio": 0.85,
+        "rejection_reasons": [],
+    }
+    cat = {"symbol": sym, "classified_event_type": "management_change"}
+
+    def fake_evaluate(snap, prev):
+        s = snap.get("_sym", "")
+        return q if s == sym else {"tradable": False, "rejection_reasons": ["mock"]}
+
+    async def fake_snapshot(s):
+        return {"_sym": s}
+
+    async def fake_prev(s):
+        return {}
+
+    with (
+        patch.object(sim.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", side_effect=fake_evaluate),
+        patch("paper.simulator.collect_news_for_symbols",
+              new=AsyncMock(return_value={"filter": {"accepted": [cat]}})),
+        patch("paper.simulator._save_state", new=AsyncMock()),
+    ):
+        result = await sim.run_tick()
+
+    assert len(result["entries"]) == 0
+    aapl = next((c for c in result["candidates"] if c["symbol"] == sym), None)
+    assert aapl is not None
+    assert aapl["action"] == "score_rejected"
+    assert aapl["score_pass"] is False
+    assert aapl["total_score"] < sim.settings.PAPER_ENTRY_SCORE_THRESHOLD
+
+
+@pytest.mark.asyncio
+async def test_tick_score_above_threshold_enters_position(reset_simulator_state):
+    """Symbol passes hard gates and composite score >= threshold => position entered."""
+    import paper.simulator as sim
+
+    sym = "AAPL"
+    # Quality that passes hard gates with a high score:
+    # tradable=True → 25; spread 0.03% → 15; change 2.5% → 20; vol_ratio 1.6 → 15
+    # high-value catalyst (earnings) → 20; risk_penalty=0; total=95 >= 70
+    q = {
+        "tradable": True,
+        "ask": 100.10,
+        "bid": 100.00,
+        "last_trade_price": 100.05,
+        "spread_percent": 0.03,
+        "change_percent": 2.5,
+        "volume_ratio": 1.6,
+        "rejection_reasons": [],
+    }
+    cat = {"symbol": sym, "classified_event_type": "earnings"}
+
+    def fake_evaluate(snap, prev):
+        s = snap.get("_sym", "")
+        return q if s == sym else {"tradable": False, "rejection_reasons": ["mock"]}
+
+    async def fake_snapshot(s):
+        return {"_sym": s}
+
+    async def fake_prev(s):
+        return {}
+
+    with (
+        patch.object(sim.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
+        patch.object(sim.polygon_client, "get_previous_close", side_effect=fake_prev),
+        patch("paper.simulator.evaluate_market_quality", side_effect=fake_evaluate),
+        patch("paper.simulator.collect_news_for_symbols",
+              new=AsyncMock(return_value={"filter": {"accepted": [cat]}})),
+        patch("paper.simulator._save_state", new=AsyncMock()),
+    ):
+        result = await sim.run_tick()
+
+    assert len(result["entries"]) == 1
+    assert result["entries"][0]["symbol"] == sym
+    assert sym in sim._account.positions
+    aapl = next(c for c in result["candidates"] if c["symbol"] == sym)
+    assert aapl["action"] == "entered"
+    assert aapl["score_pass"] is True
+    assert aapl["total_score"] >= sim.settings.PAPER_ENTRY_SCORE_THRESHOLD
