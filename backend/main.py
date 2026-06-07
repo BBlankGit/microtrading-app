@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.catalysts import router as catalysts_router
+from api.readiness import router as readiness_router
 from api.data_status import router as data_status_router
 from api.journal import router as journal_router
 from api.market import router as market_router
@@ -51,6 +52,7 @@ app.include_router(paper_router)
 app.include_router(quality_router)
 app.include_router(runtime_config_router)
 app.include_router(stream_router)
+app.include_router(readiness_router)
 app.include_router(universe_router)
 
 

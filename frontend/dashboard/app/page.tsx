@@ -302,6 +302,31 @@ interface JournalData {
   performance: JournalPerformance | null;
 }
 
+// ── Phase 2L types ───────────────────────────────────────────────────────────
+
+interface ReadinessCheck {
+  name: string;
+  status: "pass" | "warn" | "fail";
+  message: string;
+  details: Record<string, unknown>;
+}
+
+interface ReadinessSummary {
+  pass: number;
+  warn: number;
+  fail: number;
+}
+
+interface ReadinessData {
+  overall_status: "ready" | "warning" | "not_ready";
+  as_of: string;
+  market_session: MarketSession;
+  checks: ReadinessCheck[];
+  summary: ReadinessSummary;
+  recommended_actions: string[];
+  disclaimer: string;
+}
+
 // ── Phase 2F types ────────────────────────────────────────────────────────────
 
 interface RuntimeConfigStatus {
@@ -508,6 +533,16 @@ async function fetchRuntimeConfig(): Promise<RuntimeConfigState | null> {
 async function fetchRuntimeSchema(): Promise<RuntimeConfigSchema | null> {
   try {
     const r = await fetch("/api/config/runtime/schema");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchReadiness(): Promise<ReadinessData | null> {
+  try {
+    const r = await fetch("/api/readiness/session");
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -1600,6 +1635,93 @@ function MarketRegimePanel({ regime }: { regime: MarketRegimeData | null }) {
   );
 }
 
+// ── Readiness panel ───────────────────────────────────────────────────────────
+
+function readinessBadge(status: ReadinessData["overall_status"] | null): JSX.Element {
+  if (status === "ready")
+    return <span className="text-xs font-semibold px-2 py-0.5 rounded border bg-green-900 text-green-300 border-green-700">● READY</span>;
+  if (status === "warning")
+    return <span className="text-xs font-semibold px-2 py-0.5 rounded border bg-yellow-900 text-yellow-300 border-yellow-700">⚠ WARNING</span>;
+  if (status === "not_ready")
+    return <span className="text-xs font-semibold px-2 py-0.5 rounded border bg-red-900 text-red-300 border-red-700">✗ NOT READY</span>;
+  return <span className="text-xs px-2 py-0.5 rounded border bg-gray-800 text-gray-500 border-gray-600">—</span>;
+}
+
+function checkStatusIcon(status: ReadinessCheck["status"]): string {
+  if (status === "pass") return "✓";
+  if (status === "warn") return "⚠";
+  return "✗";
+}
+
+function checkStatusClass(status: ReadinessCheck["status"]): string {
+  if (status === "pass") return "text-green-400";
+  if (status === "warn") return "text-yellow-400";
+  return "text-red-400";
+}
+
+function ReadinessPanel({ readiness }: { readiness: ReadinessData | null }) {
+  if (!readiness)
+    return <p className="text-gray-500 text-sm">Readiness data unavailable.</p>;
+
+  const { overall_status, checks, summary, recommended_actions } = readiness;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 italic">
+        Readiness is operational guidance for fake-money simulation monitoring only.
+        It does not enable broker trading or real orders.
+      </p>
+
+      {/* Overall status row */}
+      <div className="flex flex-wrap gap-3 items-center">
+        {readinessBadge(overall_status)}
+        <span className="text-xs text-gray-400 font-mono">
+          {summary.pass}✓ {summary.warn}⚠ {summary.fail}✗
+        </span>
+        <span className="text-xs text-gray-600 border border-gray-700 rounded px-2 py-0.5">
+          as of {readiness.as_of ? new Date(readiness.as_of).toUTCString().replace(" GMT", " UTC") : "—"}
+        </span>
+      </div>
+
+      {/* Check list */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        {checks.map((c) => (
+          <div
+            key={c.name}
+            className={`rounded border px-3 py-2 text-xs ${
+              c.status === "pass"
+                ? "bg-gray-900 border-gray-700"
+                : c.status === "warn"
+                ? "bg-yellow-950 border-yellow-800"
+                : "bg-red-950 border-red-800"
+            }`}
+          >
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <span className={`font-bold ${checkStatusClass(c.status)}`}>
+                {checkStatusIcon(c.status)}
+              </span>
+              <span className="font-mono text-gray-300 font-semibold">{c.name}</span>
+            </div>
+            <p className="text-gray-400 leading-snug">{c.message}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Recommended actions */}
+      {recommended_actions.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-xs font-semibold text-gray-400">Recommended actions:</p>
+          {recommended_actions.map((a, i) => (
+            <div key={i} className="text-xs text-yellow-300 bg-yellow-950 border border-yellow-800 rounded px-3 py-1.5">
+              ▶ {a}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Monitoring panel ──────────────────────────────────────────────────────────
 
 function MonitoringPanel({ monitoring }: { monitoring: MonitoringStatus | null }) {
@@ -1889,19 +2011,21 @@ export default function Home() {
   const [journal, setJournal] = useState<JournalData | null>(null);
   const [monitoring, setMonitoring] = useState<MonitoringStatus | null>(null);
   const [todayReport, setTodayReport] = useState<TodayReport | null>(null);
+  const [readiness, setReadiness] = useState<ReadinessData | null>(null);
   const [loading, setLoading] = useState(true);
   const [token, setToken] = useState("");
   const [actionMsg, setActionMsg] = useState("");
   const [lastRefresh, setLastRefresh] = useState("");
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata] = await Promise.all([
-      fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(),
+    const [data, jdata, mdata, tdata, rdata] = await Promise.all([
+      fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
     ]);
     setDashboard(data);
     setJournal(jdata);
     setMonitoring(mdata);
     setTodayReport(tdata);
+    setReadiness(rdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -1938,13 +2062,24 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2K
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2L
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
       </p>
 
       {loading && <p className="text-gray-400 animate-pulse">Loading…</p>}
+
+      {/* Market Session Readiness */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Market Session Readiness
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            12 checks · fake-money only · no broker · no real orders
+          </span>
+        </h2>
+        <ReadinessPanel readiness={readiness} />
+      </section>
 
       {/* Monitoring Status */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
