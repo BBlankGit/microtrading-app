@@ -7,6 +7,7 @@ simulation monitoring only.
 """
 
 import logging
+import re
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -25,6 +26,35 @@ DISCLAIMER = (
 _polygon_cache: dict[str, Any] | None = None
 _polygon_cache_time: float | None = None
 _POLYGON_CACHE_TTL = 60.0
+
+
+# ── Sensitive error redaction ─────────────────────────────────────────────────
+
+_REDACT_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r'(?i)(api[_-]?key)\s*=\s*\S+'),         r'\1=[REDACTED]'),
+    (re.compile(r'(?i)(access[_-]?token)\s*=\s*\S+'),    r'\1=[REDACTED]'),
+    (re.compile(r'(?i)\b(token)\s*=\s*\S+'),             r'\1=[REDACTED]'),
+    (re.compile(r'(?i)(Authorization:\s*Bearer\s+)\S+'),  r'\1[REDACTED]'),
+    (re.compile(r'(?i)\b(Bearer)\s+\S+'),                 r'\1 [REDACTED]'),
+    (re.compile(r'(?i)\b(password)\s*=\s*\S+'),          r'\1=[REDACTED]'),
+    (re.compile(r'(?i)\b(secret)\s*=\s*\S+'),            r'\1=[REDACTED]'),
+    (re.compile(r'([?&]key)\s*=\s*\S+'),                  r'\1=[REDACTED]'),
+]
+
+
+def redact_sensitive_error(value: Any) -> str:
+    """Redact secrets from exception strings before including in API responses."""
+    s = str(value)
+    try:
+        from core.config import settings
+        key = getattr(settings, "POLYGON_API_KEY", None)
+        if key and len(key) > 4:
+            s = s.replace(key, "[REDACTED]")
+    except Exception:
+        pass
+    for pat, repl in _REDACT_PATTERNS:
+        s = pat.sub(repl, s)
+    return s[:200]
 
 
 # ── Check result constructors ─────────────────────────────────────────────────
@@ -130,16 +160,16 @@ async def _check_polygon_data() -> dict:
                            "Polygon returned data but price fields empty (market may be closed).",
                            {"symbol": "SPY", "snapshot_keys": sorted(snapshot.keys())})
     except Exception as exc:
-        err = str(exc)
-        err_lower = err.lower()
+        safe_err = redact_sensitive_error(exc)
+        err_lower = str(exc).lower()
         if any(k in err_lower for k in ("403", "401", "auth", "not configured", "api key")):
             result = _fail("polygon_data",
-                           f"Polygon auth/config error: {err[:200]}",
-                           {"error": err[:200]})
+                           f"Polygon auth/config error: {safe_err}",
+                           {"error": safe_err})
         else:
             result = _warn("polygon_data",
-                           f"Polygon data check failed: {err[:200]}",
-                           {"error": err[:200]})
+                           f"Polygon data check failed: {safe_err}",
+                           {"error": safe_err})
 
     _polygon_cache = result
     _polygon_cache_time = now
@@ -318,6 +348,7 @@ def _check_safety_invariants() -> dict:
         status = _sim.get_status()
         live = bool(status.get("live_trading_enabled", False))
         broker = bool(status.get("broker_connected", False))
+        # execution_enabled is hard-coded False: this platform never enables real execution.
         details = {"live_trading_enabled": live, "broker_connected": broker,
                    "execution_enabled": False}
         if live or broker:
@@ -396,7 +427,23 @@ async def readiness_session():
     market_open: bool = ms["is_regular_session_now"]
     as_of = datetime.now(timezone.utc).isoformat()
 
-    checks = await _run_all_checks(market_open)
+    try:
+        checks = await _run_all_checks(market_open)
+    except Exception as exc:
+        logger.exception("Readiness check runner failed")
+        safe_err = redact_sensitive_error(exc)
+        return {
+            "overall_status": "not_ready",
+            "as_of": as_of,
+            "market_session": ms,
+            "checks": [_fail("readiness_internal",
+                             "Readiness check runner failed safely.",
+                             {"error": safe_err})],
+            "summary": {"pass": 0, "warn": 0, "fail": 1},
+            "recommended_actions": ["Check backend logs and readiness check dependencies."],
+            "disclaimer": DISCLAIMER,
+        }
+
     overall = _overall_status(checks)
     summary = {
         "pass": sum(1 for c in checks if c["status"] == "pass"),
@@ -431,7 +478,24 @@ async def readiness_session_compact():
     ms = _market_session_now()
     market_open: bool = ms["is_regular_session_now"]
 
-    checks = await _run_all_checks(market_open)
+    try:
+        checks = await _run_all_checks(market_open)
+    except Exception:
+        logger.exception("Readiness compact check runner failed")
+        return {
+            "overall_status": "not_ready",
+            "market_open": market_open,
+            "simulator_running": False,
+            "journal_ok": False,
+            "polygon_ok": False,
+            "universe_count": None,
+            "last_tick_age_seconds": None,
+            "fail_count": 1,
+            "warn_count": 0,
+            "recommended_actions": ["Check backend logs and readiness check dependencies."],
+            "disclaimer": DISCLAIMER,
+        }
+
     overall = _overall_status(checks)
     fail_count = sum(1 for c in checks if c["status"] == "fail")
     warn_count = sum(1 for c in checks if c["status"] == "warn")

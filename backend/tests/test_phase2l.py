@@ -416,18 +416,149 @@ def test_session_no_secrets_in_response(client):
             f"Secret hint {secret_hint!r} found in readiness response"
 
 
-# ── Endpoint never raises ─────────────────────────────────────────────────────
+# ── Endpoint never raises (route-level crash-proof) ───────────────────────────
 
 def test_session_never_raises_on_check_exception(client):
     async def boom(market_open):
-        raise RuntimeError("Simulated subsystem failure")
+        raise RuntimeError("boom apiKey=SECRET123")
 
     with patch("api.readiness._run_all_checks", side_effect=boom):
         r = client.get("/api/readiness/session")
-    # Should be 500 from unhandled exception in route but not crash the process
-    # The actual requirement is the *checks* don't raise — we patch _run_all_checks here
-    # to verify the test infrastructure works. Individual check resilience tested below.
-    assert r.status_code in (200, 500)
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+    data = r.json()
+    assert data["overall_status"] == "not_ready"
+    checks_by_name = {c["name"]: c for c in data["checks"]}
+    assert "readiness_internal" in checks_by_name, \
+        "Fallback check 'readiness_internal' missing from response"
+    assert "SECRET123" not in r.text, "Secret leaked in runner-failure response"
+
+
+def test_compact_never_raises_on_runner_failure(client):
+    async def boom(market_open):
+        raise RuntimeError("compact runner exploded token=LEAKSECRET")
+
+    with patch("api.readiness._run_all_checks", side_effect=boom):
+        r = client.get("/api/readiness/session/compact")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+    data = r.json()
+    assert data["overall_status"] == "not_ready"
+    assert data["fail_count"] >= 1
+    assert "LEAKSECRET" not in r.text
+
+
+# ── redact_sensitive_error unit tests ────────────────────────────────────────
+
+def test_redact_removes_api_key_pattern():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("https://example.com?apiKey=MY_SECRET_KEY_XYZ")
+    assert "MY_SECRET_KEY_XYZ" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_removes_token_pattern():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("token=ABCDEF12345")
+    assert "ABCDEF12345" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_removes_bearer_pattern():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("Authorization: Bearer MYSECRETTOKEN99")
+    assert "MYSECRETTOKEN99" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_removes_password_pattern():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("connection failed: password=hunter2secret")
+    assert "hunter2secret" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_truncates_to_200():
+    import api.readiness as rd
+    long_err = "x" * 500
+    result = rd.redact_sensitive_error(long_err)
+    assert len(result) <= 200
+
+
+def test_redact_polygon_key_from_settings():
+    import api.readiness as rd
+    mock_settings = MagicMock()
+    mock_settings.POLYGON_API_KEY = "ACTUAL_POLYGON_KEY_ABC"
+    with patch("core.config.settings", mock_settings):
+        result = rd.redact_sensitive_error("Error calling https://api.polygon.io?apiKey=ACTUAL_POLYGON_KEY_ABC")
+    assert "ACTUAL_POLYGON_KEY_ABC" not in result
+
+
+def test_redact_safe_with_no_secrets():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("Connection timeout after 30s")
+    assert result == "Connection timeout after 30s"
+
+
+# ── Polygon error redaction in _check_polygon_data ───────────────────────────
+
+async def test_polygon_error_redacts_secrets():
+    import api.readiness as rd
+    import json as _json
+
+    rd._polygon_cache = None
+    rd._polygon_cache_time = None
+
+    secret_msg = (
+        "https://api.polygon.io/v2/snapshot?apiKey=SECRET123 "
+        "token=ABC Authorization: Bearer XYZ password=hunter2"
+    )
+
+    async def raise_with_secrets(sym):
+        raise RuntimeError(secret_msg)
+
+    with patch("data.polygon_client.get_ticker_snapshot", side_effect=raise_with_secrets):
+        result = await rd._check_polygon_data()
+
+    result_text = _json.dumps(result)
+    for secret in ("SECRET123", "ABC", "XYZ", "hunter2"):
+        assert secret not in result_text, \
+            f"Secret {secret!r} leaked in polygon check result: {result_text[:300]}"
+    assert "[REDACTED]" in result_text, "Expected [REDACTED] marker in polygon check result"
+
+
+# ── No real Polygon calls guard ───────────────────────────────────────────────
+
+def test_readiness_no_real_polygon_calls_needed(client):
+    """Endpoint returns 200 even when Polygon is completely unreachable."""
+    import api.readiness as rd
+    rd._polygon_cache = None
+    rd._polygon_cache_time = None
+
+    async def unreachable_polygon(sym):
+        raise ConnectionError("No network — Polygon unreachable")
+
+    with patch("data.polygon_client.get_ticker_snapshot", side_effect=unreachable_polygon), \
+         patch("paper.simulator.get_state",
+               return_value={"running": False, "last_tick_at": None}), \
+         patch("paper.simulator.get_status",
+               return_value={"live_trading_enabled": False, "broker_connected": False}), \
+         patch("paper.journal.get_journal_status",
+               return_value={"enabled": True, "database_connected": True, "tables_ready": True}), \
+         patch("paper.runtime_config.get_runtime_status",
+               return_value={"overrides_active": False, "override_count": 0, "warnings": []}), \
+         patch("paper.universe.get_cached_universe",
+               return_value={"active_count": 50, "errors": [], "discovery": None}), \
+         patch("paper.runtime_config.effective_value",
+               side_effect=lambda k: {"PAPER_MARKET_DISCOVERY_ENABLED": False,
+                                      "MARKET_REGIME_ENABLED": False}.get(k)):
+        r = client.get("/api/readiness/session")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["overall_status"] in ("ready", "warning", "not_ready")
+    poly_check = next((c for c in data["checks"] if c["name"] == "polygon_data"), None)
+    assert poly_check is not None, "polygon_data check missing from response"
+    assert poly_check["status"] in ("warn", "fail"), \
+        "Unreachable Polygon should produce warn or fail, not pass"
 
 
 def test_check_simulator_does_not_raise_on_import_error():
