@@ -446,6 +446,71 @@ def test_compact_never_raises_on_runner_failure(client):
     assert "LEAKSECRET" not in r.text
 
 
+# ── Route assembly crash (outer try/except) ───────────────────────────────────
+
+def test_session_route_assembly_crash(client):
+    """_overall_status raising after _run_all_checks succeeds still returns 200."""
+    good_checks = [{"name": "backend", "status": "pass", "message": "ok", "details": {}}]
+
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=good_checks)), \
+         patch("api.readiness._overall_status",
+               side_effect=RuntimeError("assembly crash password=SECRETVAL")):
+        r = client.get("/api/readiness/session")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+    data = r.json()
+    assert data["overall_status"] == "not_ready"
+    checks_by_name = {c["name"]: c for c in data["checks"]}
+    assert "readiness_internal" in checks_by_name
+    assert "SECRETVAL" not in r.text
+
+
+def test_compact_route_assembly_crash(client):
+    """_recommended_actions raising after _run_all_checks succeeds still returns 200."""
+    good_checks = [{"name": "backend", "status": "pass", "message": "ok", "details": {}}]
+
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=good_checks)), \
+         patch("api.readiness._recommended_actions",
+               side_effect=RuntimeError("actions crash client_secret=SECRETVAL2")):
+        r = client.get("/api/readiness/session/compact")
+    assert r.status_code == 200, f"Expected 200, got {r.status_code}"
+    data = r.json()
+    assert data["overall_status"] == "not_ready"
+    assert data["fail_count"] >= 1
+    assert "SECRETVAL2" not in r.text
+
+
+# ── Malformed check sanitization ──────────────────────────────────────────────
+
+def test_sanitize_checks_handles_non_dict():
+    import api.readiness as rd
+    result = rd._sanitize_checks(["not_a_dict", 42, None])
+    assert all(isinstance(c, dict) for c in result)
+    assert all(c["status"] == "fail" for c in result)
+    assert all(c["name"] == "malformed_check" for c in result)
+
+
+def test_sanitize_checks_fixes_missing_status():
+    import api.readiness as rd
+    raw = [{"name": "x", "message": "m", "details": {}}]
+    result = rd._sanitize_checks(raw)
+    assert result[0]["status"] == "fail"
+    assert result[0]["name"] == "x"
+
+
+def test_sanitize_checks_fixes_missing_name():
+    import api.readiness as rd
+    raw = [{"status": "pass", "message": "m", "details": {}}]
+    result = rd._sanitize_checks(raw)
+    assert result[0]["name"] == "unknown_check"
+
+
+def test_sanitize_checks_passes_valid_checks():
+    import api.readiness as rd
+    raw = [{"name": "backend", "status": "pass", "message": "ok", "details": {"x": 1}}]
+    result = rd._sanitize_checks(raw)
+    assert result[0] == {"name": "backend", "status": "pass", "message": "ok", "details": {"x": 1}}
+
+
 # ── redact_sensitive_error unit tests ────────────────────────────────────────
 
 def test_redact_removes_api_key_pattern():
@@ -498,6 +563,64 @@ def test_redact_safe_with_no_secrets():
     assert result == "Connection timeout after 30s"
 
 
+# ── Colon / JSON-style redaction ──────────────────────────────────────────────
+
+def test_redact_colon_bare_password():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("password: hunter2")
+    assert "hunter2" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_colon_json_password():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error('"password": "hunter2"')
+    assert "hunter2" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_colon_single_quote_password():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("'password': 'hunter2'")
+    assert "hunter2" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_colon_client_secret():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("client_secret: abc123")
+    assert "abc123" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_colon_json_client_secret():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error('"client_secret": "abc123"')
+    assert "abc123" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_colon_refresh_token():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error('"refresh_token": "rt123"')
+    assert "rt123" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_colon_api_key():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error("apiKey: pk_test_XYZ")
+    assert "pk_test_XYZ" not in result
+    assert "[REDACTED]" in result
+
+
+def test_redact_colon_json_api_key():
+    import api.readiness as rd
+    result = rd.redact_sensitive_error('"api_key": "pk_test_XYZ"')
+    assert "pk_test_XYZ" not in result
+    assert "[REDACTED]" in result
+
+
 # ── Polygon error redaction in _check_polygon_data ───────────────────────────
 
 async def test_polygon_error_redacts_secrets():
@@ -523,6 +646,32 @@ async def test_polygon_error_redacts_secrets():
         assert secret not in result_text, \
             f"Secret {secret!r} leaked in polygon check result: {result_text[:300]}"
     assert "[REDACTED]" in result_text, "Expected [REDACTED] marker in polygon check result"
+
+
+async def test_polygon_error_redacts_mixed_forms():
+    """Polygon check redacts secrets in both equal-sign and colon/JSON forms."""
+    import api.readiness as rd
+    import json as _json
+
+    rd._polygon_cache = None
+    rd._polygon_cache_time = None
+
+    mixed_msg = (
+        'apiKey=SECRET1 password: hunter2 '
+        '"client_secret": "SECRET2" Authorization: Bearer SECRET3'
+    )
+
+    async def raise_mixed(sym):
+        raise RuntimeError(mixed_msg)
+
+    with patch("data.polygon_client.get_ticker_snapshot", side_effect=raise_mixed):
+        result = await rd._check_polygon_data()
+
+    result_text = _json.dumps(result)
+    for secret in ("SECRET1", "hunter2", "SECRET2", "SECRET3"):
+        assert secret not in result_text, \
+            f"Secret {secret!r} leaked in mixed-form polygon check: {result_text[:300]}"
+    assert "[REDACTED]" in result_text
 
 
 # ── No real Polygon calls guard ───────────────────────────────────────────────

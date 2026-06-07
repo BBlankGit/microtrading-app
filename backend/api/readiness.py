@@ -30,15 +30,31 @@ _POLYGON_CACHE_TTL = 60.0
 
 # ── Sensitive error redaction ─────────────────────────────────────────────────
 
+# Matches a quoted or bare value: "value", 'value', or non-whitespace
+_QOB = r'(?:"[^"]*"|\'[^\']*\'|\S+)'
+
 _REDACT_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r'(?i)(api[_-]?key)\s*=\s*\S+'),         r'\1=[REDACTED]'),
-    (re.compile(r'(?i)(access[_-]?token)\s*=\s*\S+'),    r'\1=[REDACTED]'),
-    (re.compile(r'(?i)\b(token)\s*=\s*\S+'),             r'\1=[REDACTED]'),
-    (re.compile(r'(?i)(Authorization:\s*Bearer\s+)\S+'),  r'\1[REDACTED]'),
-    (re.compile(r'(?i)\b(Bearer)\s+\S+'),                 r'\1 [REDACTED]'),
-    (re.compile(r'(?i)\b(password)\s*=\s*\S+'),          r'\1=[REDACTED]'),
-    (re.compile(r'(?i)\b(secret)\s*=\s*\S+'),            r'\1=[REDACTED]'),
-    (re.compile(r'([?&]key)\s*=\s*\S+'),                  r'\1=[REDACTED]'),
+    # ── Equal-sign forms ──────────────────────────────────────────────────────
+    (re.compile(r'(?i)(api[_-]?key)\s*=\s*\S+'),                      r'\1=[REDACTED]'),
+    (re.compile(r'(?i)(access[_-]?token)\s*=\s*\S+'),                 r'\1=[REDACTED]'),
+    (re.compile(r'(?i)(refresh[_-]?token)\s*=\s*\S+'),                r'\1=[REDACTED]'),
+    (re.compile(r'(?i)(client[_-]?secret)\s*=\s*\S+'),                r'\1=[REDACTED]'),
+    (re.compile(r'(?i)\b(token)\s*=\s*\S+'),                          r'\1=[REDACTED]'),
+    (re.compile(r'(?i)\b(password)\s*=\s*\S+'),                       r'\1=[REDACTED]'),
+    (re.compile(r'(?i)\b(secret)\s*=\s*\S+'),                         r'\1=[REDACTED]'),
+    # URL query param: ?key=VALUE or &key=VALUE
+    (re.compile(r'([?&]key)\s*=\s*\S+'),                               r'\1=[REDACTED]'),
+    # ── HTTP header forms ─────────────────────────────────────────────────────
+    (re.compile(r'(?i)(Authorization:\s*Bearer\s+)\S+'),               r'\1[REDACTED]'),
+    (re.compile(r'(?i)\b(Bearer)\s+\S+'),                              r'\1 [REDACTED]'),
+    # ── Colon/JSON forms: "key": "value", key: value, 'key': 'value' ─────────
+    (re.compile(rf'(?i)(?:["\']?)(api[_-]?key)(?:["\']?)\s*:\s*{_QOB}'),       r'\1: [REDACTED]'),
+    (re.compile(rf'(?i)(?:["\']?)(access[_-]?token)(?:["\']?)\s*:\s*{_QOB}'),  r'\1: [REDACTED]'),
+    (re.compile(rf'(?i)(?:["\']?)(refresh[_-]?token)(?:["\']?)\s*:\s*{_QOB}'), r'\1: [REDACTED]'),
+    (re.compile(rf'(?i)(?:["\']?)(client[_-]?secret)(?:["\']?)\s*:\s*{_QOB}'), r'\1: [REDACTED]'),
+    (re.compile(rf'(?i)(?:["\']?)\b(token)\b(?:["\']?)\s*:\s*{_QOB}'),         r'\1: [REDACTED]'),
+    (re.compile(rf'(?i)(?:["\']?)\b(password)\b(?:["\']?)\s*:\s*{_QOB}'),      r'\1: [REDACTED]'),
+    (re.compile(rf'(?i)(?:["\']?)\b(secret)\b(?:["\']?)\s*:\s*{_QOB}'),        r'\1: [REDACTED]'),
 ]
 
 
@@ -415,6 +431,26 @@ def _recommended_actions(checks: list[dict], market_open: bool, sim_running: boo
     return actions
 
 
+def _sanitize_checks(raw: list) -> list[dict]:
+    """Coerce every check to a well-formed dict before aggregation."""
+    sanitized: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            sanitized.append(_fail("malformed_check",
+                                   "Check returned a non-dict result.",
+                                   {"raw_type": type(item).__name__}))
+            continue
+        name = item.get("name")
+        status = item.get("status")
+        sanitized.append({
+            "name":    name if isinstance(name, str) else "unknown_check",
+            "status":  status if status in ("pass", "warn", "fail") else "fail",
+            "message": item.get("message", "") if isinstance(item.get("message"), str) else "",
+            "details": item.get("details", {}) if isinstance(item.get("details"), dict) else {},
+        })
+    return sanitized
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @router.get("/session")
@@ -423,50 +459,74 @@ async def readiness_session():
     Full market-session readiness check.
     No broker. No live trading. No real orders. Observational only.
     """
-    ms = _market_session_now()
-    market_open: bool = ms["is_regular_session_now"]
-    as_of = datetime.now(timezone.utc).isoformat()
-
+    as_of: str = datetime.now(timezone.utc).isoformat()
+    safe_ms: dict = {
+        "timezone": "America/New_York",
+        "is_regular_session_now": False,
+        "regular_open": "09:30",
+        "regular_close": "16:00",
+        "note": "Best-effort weekday/session check; holidays not included yet.",
+    }
     try:
-        checks = await _run_all_checks(market_open)
+        ms = _market_session_now()
+        safe_ms = ms
+        market_open: bool = bool(ms.get("is_regular_session_now", False))
+
+        try:
+            checks = await _run_all_checks(market_open)
+        except Exception as exc:
+            logger.exception("Readiness check runner failed")
+            safe_err = redact_sensitive_error(exc)
+            return {
+                "overall_status": "not_ready",
+                "as_of": as_of,
+                "market_session": ms,
+                "checks": [_fail("readiness_internal",
+                                 "Readiness check runner failed safely.",
+                                 {"error": safe_err})],
+                "summary": {"pass": 0, "warn": 0, "fail": 1},
+                "recommended_actions": ["Check backend logs and readiness check dependencies."],
+                "disclaimer": DISCLAIMER,
+            }
+
+        safe_checks = _sanitize_checks(checks)
+        overall = _overall_status(safe_checks)
+        summary = {
+            "pass": sum(1 for c in safe_checks if c["status"] == "pass"),
+            "warn": sum(1 for c in safe_checks if c["status"] == "warn"),
+            "fail": sum(1 for c in safe_checks if c["status"] == "fail"),
+        }
+
+        sim_running = False
+        try:
+            import paper.simulator as _sim
+            sim_running = bool(_sim.get_state().get("running", False))
+        except Exception:
+            pass
+
+        return {
+            "overall_status": overall,
+            "as_of": as_of,
+            "market_session": ms,
+            "checks": safe_checks,
+            "summary": summary,
+            "recommended_actions": _recommended_actions(safe_checks, market_open, sim_running),
+            "disclaimer": DISCLAIMER,
+        }
     except Exception as exc:
-        logger.exception("Readiness check runner failed")
+        logger.exception("Readiness response assembly failed")
         safe_err = redact_sensitive_error(exc)
         return {
             "overall_status": "not_ready",
             "as_of": as_of,
-            "market_session": ms,
+            "market_session": safe_ms,
             "checks": [_fail("readiness_internal",
-                             "Readiness check runner failed safely.",
+                             "Readiness response assembly failed safely.",
                              {"error": safe_err})],
             "summary": {"pass": 0, "warn": 0, "fail": 1},
-            "recommended_actions": ["Check backend logs and readiness check dependencies."],
+            "recommended_actions": ["Check backend logs and readiness response assembly."],
             "disclaimer": DISCLAIMER,
         }
-
-    overall = _overall_status(checks)
-    summary = {
-        "pass": sum(1 for c in checks if c["status"] == "pass"),
-        "warn": sum(1 for c in checks if c["status"] == "warn"),
-        "fail": sum(1 for c in checks if c["status"] == "fail"),
-    }
-
-    sim_running = False
-    try:
-        import paper.simulator as _sim
-        sim_running = bool(_sim.get_state().get("running", False))
-    except Exception:
-        pass
-
-    return {
-        "overall_status": overall,
-        "as_of": as_of,
-        "market_session": ms,
-        "checks": checks,
-        "summary": summary,
-        "recommended_actions": _recommended_actions(checks, market_open, sim_running),
-        "disclaimer": DISCLAIMER,
-    }
 
 
 @router.get("/session/compact")
@@ -475,16 +535,93 @@ async def readiness_session_compact():
     Compact readiness summary for quick polling.
     No broker. No live trading. No real orders. Observational only.
     """
-    ms = _market_session_now()
-    market_open: bool = ms["is_regular_session_now"]
-
+    safe_market_open = False
     try:
-        checks = await _run_all_checks(market_open)
+        ms = _market_session_now()
+        market_open: bool = bool(ms.get("is_regular_session_now", False))
+        safe_market_open = market_open
+
+        try:
+            checks = await _run_all_checks(market_open)
+        except Exception:
+            logger.exception("Readiness compact check runner failed")
+            return {
+                "overall_status": "not_ready",
+                "market_open": market_open,
+                "simulator_running": False,
+                "journal_ok": False,
+                "polygon_ok": False,
+                "universe_count": None,
+                "last_tick_age_seconds": None,
+                "fail_count": 1,
+                "warn_count": 0,
+                "recommended_actions": ["Check backend logs and readiness check dependencies."],
+                "disclaimer": DISCLAIMER,
+            }
+
+        safe_checks = _sanitize_checks(checks)
+        overall = _overall_status(safe_checks)
+        fail_count = sum(1 for c in safe_checks if c["status"] == "fail")
+        warn_count = sum(1 for c in safe_checks if c["status"] == "warn")
+
+        sim_running = False
+        last_tick_age: float | None = None
+        journal_ok = False
+        polygon_ok = False
+        universe_count: int | None = None
+
+        try:
+            import paper.simulator as _sim
+            state = _sim.get_state()
+            sim_running = bool(state.get("running", False))
+            last_tick_at = state.get("last_tick_at")
+            if last_tick_at:
+                lt = datetime.fromisoformat(last_tick_at)
+                if lt.tzinfo is None:
+                    lt = lt.replace(tzinfo=timezone.utc)
+                last_tick_age = round((datetime.now(timezone.utc) - lt).total_seconds(), 1)
+        except Exception:
+            pass
+
+        try:
+            from paper.journal import get_journal_status
+            j = get_journal_status()
+            journal_ok = bool(j.get("enabled") and j.get("database_connected") and j.get("tables_ready"))
+        except Exception:
+            pass
+
+        try:
+            from core.config import settings
+            polygon_ok = bool(settings.POLYGON_API_KEY)
+        except Exception:
+            pass
+
+        try:
+            from paper.universe import get_cached_universe
+            uni = get_cached_universe()
+            if uni is not None:
+                universe_count = uni.get("active_count")
+        except Exception:
+            pass
+
+        return {
+            "overall_status": overall,
+            "market_open": market_open,
+            "simulator_running": sim_running,
+            "journal_ok": journal_ok,
+            "polygon_ok": polygon_ok,
+            "universe_count": universe_count,
+            "last_tick_age_seconds": last_tick_age,
+            "fail_count": fail_count,
+            "warn_count": warn_count,
+            "recommended_actions": _recommended_actions(safe_checks, market_open, sim_running),
+            "disclaimer": DISCLAIMER,
+        }
     except Exception:
-        logger.exception("Readiness compact check runner failed")
+        logger.exception("Readiness compact response assembly failed")
         return {
             "overall_status": "not_ready",
-            "market_open": market_open,
+            "market_open": safe_market_open,
             "simulator_running": False,
             "journal_ok": False,
             "polygon_ok": False,
@@ -492,64 +629,6 @@ async def readiness_session_compact():
             "last_tick_age_seconds": None,
             "fail_count": 1,
             "warn_count": 0,
-            "recommended_actions": ["Check backend logs and readiness check dependencies."],
+            "recommended_actions": ["Check backend logs and readiness response assembly."],
             "disclaimer": DISCLAIMER,
         }
-
-    overall = _overall_status(checks)
-    fail_count = sum(1 for c in checks if c["status"] == "fail")
-    warn_count = sum(1 for c in checks if c["status"] == "warn")
-
-    sim_running = False
-    last_tick_age: float | None = None
-    journal_ok = False
-    polygon_ok = False
-    universe_count: int | None = None
-
-    try:
-        import paper.simulator as _sim
-        state = _sim.get_state()
-        sim_running = bool(state.get("running", False))
-        last_tick_at = state.get("last_tick_at")
-        if last_tick_at:
-            lt = datetime.fromisoformat(last_tick_at)
-            if lt.tzinfo is None:
-                lt = lt.replace(tzinfo=timezone.utc)
-            last_tick_age = round((datetime.now(timezone.utc) - lt).total_seconds(), 1)
-    except Exception:
-        pass
-
-    try:
-        from paper.journal import get_journal_status
-        j = get_journal_status()
-        journal_ok = bool(j.get("enabled") and j.get("database_connected") and j.get("tables_ready"))
-    except Exception:
-        pass
-
-    try:
-        from core.config import settings
-        polygon_ok = bool(settings.POLYGON_API_KEY)
-    except Exception:
-        pass
-
-    try:
-        from paper.universe import get_cached_universe
-        uni = get_cached_universe()
-        if uni is not None:
-            universe_count = uni.get("active_count")
-    except Exception:
-        pass
-
-    return {
-        "overall_status": overall,
-        "market_open": market_open,
-        "simulator_running": sim_running,
-        "journal_ok": journal_ok,
-        "polygon_ok": polygon_ok,
-        "universe_count": universe_count,
-        "last_tick_age_seconds": last_tick_age,
-        "fail_count": fail_count,
-        "warn_count": warn_count,
-        "recommended_actions": _recommended_actions(checks, market_open, sim_running),
-        "disclaimer": DISCLAIMER,
-    }
