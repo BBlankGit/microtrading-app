@@ -21,10 +21,24 @@ A diagnostic endpoint is available at `/api/data/status` — it shows whether th
 
 ---
 
-## Polygon WebSocket — Planned (Phase 1B)
+## Phase 1B — Polygon WebSocket (Implemented)
 
-Real-time streaming via Polygon WebSocket is **not yet implemented**.
-It is planned for Phase 1B to support live quote and trade streaming.
+Real-time streaming via Polygon WebSocket is implemented in `backend/data/polygon_ws.py`.
+
+| Channel | Event type | Redis key pattern |
+|---|---|---|
+| `T.{symbol}` | Trade | `stream:latest:{symbol}:trade` |
+| `Q.{symbol}` | Quote | `stream:latest:{symbol}:quote` |
+| `AM.{symbol}` | Minute aggregate | `stream:latest:{symbol}:aggregate` |
+
+**Constraints (Phase 1B):**
+- Subscriptions are limited to a fixed test ticker list: AAPL, MSFT, NVDA, TSLA, AMD.
+- Full-market streaming is not enabled.
+- No trading decisions are made from streaming data. The stream is data-collection only.
+- Stream does not start automatically on app boot — it must be started via `POST /api/stream/start`.
+
+Raw WebSocket payloads are normalized by `backend/data/stream_normalizer.py` before storage.
+The API key is never logged or returned by any endpoint.
 
 ---
 
@@ -33,7 +47,7 @@ It is planned for Phase 1B to support live quote and trade streaming.
 | Source | Type | Status |
 |---|---|---|
 | **Polygon REST API** | Market data | Implemented (Phase 1A) |
-| **Polygon WebSocket API** | Real-time streaming | Planned (Phase 1B) |
+| **Polygon WebSocket API** | Real-time streaming | Implemented (Phase 1B) |
 | **Polygon news endpoint** | Catalyst | Implemented (Phase 1A) |
 
 ---

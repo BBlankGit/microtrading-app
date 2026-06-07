@@ -76,6 +76,27 @@ curl http://SERVER_IP:8000/api/market/ticker/AAPL/snapshot
 
 ---
 
+## Verify the Stack — Phase 1B (WebSocket Stream)
+
+```bash
+# Check stream status (not running yet)
+curl http://SERVER_IP:8000/api/stream/status
+
+# Start the WebSocket stream for test tickers: AAPL, MSFT, NVDA, TSLA, AMD
+curl -X POST http://SERVER_IP:8000/api/stream/start
+
+# Check status again — connected and messages_received should increment during market hours
+curl http://SERVER_IP:8000/api/stream/status
+
+# Retrieve latest streamed data for a symbol (wait 30-60s during market hours first)
+curl http://SERVER_IP:8000/api/stream/latest/AAPL
+
+# Stop the stream
+curl -X POST http://SERVER_IP:8000/api/stream/stop
+```
+
+---
+
 ## Stop the Stack
 
 ```bash
