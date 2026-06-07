@@ -9,7 +9,7 @@ simulation monitoring only.
 import logging
 import re
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter
@@ -71,6 +71,22 @@ def redact_sensitive_error(value: Any) -> str:
     for pat, repl in _REDACT_PATTERNS:
         s = pat.sub(repl, s)
     return s[:200]
+
+
+def make_json_safe(value: Any) -> Any:
+    """Recursively sanitize a value for JSON serialization. Never raises."""
+    try:
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if isinstance(value, (datetime, date)):
+            return value.isoformat()
+        if isinstance(value, dict):
+            return {str(k): make_json_safe(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return [make_json_safe(item) for item in value]
+        return redact_sensitive_error(value)
+    except Exception:
+        return "[make_json_safe error]"
 
 
 # ── Check result constructors ─────────────────────────────────────────────────
@@ -442,11 +458,12 @@ def _sanitize_checks(raw: list) -> list[dict]:
             continue
         name = item.get("name")
         status = item.get("status")
+        raw_details = item.get("details")
         sanitized.append({
             "name":    name if isinstance(name, str) else "unknown_check",
             "status":  status if status in ("pass", "warn", "fail") else "fail",
             "message": item.get("message", "") if isinstance(item.get("message"), str) else "",
-            "details": item.get("details", {}) if isinstance(item.get("details"), dict) else {},
+            "details": make_json_safe(raw_details) if isinstance(raw_details, dict) else {},
         })
     return sanitized
 
@@ -477,7 +494,7 @@ async def readiness_session():
         except Exception as exc:
             logger.exception("Readiness check runner failed")
             safe_err = redact_sensitive_error(exc)
-            return {
+            return make_json_safe({
                 "overall_status": "not_ready",
                 "as_of": as_of,
                 "market_session": ms,
@@ -487,7 +504,7 @@ async def readiness_session():
                 "summary": {"pass": 0, "warn": 0, "fail": 1},
                 "recommended_actions": ["Check backend logs and readiness check dependencies."],
                 "disclaimer": DISCLAIMER,
-            }
+            })
 
         safe_checks = _sanitize_checks(checks)
         overall = _overall_status(safe_checks)
@@ -504,7 +521,7 @@ async def readiness_session():
         except Exception:
             pass
 
-        return {
+        return make_json_safe({
             "overall_status": overall,
             "as_of": as_of,
             "market_session": ms,
@@ -512,11 +529,11 @@ async def readiness_session():
             "summary": summary,
             "recommended_actions": _recommended_actions(safe_checks, market_open, sim_running),
             "disclaimer": DISCLAIMER,
-        }
+        })
     except Exception as exc:
         logger.exception("Readiness response assembly failed")
         safe_err = redact_sensitive_error(exc)
-        return {
+        return make_json_safe({
             "overall_status": "not_ready",
             "as_of": as_of,
             "market_session": safe_ms,
@@ -526,7 +543,7 @@ async def readiness_session():
             "summary": {"pass": 0, "warn": 0, "fail": 1},
             "recommended_actions": ["Check backend logs and readiness response assembly."],
             "disclaimer": DISCLAIMER,
-        }
+        })
 
 
 @router.get("/session/compact")
@@ -545,7 +562,7 @@ async def readiness_session_compact():
             checks = await _run_all_checks(market_open)
         except Exception:
             logger.exception("Readiness compact check runner failed")
-            return {
+            return make_json_safe({
                 "overall_status": "not_ready",
                 "market_open": market_open,
                 "simulator_running": False,
@@ -557,7 +574,7 @@ async def readiness_session_compact():
                 "warn_count": 0,
                 "recommended_actions": ["Check backend logs and readiness check dependencies."],
                 "disclaimer": DISCLAIMER,
-            }
+            })
 
         safe_checks = _sanitize_checks(checks)
         overall = _overall_status(safe_checks)
@@ -604,7 +621,7 @@ async def readiness_session_compact():
         except Exception:
             pass
 
-        return {
+        return make_json_safe({
             "overall_status": overall,
             "market_open": market_open,
             "simulator_running": sim_running,
@@ -616,10 +633,10 @@ async def readiness_session_compact():
             "warn_count": warn_count,
             "recommended_actions": _recommended_actions(safe_checks, market_open, sim_running),
             "disclaimer": DISCLAIMER,
-        }
+        })
     except Exception:
         logger.exception("Readiness compact response assembly failed")
-        return {
+        return make_json_safe({
             "overall_status": "not_ready",
             "market_open": safe_market_open,
             "simulator_running": False,
@@ -631,4 +648,4 @@ async def readiness_session_compact():
             "warn_count": 0,
             "recommended_actions": ["Check backend logs and readiness response assembly."],
             "disclaimer": DISCLAIMER,
-        }
+        })

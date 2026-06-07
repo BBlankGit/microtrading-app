@@ -768,6 +768,60 @@ def test_recommended_actions_empty_when_all_pass():
     assert actions == []
 
 
+# ── make_json_safe and nonserializable details ───────────────────────────────
+
+def test_session_nonserializable_details_returns_200(client):
+    """Check details containing an object() must not cause a 500."""
+    import json as _json
+    checks = [{"name": "x", "status": "pass", "message": "ok", "details": {"bad": object()}}]
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=checks)):
+        r = client.get("/api/readiness/session")
+    assert r.status_code == 200
+    data = _json.loads(r.text)
+    assert "checks" in data
+
+
+def test_compact_nonserializable_details_returns_200(client):
+    """Compact endpoint must not 500 on nonserializable check details."""
+    import json as _json
+    checks = [{"name": "x", "status": "pass", "message": "ok", "details": {"bad": object()}}]
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=checks)):
+        r = client.get("/api/readiness/session/compact")
+    assert r.status_code == 200
+    _json.loads(r.text)
+
+
+def test_make_json_safe_unit():
+    """make_json_safe converts object()/datetime/set/tuple to JSON-safe forms."""
+    import api.readiness as rd
+    import json as _json
+    from datetime import datetime, timezone as tz
+
+    now = datetime.now(tz.utc)
+    test_input = {
+        "obj": object(),
+        "dt": now,
+        "s": {1, 2, 3},
+        "t": (4, 5),
+        "nested": {"inner": object()},
+        "ok": "plain string",
+        "n": None,
+        "b": True,
+        "i": 42,
+        "f": 3.14,
+    }
+    result = rd.make_json_safe(test_input)
+    # Must be fully JSON-serializable — no TypeError
+    text = _json.dumps(result)
+    assert now.isoformat() in text, "datetime must be converted to ISO string"
+    # object() instances are coerced to strings
+    assert isinstance(result["obj"], str)
+    assert isinstance(result["nested"]["inner"], str)
+    # set and tuple become lists
+    assert isinstance(result["s"], list)
+    assert isinstance(result["t"], list)
+
+
 # ── Router registration ───────────────────────────────────────────────────────
 
 def test_readiness_router_registered_in_main():
