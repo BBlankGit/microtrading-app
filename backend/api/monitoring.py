@@ -138,6 +138,17 @@ async def monitoring_status():
             regime_summary["error"] = f"{type(exc).__name__}: {exc}"
             warnings.append("Market regime monitor unavailable — check Polygon API configuration.")
 
+    # ── Runtime config status ─────────────────────────────────────────────────
+    runtime_config_status: dict = {}
+    try:
+        from paper.runtime_config import get_runtime_status
+        runtime_config_status = get_runtime_status()
+        if runtime_config_status.get("warnings"):
+            warnings.extend(runtime_config_status["warnings"])
+    except Exception:
+        runtime_config_status = {"overrides_active": False, "override_count": 0,
+                                 "persistent": False, "warnings": []}
+
     return {
         "backend_ok": True,
         "paper_running": paper_running,
@@ -151,6 +162,7 @@ async def monitoring_status():
         "last_error": last_error,
         "market_session": ms,
         "market_regime": regime_summary,
+        "runtime_config": runtime_config_status,
         "warnings": warnings,
     }
 

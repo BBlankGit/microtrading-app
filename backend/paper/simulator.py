@@ -15,6 +15,7 @@ from typing import Any
 from catalysts.news_collector import collect_news_for_symbols
 from core.config import settings
 from data import polygon_client
+from paper.runtime_config import effective_value as _cfg
 from data.market_quality import evaluate_market_quality
 from data.polygon_client import PolygonError
 from data.redis_client import make_redis
@@ -57,12 +58,12 @@ def get_status() -> dict[str, Any]:
     status = _account.to_status(
         _last_prices,
         extra={
-            "max_positions": settings.PAPER_MAX_POSITIONS,
-            "max_trades_per_day": settings.PAPER_MAX_TRADES_PER_DAY,
+            "max_positions": _cfg("PAPER_MAX_OPEN_POSITIONS"),
+            "max_trades_per_day": _cfg("PAPER_MAX_TRADES_PER_DAY"),
             "max_position_size_usd": settings.PAPER_MAX_POSITION_SIZE_USD,
-            "take_profit_percent": settings.PAPER_TAKE_PROFIT_PERCENT,
-            "stop_loss_percent": settings.PAPER_STOP_LOSS_PERCENT,
-            "max_hold_minutes": settings.PAPER_MAX_HOLD_MINUTES,
+            "take_profit_percent": _cfg("PAPER_TAKE_PROFIT_PERCENT"),
+            "stop_loss_percent": _cfg("PAPER_STOP_LOSS_PERCENT"),
+            "max_hold_minutes": _cfg("PAPER_MAX_HOLD_MINUTES"),
             "poll_interval_seconds": settings.PAPER_POLL_INTERVAL_SECONDS,
         },
     )
@@ -192,6 +193,11 @@ async def run_tick() -> dict[str, Any]:
         "discovery_enabled": False,
         "discovery_count": 0,
         "discovery_errors_count": 0,
+        "config_overrides_active": False,
+        "entry_score_threshold": None,
+        "take_profit_percent": None,
+        "stop_loss_percent": None,
+        "max_hold_minutes": None,
     }
 
     # ── 0. Resolve active universe ────────────────────────────────────────────
@@ -210,6 +216,15 @@ async def run_tick() -> dict[str, Any]:
         symbols = settings.paper_base_universe_list()[:settings.PAPER_MAX_SYMBOLS_PER_TICK]
         result["universe_refresh_reason"] = "error_fallback"
         result["errors"].append({"phase": "universe", "error": str(exc)})
+
+    # ── 0b. Snapshot effective runtime config for this tick ───────────────────
+    from paper.runtime_config import get_runtime_status as _rc_status
+    _rc = _rc_status()
+    result["config_overrides_active"] = _rc["overrides_active"]
+    result["entry_score_threshold"] = _cfg("PAPER_ENTRY_SCORE_THRESHOLD")
+    result["take_profit_percent"] = _cfg("PAPER_TAKE_PROFIT_PERCENT")
+    result["stop_loss_percent"] = _cfg("PAPER_STOP_LOSS_PERCENT")
+    result["max_hold_minutes"] = _cfg("PAPER_MAX_HOLD_MINUTES")
 
     # ── 1. Fetch market quality for all symbols concurrently ──────────────────
     quality_map: dict[str, dict] = {}
@@ -267,8 +282,8 @@ async def run_tick() -> dict[str, Any]:
             if not exit_price or exit_price <= 0:
                 exit_price = _last_prices.get(sym, pos.entry_price)
 
-            tp = pos.entry_price * (1 + settings.PAPER_TAKE_PROFIT_PERCENT / 100)
-            sl = pos.entry_price * (1 - settings.PAPER_STOP_LOSS_PERCENT / 100)
+            tp = pos.entry_price * (1 + _cfg("PAPER_TAKE_PROFIT_PERCENT") / 100)
+            sl = pos.entry_price * (1 - _cfg("PAPER_STOP_LOSS_PERCENT") / 100)
             entry_dt = datetime.fromisoformat(pos.entry_time)
             hold_min = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
 
@@ -277,7 +292,7 @@ async def run_tick() -> dict[str, Any]:
                 exit_reason = "take_profit"
             elif exit_price <= sl:
                 exit_reason = "stop_loss"
-            elif hold_min >= settings.PAPER_MAX_HOLD_MINUTES:
+            elif hold_min >= _cfg("PAPER_MAX_HOLD_MINUTES"):
                 exit_reason = "max_hold_time"
 
             if exit_reason:
@@ -321,10 +336,10 @@ async def run_tick() -> dict[str, Any]:
             elif all(c.get("classified_event_type") == "generic_news" for c in cats):
                 hard_rejection = "only generic_news catalysts"
             elif (
-                settings.PAPER_REJECT_STRONG_BEARISH_CATALYST
+                _cfg("PAPER_REJECT_STRONG_BEARISH_CATALYST")
                 and scoring.get("catalyst_sentiment") == "bearish"
                 and (scoring.get("catalyst_materiality_score") or 0.0)
-                >= settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY
+                >= _cfg("PAPER_BEARISH_CATALYST_REJECT_MATERIALITY")
             ):
                 hard_rejection = "strong_bearish_catalyst"
 
@@ -368,8 +383,8 @@ async def run_tick() -> dict[str, Any]:
             else:
                 can, block = _account.can_enter(
                     sym,
-                    settings.PAPER_MAX_POSITIONS,
-                    settings.PAPER_MAX_TRADES_PER_DAY,
+                    _cfg("PAPER_MAX_OPEN_POSITIONS"),
+                    _cfg("PAPER_MAX_TRADES_PER_DAY"),
                 )
                 if can:
                     entry_price = q.get("ask") or q.get("last_trade_price", 0)

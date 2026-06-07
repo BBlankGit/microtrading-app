@@ -694,6 +694,9 @@ async def test_simulator_tick_result_has_market_regime_key(monkeypatch):
     fake_settings.PAPER_STOP_LOSS_PERCENT = real_settings.PAPER_STOP_LOSS_PERCENT
     fake_settings.PAPER_MAX_HOLD_MINUTES = real_settings.PAPER_MAX_HOLD_MINUTES
     fake_settings.PAPER_STARTING_CASH = real_settings.PAPER_STARTING_CASH
+    fake_settings.PAPER_ENTRY_SCORE_THRESHOLD = real_settings.PAPER_ENTRY_SCORE_THRESHOLD
+    fake_settings.PAPER_REJECT_STRONG_BEARISH_CATALYST = real_settings.PAPER_REJECT_STRONG_BEARISH_CATALYST
+    fake_settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY = real_settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY
     fake_settings.DATABASE_URL = ""
     fake_settings.paper_base_universe_list = real_settings.paper_base_universe_list
     fake_settings.PAPER_MAX_SYMBOLS_PER_TICK = 2
@@ -763,6 +766,9 @@ async def test_tick_market_regime_contains_expected_fields(monkeypatch):
     fake_settings.PAPER_STOP_LOSS_PERCENT = real_settings.PAPER_STOP_LOSS_PERCENT
     fake_settings.PAPER_MAX_HOLD_MINUTES = real_settings.PAPER_MAX_HOLD_MINUTES
     fake_settings.PAPER_STARTING_CASH = real_settings.PAPER_STARTING_CASH
+    fake_settings.PAPER_ENTRY_SCORE_THRESHOLD = real_settings.PAPER_ENTRY_SCORE_THRESHOLD
+    fake_settings.PAPER_REJECT_STRONG_BEARISH_CATALYST = real_settings.PAPER_REJECT_STRONG_BEARISH_CATALYST
+    fake_settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY = real_settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY
     fake_settings.DATABASE_URL = ""
     fake_settings.paper_base_universe_list = real_settings.paper_base_universe_list
     fake_settings.PAPER_MAX_SYMBOLS_PER_TICK = 1
@@ -834,6 +840,9 @@ async def test_tick_market_regime_none_when_disabled(monkeypatch):
     fake_settings.PAPER_STOP_LOSS_PERCENT = real_settings.PAPER_STOP_LOSS_PERCENT
     fake_settings.PAPER_MAX_HOLD_MINUTES = real_settings.PAPER_MAX_HOLD_MINUTES
     fake_settings.PAPER_STARTING_CASH = real_settings.PAPER_STARTING_CASH
+    fake_settings.PAPER_ENTRY_SCORE_THRESHOLD = real_settings.PAPER_ENTRY_SCORE_THRESHOLD
+    fake_settings.PAPER_REJECT_STRONG_BEARISH_CATALYST = real_settings.PAPER_REJECT_STRONG_BEARISH_CATALYST
+    fake_settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY = real_settings.PAPER_BEARISH_CATALYST_REJECT_MATERIALITY
     fake_settings.DATABASE_URL = ""
     fake_settings.paper_base_universe_list = real_settings.paper_base_universe_list
     fake_settings.PAPER_MAX_SYMBOLS_PER_TICK = 1

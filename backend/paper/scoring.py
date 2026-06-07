@@ -6,6 +6,7 @@ All scoring is deterministic rule-based logic for research purposes only.
 """
 
 from core.config import settings
+from paper.runtime_config import effective_value as _cfg
 
 # Catalyst event types that carry full catalyst_score weight
 _HIGH_VALUE_EVENT_TYPES = frozenset({
@@ -219,7 +220,7 @@ def score_candidate(
     )
     total_score = max(0, min(100, raw_total))
 
-    threshold = settings.PAPER_ENTRY_SCORE_THRESHOLD
+    threshold = _cfg("PAPER_ENTRY_SCORE_THRESHOLD")
     score_pass = total_score >= threshold
 
     if score_pass:

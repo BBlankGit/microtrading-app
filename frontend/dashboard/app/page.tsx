@@ -304,6 +304,13 @@ interface JournalData {
 
 // ── Phase 2F types ────────────────────────────────────────────────────────────
 
+interface RuntimeConfigStatus {
+  overrides_active: boolean;
+  override_count: number;
+  persistent: boolean;
+  warnings: string[];
+}
+
 interface MonitoringStatus {
   backend_ok: boolean;
   paper_running: boolean;
@@ -316,6 +323,31 @@ interface MonitoringStatus {
   last_journal_ok: boolean | null;
   last_error: string | null;
   market_session: MarketSession;
+  runtime_config?: RuntimeConfigStatus;
+  warnings: string[];
+}
+
+interface RuntimeConfigField {
+  type: string;
+  description: string;
+  category: string;
+  min: number | null;
+  max: number | null;
+  base_value: number | boolean | null;
+  runtime_override: number | boolean | null;
+  effective_value: number | boolean | null;
+}
+
+interface RuntimeConfigSchema {
+  fields: Record<string, RuntimeConfigField>;
+  disclaimer: string;
+}
+
+interface RuntimeConfigState {
+  runtime_overrides: Record<string, number | boolean>;
+  base_config: Record<string, number | boolean | null>;
+  effective_config: Record<string, number | boolean | null>;
+  persistent: boolean;
   warnings: string[];
 }
 
@@ -458,6 +490,26 @@ async function fetchTodayReport(): Promise<TodayReport | null> {
     if (!r.ok) return null;
     const data = await r.json();
     return data.error ? null : data;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRuntimeConfig(): Promise<RuntimeConfigState | null> {
+  try {
+    const r = await fetch("/api/config/runtime");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRuntimeSchema(): Promise<RuntimeConfigSchema | null> {
+  try {
+    const r = await fetch("/api/config/runtime/schema");
+    if (!r.ok) return null;
+    return r.json();
   } catch {
     return null;
   }
@@ -1174,6 +1226,251 @@ function MarketDiscoveryPanel({
   );
 }
 
+// ── Strategy settings panel ───────────────────────────────────────────────────
+
+const STRATEGY_FIELDS: Array<{
+  key: string; label: string; type: string; min?: number; max?: number; step?: number;
+}> = [
+  { key: "PAPER_ENTRY_SCORE_THRESHOLD",             label: "Entry Score Threshold",       type: "int",   min: 0,    max: 100 },
+  { key: "PAPER_TAKE_PROFIT_PERCENT",               label: "Take Profit %",               type: "float", min: 0.05, max: 20,  step: 0.05 },
+  { key: "PAPER_STOP_LOSS_PERCENT",                 label: "Stop Loss %",                 type: "float", min: 0.05, max: 20,  step: 0.05 },
+  { key: "PAPER_MAX_HOLD_MINUTES",                  label: "Max Hold Minutes",            type: "int",   min: 1,    max: 390 },
+  { key: "PAPER_MAX_OPEN_POSITIONS",                label: "Max Open Positions",          type: "int",   min: 1,    max: 50 },
+  { key: "PAPER_MAX_TRADES_PER_DAY",                label: "Max Trades / Day",            type: "int",   min: 1,    max: 500 },
+  { key: "PAPER_POSITION_SIZE_PERCENT",             label: "Position Size %",             type: "float", min: 1,    max: 100, step: 1 },
+  { key: "PAPER_BEARISH_CATALYST_REJECT_MATERIALITY", label: "Bearish Reject Materiality",type: "float", min: 0,    max: 1,   step: 0.05 },
+  { key: "PAPER_MAX_SYMBOLS_PER_TICK",              label: "Max Symbols / Tick",          type: "int",   min: 1,    max: 300 },
+];
+
+const STRATEGY_BOOL_FIELDS: Array<{ key: string; label: string }> = [
+  { key: "PAPER_REJECT_STRONG_BEARISH_CATALYST", label: "Reject Strong Bearish Catalyst" },
+  { key: "PAPER_DYNAMIC_UNIVERSE_ENABLED",       label: "Dynamic Universe" },
+  { key: "PAPER_MARKET_DISCOVERY_ENABLED",       label: "Market Discovery" },
+  { key: "MARKET_REGIME_ENABLED",                label: "Market Regime Monitor" },
+];
+
+function StrategySettingsPanel({
+  token,
+  onRefresh,
+}: {
+  token: string;
+  onRefresh: () => void;
+}) {
+  const [config, setConfig] = useState<RuntimeConfigState | null>(null);
+  const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
+  const [msg, setMsg] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  const loadConfig = useCallback(async () => {
+    const c = await fetchRuntimeConfig();
+    setConfig(c);
+    if (c) {
+      const init: Record<string, string | boolean> = {};
+      for (const f of STRATEGY_FIELDS) {
+        const v = c.effective_config[f.key];
+        init[f.key] = v !== null && v !== undefined ? String(v) : "";
+      }
+      for (const f of STRATEGY_BOOL_FIELDS) {
+        const v = c.effective_config[f.key];
+        init[f.key] = typeof v === "boolean" ? v : false;
+      }
+      setDrafts(init);
+    }
+  }, []);
+
+  useEffect(() => { loadConfig(); }, [loadConfig]);
+
+  async function handleSave() {
+    if (!token) { setMsg("Paste ADMIN_API_TOKEN above first."); return; }
+    setSaving(true);
+    setMsg(null);
+
+    const updates: Record<string, number | boolean> = {};
+    for (const f of STRATEGY_FIELDS) {
+      const raw = drafts[f.key] as string;
+      if (raw === undefined || raw === "") continue;
+      const parsed = f.type === "int" ? parseInt(raw, 10) : parseFloat(raw);
+      if (!isNaN(parsed)) updates[f.key] = parsed;
+    }
+    for (const f of STRATEGY_BOOL_FIELDS) {
+      if (f.key in drafts) updates[f.key] = drafts[f.key] as boolean;
+    }
+
+    try {
+      const r = await fetch("/api/config/runtime", {
+        method: "PATCH",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ updates, updated_by: "dashboard" }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setMsg("Settings saved.");
+        onRefresh();
+        await loadConfig();
+      } else {
+        const errs = body?.detail?.validation_errors;
+        setMsg(errs ? `Validation errors: ${errs.join("; ")}` : `Error ${r.status}: ${JSON.stringify(body?.detail)}`);
+      }
+    } catch (e) {
+      setMsg(`Network error: ${e}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleReset() {
+    if (!token) { setMsg("Paste ADMIN_API_TOKEN above first."); return; }
+    setResetting(true);
+    setMsg(null);
+    try {
+      const r = await fetch("/api/config/runtime/reset", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ updated_by: "dashboard" }),
+      });
+      const body = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setMsg("Overrides cleared — base settings restored.");
+        onRefresh();
+        await loadConfig();
+      } else {
+        setMsg(`Error ${r.status}`);
+      }
+    } catch (e) {
+      setMsg(`Network error: ${e}`);
+    } finally {
+      setResetting(false);
+    }
+  }
+
+  if (!config) {
+    return <p className="text-gray-500 text-sm">Loading strategy settings…</p>;
+  }
+
+  const overrideCount = Object.keys(config.runtime_overrides).length;
+
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-gray-500 italic">
+        Runtime settings affect fake-money simulation only. No broker, no live trading, no real orders.
+        Changes take effect on the next tick.
+      </p>
+
+      {/* Status row */}
+      <div className="flex flex-wrap gap-2 items-center text-xs">
+        <span className={`font-semibold px-2 py-0.5 rounded border ${
+          overrideCount > 0
+            ? "bg-orange-900 text-orange-300 border-orange-700"
+            : "bg-gray-800 text-gray-400 border-gray-600"
+        }`}>
+          {overrideCount > 0 ? `${overrideCount} override(s) active` : "No overrides — using base config"}
+        </span>
+        <span className={`px-2 py-0.5 rounded border ${
+          config.persistent
+            ? "bg-blue-900 text-blue-300 border-blue-700"
+            : "bg-gray-800 text-gray-400 border-gray-600"
+        }`}>
+          {config.persistent ? "Persisted to DB" : "Memory-only"}
+        </span>
+        {config.warnings.map((w, i) => (
+          <span key={i} className="text-yellow-500 font-mono">{w}</span>
+        ))}
+      </div>
+
+      {/* Numeric fields */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+        {STRATEGY_FIELDS.map((f) => {
+          const base = config.base_config[f.key];
+          const override = config.runtime_overrides[f.key];
+          const effective = config.effective_config[f.key];
+          const hasOverride = f.key in config.runtime_overrides;
+          return (
+            <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+              hasOverride ? "border-orange-700" : "border-gray-700"
+            }`}>
+              <label className="block text-xs text-gray-400 mb-1">{f.label}</label>
+              <input
+                type="number"
+                min={f.min}
+                max={f.max}
+                step={f.step ?? (f.type === "int" ? 1 : 0.01)}
+                value={drafts[f.key] as string ?? ""}
+                onChange={(e) => setDrafts((d) => ({ ...d, [f.key]: e.target.value }))}
+                className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm font-mono text-white focus:outline-none focus:border-blue-500"
+              />
+              <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono">
+                <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
+                {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
+                <span className={hasOverride ? "text-orange-300 font-semibold" : "text-gray-400"}>
+                  eff: {effective !== null && effective !== undefined ? String(effective) : "—"}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Boolean toggles */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        {STRATEGY_BOOL_FIELDS.map((f) => {
+          const base = config.base_config[f.key];
+          const hasOverride = f.key in config.runtime_overrides;
+          const effective = config.effective_config[f.key];
+          return (
+            <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+              hasOverride ? "border-orange-700" : "border-gray-700"
+            }`}>
+              <label className="block text-xs text-gray-400 mb-2">{f.label}</label>
+              <button
+                onClick={() => setDrafts((d) => ({ ...d, [f.key]: !(d[f.key] as boolean) }))}
+                className={`w-full text-sm font-semibold py-1 rounded border transition-colors ${
+                  drafts[f.key]
+                    ? "bg-green-800 border-green-600 text-green-300"
+                    : "bg-gray-700 border-gray-600 text-gray-400"
+                }`}
+              >
+                {drafts[f.key] ? "ON" : "OFF"}
+              </button>
+              <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
+                <span>base: {String(base)}</span>
+                {hasOverride && <span className="text-orange-400">ovr: {String(effective)}</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Action buttons */}
+      <div className="flex flex-wrap gap-3 items-center mt-2">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 disabled:opacity-50 text-white text-sm font-semibold rounded border border-blue-500"
+        >
+          {saving ? "Saving…" : "Save Settings"}
+        </button>
+        <button
+          onClick={handleReset}
+          disabled={resetting || overrideCount === 0}
+          className="px-4 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-white text-sm font-semibold rounded border border-gray-500"
+        >
+          {resetting ? "Resetting…" : "Reset to Base"}
+        </button>
+        {msg && (
+          <span className={`text-sm font-mono ${
+            msg.startsWith("Error") || msg.startsWith("Validation") || msg.startsWith("Network")
+              ? "text-red-400" : "text-green-400"
+          }`}>{msg}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Market regime panel ───────────────────────────────────────────────────────
 
 function regimeColor(regime: string | null | undefined): string {
@@ -1640,7 +1937,7 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2I
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2K
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
@@ -1801,6 +2098,17 @@ export default function Home() {
           token={token}
           onRefresh={refresh}
         />
+      </section>
+
+      {/* Strategy Settings */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Strategy Settings
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            runtime config · admin-protected · fake-money only
+          </span>
+        </h2>
+        <StrategySettingsPanel token={token} onRefresh={refresh} />
       </section>
 
       {/* Analytics */}
