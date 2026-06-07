@@ -97,6 +97,14 @@ curl -X POST http://SERVER_IP:8000/api/stream/stop
 
 ---
 
+## Troubleshooting — WebSocket Policy Violation
+
+If `/api/stream/start` returns or logs a Polygon 1008 policy violation, the API key/account likely does not have WebSocket subscription permission for the requested channels. REST may still work while WebSocket streaming is blocked.
+
+To resolve, upgrade the Polygon account to Starter tier or higher, which includes real-time WebSocket access.
+
+---
+
 ## Stop the Stack
 
 ```bash
