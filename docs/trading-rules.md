@@ -64,6 +64,59 @@ Every open position must have all of the following defined before entry:
 - **Maximum holding time** — position is closed after a defined time window regardless of outcome
 - **Forced end-of-day close** — all positions are force-closed before market close
 
+---
+
+## Phase 2A — Research Paper Simulator
+
+**This is fake-money simulation only. No broker. No real orders. No real money.**
+
+The paper simulator runs an in-memory account with configurable virtual starting cash
+(default $1,000). It uses Polygon REST data only.
+
+### Account limits (configurable via `.env`)
+
+| Setting | Default | Description |
+|---|---|---|
+| `PAPER_STARTING_CASH` | 1000.0 | Virtual starting cash |
+| `PAPER_MAX_POSITIONS` | 2 | Max simultaneous open positions |
+| `PAPER_MAX_TRADES_PER_DAY` | 20 | Max trades (entries) per calendar day |
+| `PAPER_MAX_POSITION_SIZE_USD` | 250.0 | Max position size in virtual USD |
+| `PAPER_TAKE_PROFIT_PERCENT` | 0.60 | Exit at +0.60% gain |
+| `PAPER_STOP_LOSS_PERCENT` | 0.35 | Exit at -0.35% loss |
+| `PAPER_MAX_HOLD_MINUTES` | 15 | Force-exit after 15 minutes |
+| `PAPER_POLL_INTERVAL_SECONDS` | 60 | Background polling interval |
+| `PAPER_DEFAULT_UNIVERSE` | 10 large-cap tickers | Symbols evaluated each tick |
+
+### Candidate eligibility (evaluated each tick)
+
+A symbol is eligible for a simulated entry only when ALL conditions pass:
+
+1. `tradable: true` from the market quality gate
+2. Spread ≤ 0.50%
+3. Change percent > 0 (price is up on the day)
+4. Volume ratio ≥ 0.8 vs prior day (if data is available)
+5. At least one accepted (filtered + classified) catalyst exists for the symbol
+6. Not all catalysts are classified as `generic_news`
+
+Entry price = ask price (falls back to last trade price if ask is unavailable).
+
+### Exit triggers (evaluated each tick for open positions)
+
+Exit is triggered when ANY condition is met:
+
+1. **Take-profit**: current bid ≥ entry price × (1 + PAPER_TAKE_PROFIT_PERCENT / 100)
+2. **Stop-loss**: current bid ≤ entry price × (1 - PAPER_STOP_LOSS_PERCENT / 100)
+3. **Max hold**: position has been open longer than PAPER_MAX_HOLD_MINUTES
+
+Exit price = bid price (falls back to last trade price if bid is unavailable).
+
+### State persistence
+
+All state is in-memory only. State is saved to Redis as best-effort JSON on each tick
+(does not affect operation if Redis is unavailable). State is lost on container restart.
+
+---
+
 ## Position Lifecycle
 
 ```

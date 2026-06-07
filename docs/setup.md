@@ -142,6 +142,41 @@ curl -X POST http://SERVER_IP:8000/api/stream/stop
 
 ---
 
+## Verify the Stack — Phase 2A (Paper Simulator)
+
+```bash
+# Check simulator status (always public)
+curl http://SERVER_IP:8000/api/paper/status
+
+# Reset to $1,000 virtual starting cash (requires ADMIN_API_TOKEN)
+curl -X POST http://SERVER_IP:8000/api/paper/reset \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+
+# Run one manual tick (fetches quality + catalysts, evaluates entries/exits)
+curl -X POST http://SERVER_IP:8000/api/paper/tick \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+
+# Full dashboard (status + open positions + closed trades + last candidates)
+curl http://SERVER_IP:8000/api/paper/dashboard
+
+# Start the background polling loop (ticks every PAPER_POLL_INTERVAL_SECONDS)
+curl -X POST http://SERVER_IP:8000/api/paper/start \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+
+# Check status while running
+curl http://SERVER_IP:8000/api/paper/status
+
+# Stop the background loop
+curl -X POST http://SERVER_IP:8000/api/paper/stop \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
+```
+
+Frontend dashboard: open `http://SERVER_IP:3000` in a browser. The page auto-refreshes
+every 30 seconds and shows the full simulator state. Enter your `ADMIN_API_TOKEN` in the
+controls section to use Start / Stop / Reset / Tick from the browser.
+
+---
+
 ## Verify the Stack — Phase 1G (Catalyst Event-Type Classifier)
 
 ```bash

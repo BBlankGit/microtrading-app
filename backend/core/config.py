@@ -17,6 +17,20 @@ class Settings(BaseSettings):
     ADMIN_API_TOKEN: str = ""
     EXPOSE_KEY_PREVIEW: bool = False
 
+    # Paper simulator
+    PAPER_STARTING_CASH: float = 1000.0
+    PAPER_MAX_POSITIONS: int = 2
+    PAPER_MAX_TRADES_PER_DAY: int = 20
+    PAPER_MAX_POSITION_SIZE_USD: float = 250.0
+    PAPER_TAKE_PROFIT_PERCENT: float = 0.60
+    PAPER_STOP_LOSS_PERCENT: float = 0.35
+    PAPER_MAX_HOLD_MINUTES: int = 15
+    PAPER_POLL_INTERVAL_SECONDS: int = 60
+    PAPER_DEFAULT_UNIVERSE: str = "AAPL,MSFT,NVDA,TSLA,AMD,META,AMZN,GOOGL,PLTR,SOFI"
+
+    def paper_universe_list(self) -> list[str]:
+        return [s.strip().upper() for s in self.PAPER_DEFAULT_UNIVERSE.split(",") if s.strip()]
+
     def allowed_origins_list(self) -> list[str]:
         return [o.strip() for o in self.ALLOWED_ORIGINS.split(",") if o.strip()]
 

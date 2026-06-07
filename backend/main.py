@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.catalysts import router as catalysts_router
 from api.data_status import router as data_status_router
 from api.market import router as market_router
+from api.paper import router as paper_router
 from api.quality import router as quality_router
 from api.stream import router as stream_router
 from api.universe import router as universe_router
@@ -26,6 +27,7 @@ app.add_middleware(
 app.include_router(catalysts_router)
 app.include_router(data_status_router)
 app.include_router(market_router)
+app.include_router(paper_router)
 app.include_router(quality_router)
 app.include_router(stream_router)
 app.include_router(universe_router)

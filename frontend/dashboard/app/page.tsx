@@ -1,53 +1,419 @@
-export default function Home() {
-  return (
-    <main className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-8">
-      <div className="max-w-2xl w-full space-y-6">
-        <div className="text-center space-y-2">
-          <h1 className="text-4xl font-bold tracking-tight">Microtrading App</h1>
-          <p className="text-gray-400 text-lg">Phase 0 Dashboard Skeleton</p>
-        </div>
+"use client";
 
-        <div className="grid grid-cols-1 gap-4">
-          <StatusCard label="Trading Mode" value="Paper Trading Only" color="yellow" />
-          <StatusCard label="Broker Connection" value="Not Connected" color="red" />
-          <StatusCard label="Live Orders" value="Disabled" color="red" />
-          <StatusCard label="Real-Money Execution" value="Disabled" color="red" />
-        </div>
+import { useCallback, useEffect, useState } from "react";
 
-        <div className="bg-gray-800 rounded-lg p-5 border border-gray-700 text-sm text-gray-300 space-y-2">
-          <p className="font-semibold text-white">System Notice</p>
-          <p>
-            AI interprets catalysts and may recommend opportunities to the engine.
-            The <span className="text-yellow-400 font-semibold">Risk Manager has veto power</span> over
-            all trade decisions. AI may not execute trades directly.
-          </p>
-          <p className="text-gray-500 mt-2">
-            Phase 0 — Foundation only. No external connections active.
-          </p>
-        </div>
-      </div>
-    </main>
-  );
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+interface PaperStatus {
+  running: boolean;
+  starting_cash: number;
+  cash: number;
+  equity: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  total_pnl_percent: number;
+  open_position_count: number;
+  closed_trade_count: number;
+  daily_trade_count: number;
+  max_trades_per_day: number;
+  last_tick_at: string | null;
+  last_error: string | null;
+  persistence: string;
+  mode: string;
+  live_trading_enabled: boolean;
+  broker_connected: boolean;
+  take_profit_percent: number;
+  stop_loss_percent: number;
+  max_hold_minutes: number;
 }
 
-function StatusCard({
+interface Position {
+  position_id: string;
+  symbol: string;
+  entry_price: number;
+  current_price: number;
+  shares: number;
+  cost_basis: number;
+  unrealized_pnl: number;
+  unrealized_pnl_percent: number;
+  entry_time: string;
+  entry_catalyst_type: string;
+}
+
+interface Trade {
+  position_id: string;
+  symbol: string;
+  entry_price: number;
+  exit_price: number;
+  shares: number;
+  pnl: number;
+  pnl_percent: number;
+  exit_reason: string;
+  entry_catalyst_type: string;
+  hold_minutes: number;
+  exit_time: string;
+}
+
+interface Candidate {
+  symbol: string;
+  eligible: boolean;
+  rejection_reason: string | null;
+  action: string | null;
+  quality_tradable: boolean;
+  spread_percent: number | null;
+  change_percent: number | null;
+  catalyst_type: string | null;
+  catalyst_count: number;
+}
+
+interface Dashboard {
+  status: PaperStatus;
+  positions: Position[];
+  trades: Trade[];
+  last_candidates: Candidate[];
+  disclaimer: string;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function fmt(n: number | null | undefined, decimals = 2): string {
+  if (n == null) return "—";
+  return n.toFixed(decimals);
+}
+
+function fmtUSD(n: number | null | undefined): string {
+  if (n == null) return "—";
+  const sign = n >= 0 ? "+" : "";
+  return `${sign}$${Math.abs(n).toFixed(2)}`;
+}
+
+function pnlClass(n: number): string {
+  if (n > 0) return "text-green-400";
+  if (n < 0) return "text-red-400";
+  return "text-gray-300";
+}
+
+function utcShort(iso: string | null): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toUTCString().replace(" GMT", " UTC");
+  } catch {
+    return iso;
+  }
+}
+
+// ── API calls ─────────────────────────────────────────────────────────────────
+
+async function fetchDashboard(): Promise<Dashboard | null> {
+  try {
+    const r = await fetch("/api/paper/dashboard");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function adminPost(
+  path: string,
+  token: string
+): Promise<{ ok: boolean; body: unknown }> {
+  try {
+    const r = await fetch(path, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await r.json().catch(() => ({}));
+    return { ok: r.ok, body };
+  } catch (e) {
+    return { ok: false, body: String(e) };
+  }
+}
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function StatBox({
   label,
   value,
-  color,
+  cls = "text-white",
 }: {
   label: string;
   value: string;
-  color: "green" | "yellow" | "red";
+  cls?: string;
 }) {
-  const colors = {
-    green: "text-green-400 bg-green-950 border-green-800",
-    yellow: "text-yellow-400 bg-yellow-950 border-yellow-800",
-    red: "text-red-400 bg-red-950 border-red-800",
-  };
   return (
-    <div className={`rounded-lg border p-4 flex justify-between items-center ${colors[color]}`}>
-      <span className="text-gray-300 font-medium">{label}</span>
-      <span className="font-semibold">{value}</span>
+    <div className="bg-gray-800 rounded p-3 border border-gray-700">
+      <div className="text-xs text-gray-400 mb-1">{label}</div>
+      <div className={`font-mono font-semibold text-sm ${cls}`}>{value}</div>
     </div>
+  );
+}
+
+function PositionsTable({ positions }: { positions: Position[] }) {
+  if (positions.length === 0)
+    return <p className="text-gray-500 text-sm">No open positions.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm text-left">
+        <thead className="text-gray-400 border-b border-gray-700">
+          <tr>
+            {["Symbol","Entry","Current","Shares","Cost","Unreal P&L","Catalyst","Entered"].map((h) => (
+              <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {positions.map((p) => (
+            <tr key={p.position_id} className="border-b border-gray-800 hover:bg-gray-800">
+              <td className="py-2 pr-4 font-semibold text-yellow-300">{p.symbol}</td>
+              <td className="py-2 pr-4 font-mono">${fmt(p.entry_price, 4)}</td>
+              <td className="py-2 pr-4 font-mono">${fmt(p.current_price, 4)}</td>
+              <td className="py-2 pr-4 font-mono">{fmt(p.shares, 4)}</td>
+              <td className="py-2 pr-4 font-mono">${fmt(p.cost_basis)}</td>
+              <td className={`py-2 pr-4 font-mono ${pnlClass(p.unrealized_pnl)}`}>
+                {fmtUSD(p.unrealized_pnl)} ({fmt(p.unrealized_pnl_percent)}%)
+              </td>
+              <td className="py-2 pr-4 text-blue-300">{p.entry_catalyst_type}</td>
+              <td className="py-2 pr-4 text-gray-400 text-xs">{utcShort(p.entry_time)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function TradesTable({ trades }: { trades: Trade[] }) {
+  if (trades.length === 0)
+    return <p className="text-gray-500 text-sm">No closed trades yet.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm text-left">
+        <thead className="text-gray-400 border-b border-gray-700">
+          <tr>
+            {["Symbol","Entry","Exit","P&L","%","Reason","Hold","Catalyst","Closed"].map((h) => (
+              <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {[...trades].reverse().map((t) => (
+            <tr key={t.position_id + t.exit_time} className="border-b border-gray-800 hover:bg-gray-800">
+              <td className="py-2 pr-4 font-semibold text-yellow-300">{t.symbol}</td>
+              <td className="py-2 pr-4 font-mono">${fmt(t.entry_price, 4)}</td>
+              <td className="py-2 pr-4 font-mono">${fmt(t.exit_price, 4)}</td>
+              <td className={`py-2 pr-4 font-mono ${pnlClass(t.pnl)}`}>{fmtUSD(t.pnl)}</td>
+              <td className={`py-2 pr-4 font-mono ${pnlClass(t.pnl_percent)}`}>{fmt(t.pnl_percent)}%</td>
+              <td className="py-2 pr-4 text-gray-300">{t.exit_reason}</td>
+              <td className="py-2 pr-4 font-mono">{t.hold_minutes}m</td>
+              <td className="py-2 pr-4 text-blue-300">{t.entry_catalyst_type}</td>
+              <td className="py-2 pr-4 text-gray-400 text-xs">{utcShort(t.exit_time)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
+  if (candidates.length === 0)
+    return <p className="text-gray-500 text-sm">No tick data yet. Run ⚡ Tick to see candidates.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm text-left">
+        <thead className="text-gray-400 border-b border-gray-700">
+          <tr>
+            {["Symbol","✓","Action","Spread%","Chg%","Cats","Type","Rejection"].map((h) => (
+              <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {candidates.map((c) => (
+            <tr key={c.symbol} className="border-b border-gray-800 hover:bg-gray-800">
+              <td className="py-2 pr-4 font-semibold text-yellow-300">{c.symbol}</td>
+              <td className="py-2 pr-4">
+                {c.eligible
+                  ? <span className="text-green-400 font-bold">✓</span>
+                  : <span className="text-red-400 font-bold">✗</span>}
+              </td>
+              <td className="py-2 pr-4 text-blue-300">{c.action || "—"}</td>
+              <td className="py-2 pr-4 font-mono">{fmt(c.spread_percent, 3)}</td>
+              <td className={`py-2 pr-4 font-mono ${c.change_percent != null ? pnlClass(c.change_percent) : ""}`}>
+                {fmt(c.change_percent)}%
+              </td>
+              <td className="py-2 pr-4 font-mono">{c.catalyst_count}</td>
+              <td className="py-2 pr-4 text-blue-300">{c.catalyst_type || "—"}</td>
+              <td className="py-2 pr-4 text-gray-400 text-xs max-w-xs truncate">{c.rejection_reason || "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
+export default function Home() {
+  const [dashboard, setDashboard] = useState<Dashboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [token, setToken] = useState("");
+  const [actionMsg, setActionMsg] = useState("");
+  const [lastRefresh, setLastRefresh] = useState("");
+
+  const refresh = useCallback(async () => {
+    const data = await fetchDashboard();
+    setDashboard(data);
+    setLoading(false);
+    setLastRefresh(new Date().toUTCString());
+  }, []);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  async function handleAction(path: string, label: string) {
+    if (!token) { setActionMsg("Enter ADMIN_API_TOKEN first."); return; }
+    setActionMsg(`Running ${label}…`);
+    const { ok, body } = await adminPost(path, token);
+    if (ok) {
+      setActionMsg(`${label} OK`);
+      await refresh();
+    } else {
+      const detail = (body as { detail?: string })?.detail || JSON.stringify(body);
+      setActionMsg(`${label} failed: ${detail}`);
+    }
+  }
+
+  const s = dashboard?.status;
+
+  return (
+    <main className="min-h-screen bg-gray-950 text-white p-6 max-w-7xl mx-auto">
+
+      {/* Disclaimer */}
+      <div className="mb-5 rounded-lg border border-yellow-600 bg-yellow-950 px-5 py-3 text-yellow-300 text-sm font-semibold">
+        ⚠ Research-only fake-money simulation. No broker. No live trading. No real orders.
+        All P&amp;L is virtual and for research purposes only. Not financial advice.
+      </div>
+
+      <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
+      <p className="text-gray-400 text-sm mb-6">
+        Paper simulator — Phase 2A · Auto-refreshes every 30s ·{" "}
+        Last: <span className="font-mono text-gray-300">{lastRefresh || "—"}</span>
+      </p>
+
+      {loading && <p className="text-gray-400 animate-pulse">Loading…</p>}
+
+      {/* Account stats */}
+      {s && (
+        <section className="mb-6">
+          <div className="flex flex-wrap items-center gap-3 mb-3">
+            <h2 className="text-xl font-semibold">Account</h2>
+            <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
+              s.running
+                ? "bg-green-900 text-green-300 border-green-700"
+                : "bg-gray-800 text-gray-400 border-gray-600"
+            }`}>
+              {s.running ? "● RUNNING" : "○ STOPPED"}
+            </span>
+            {s.last_error && (
+              <span className="text-xs text-red-400 font-mono bg-red-950 px-2 py-0.5 rounded border border-red-800 truncate max-w-xs">
+                ERR: {s.last_error}
+              </span>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-3">
+            <StatBox label="Starting Cash" value={`$${fmt(s.starting_cash)}`} />
+            <StatBox label="Cash" value={`$${fmt(s.cash)}`} />
+            <StatBox label="Equity" value={`$${fmt(s.equity)}`} />
+            <StatBox label="Realized P&L" value={fmtUSD(s.realized_pnl)} cls={pnlClass(s.realized_pnl)} />
+            <StatBox label="Unrealized P&L" value={fmtUSD(s.unrealized_pnl)} cls={pnlClass(s.unrealized_pnl)} />
+            <StatBox label="Total P&L" value={`${fmtUSD(s.total_pnl)} (${fmt(s.total_pnl_percent)}%)`} cls={pnlClass(s.total_pnl)} />
+            <StatBox label="Trades Today" value={`${s.daily_trade_count} / ${s.max_trades_per_day}`} />
+          </div>
+
+          <div className="grid grid-cols-3 sm:grid-cols-6 gap-3">
+            <StatBox label="Open Positions" value={String(s.open_position_count)} />
+            <StatBox label="Closed Trades" value={String(s.closed_trade_count)} />
+            <StatBox label="Take Profit" value={`+${s.take_profit_percent}%`} />
+            <StatBox label="Stop Loss" value={`-${s.stop_loss_percent}%`} />
+            <StatBox label="Max Hold" value={`${s.max_hold_minutes}m`} />
+            <StatBox label="Persist" value={s.persistence} />
+          </div>
+          {s.last_tick_at && (
+            <p className="text-xs text-gray-500 mt-2">Last tick: {utcShort(s.last_tick_at)}</p>
+          )}
+        </section>
+      )}
+
+      {/* Controls */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">Controls</h2>
+        <div className="flex flex-wrap gap-3 items-end">
+          <div className="flex flex-col gap-1">
+            <label className="text-xs text-gray-400">ADMIN_API_TOKEN</label>
+            <input
+              type="password"
+              value={token}
+              onChange={(e) => setToken(e.target.value)}
+              placeholder="paste token here"
+              className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono w-56 focus:outline-none focus:border-blue-500"
+            />
+          </div>
+          {[
+            { label: "▶ Start", path: "/api/paper/start" },
+            { label: "■ Stop",  path: "/api/paper/stop"  },
+            { label: "↺ Reset", path: "/api/paper/reset" },
+            { label: "⚡ Tick", path: "/api/paper/tick"  },
+          ].map(({ label, path }) => (
+            <button
+              key={path}
+              onClick={() => handleAction(path, label)}
+              className="px-4 py-1.5 bg-blue-700 hover:bg-blue-600 active:bg-blue-800 rounded text-sm font-semibold transition-colors"
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {actionMsg && (
+          <p className="mt-2 text-sm text-yellow-300 font-mono">{actionMsg}</p>
+        )}
+      </section>
+
+      {/* Open positions */}
+      <section className="mb-6">
+        <h2 className="text-xl font-semibold mb-3">
+          Open Positions ({dashboard?.positions.length ?? 0})
+        </h2>
+        <PositionsTable positions={dashboard?.positions ?? []} />
+      </section>
+
+      {/* Closed trades */}
+      <section className="mb-6">
+        <h2 className="text-xl font-semibold mb-3">
+          Closed Trades ({dashboard?.trades.length ?? 0})
+        </h2>
+        <TradesTable trades={dashboard?.trades ?? []} />
+      </section>
+
+      {/* Last tick candidates */}
+      <section className="mb-6">
+        <h2 className="text-xl font-semibold mb-3">Last Tick — Candidate Decisions</h2>
+        <CandidatesTable candidates={dashboard?.last_candidates ?? []} />
+      </section>
+
+      <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4">
+        {dashboard?.disclaimer} ·{" "}
+        mode: {s?.mode ?? "—"} ·{" "}
+        live_trading: {String(s?.live_trading_enabled ?? false)} ·{" "}
+        broker: {String(s?.broker_connected ?? false)}
+      </footer>
+    </main>
   );
 }
