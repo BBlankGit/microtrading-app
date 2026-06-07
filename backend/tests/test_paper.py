@@ -4,8 +4,11 @@ Tests for the Phase 2A paper simulator.
 All tests use in-memory state only. No broker. No real orders.
 No real money. Research-only fake-money simulation.
 """
+import asyncio
 import pathlib
 import re
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -192,9 +195,25 @@ def test_protected_endpoints_reject_wrong_token(client):
 
 
 def test_protected_endpoints_accept_correct_token(client):
-    for path in _PROTECTED_ENDPOINTS:
-        resp = client.post(path, headers={"Authorization": f"Bearer {_TOKEN}"})
-        assert resp.status_code == 200, f"{path} returned {resp.status_code}"
+    # Patch all simulator state-changing functions so the auth test
+    # never calls real Polygon or starts a real background task.
+    _tick_stub = {
+        "tick_at": "test",
+        "symbols_evaluated": 0,
+        "exits": [],
+        "entries": [],
+        "candidates": [],
+        "errors": [],
+    }
+    with (
+        patch("paper.simulator.start_simulator", new=AsyncMock()),
+        patch("paper.simulator.stop_simulator", new=AsyncMock()),
+        patch("paper.simulator.reset_simulator", new=AsyncMock()),
+        patch("paper.simulator.run_tick", new=AsyncMock(return_value=_tick_stub)),
+    ):
+        for path in _PROTECTED_ENDPOINTS:
+            resp = client.post(path, headers={"Authorization": f"Bearer {_TOKEN}"})
+            assert resp.status_code == 200, f"{path} returned {resp.status_code}"
 
 
 # ── Safety invariant: no broker/order/AI in paper module ────────────────────
@@ -359,10 +378,6 @@ def test_exit_fallback_to_last_trade_price():
 
 # ── Tick-level tests using mocked Polygon + quality + catalysts ──────────────
 
-import asyncio
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, patch
-
 
 def _quality_pass(symbol: str, ask: float = 100.0, bid: float = 99.9,
                   change_pct: float = 1.0, spread_pct: float = 0.10,
@@ -388,45 +403,6 @@ def _catalyst(symbol: str, event_type: str = "earnings") -> dict:
         "raw_relevance_hint": "direct",
     }
 
-
-def _patch_tick(quality_map: dict, catalyst_map: dict):
-    """Context manager that patches Polygon + catalysts for run_tick."""
-    import paper.simulator as sim_mod
-
-    async def fake_fetch_quality(sym):
-        snapshot_mock = {}
-        prev_mock = {}
-        return snapshot_mock, prev_mock
-
-    # We patch at the right level: the internal _fetch_quality closure
-    # isn't patchable directly, so we patch the outer functions it calls.
-    async def fake_snapshot(sym):
-        return {}
-
-    async def fake_prev(sym):
-        return {}
-
-    def fake_evaluate(snapshot, prev):
-        sym = quality_map.get("_sym_hint")
-        return quality_map.get(sym, {"tradable": False, "rejection_reasons": ["mocked"]})
-
-    async def fake_collect(symbols, **kwargs):
-        accepted = []
-        for s in symbols:
-            for c in catalyst_map.get(s, []):
-                accepted.append(c)
-        return {"filter": {"accepted": accepted}}
-
-    return (
-        patch.object(sim_mod.polygon_client, "get_ticker_snapshot", side_effect=fake_snapshot),
-        patch.object(sim_mod.polygon_client, "get_previous_close", side_effect=fake_prev),
-        patch("paper.simulator.evaluate_market_quality", side_effect=lambda snap, prev: {"tradable": False}),
-        patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
-    )
-
-
-def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
 
 
 @pytest.fixture(autouse=False)
