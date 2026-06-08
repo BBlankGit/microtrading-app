@@ -50,7 +50,8 @@ async def get_health() -> dict[str, Any]:
         "last_cycle_at": svc.get("last_cycle_at"),
         "last_success_at": svc.get("last_success_at"),
         "last_error": svc.get("last_error"),
-        "requests_last_minute": svc.get("requests_last_minute", 0),
+        # requests_last_minute = actual Polygon HTTP attempts (D1 spec field name kept)
+        "requests_last_minute": svc.get("polygon_attempts_last_minute", 0),
         "timeouts_last_minute": svc.get("timeouts_last_minute", 0),
         "errors_last_minute": svc.get("errors_last_minute", 0),
         "cache_ttl_seconds": settings.MARKETDATA_CACHE_TTL_SECONDS,

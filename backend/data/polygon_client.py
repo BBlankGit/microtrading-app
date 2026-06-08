@@ -33,13 +33,18 @@ def _auth_params() -> dict[str, str]:
     return {"apiKey": settings.POLYGON_API_KEY}
 
 
-async def _get(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _get(
+    path: str,
+    params: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
     merged = {**(params or {}), **_auth_params()}
+    effective_timeout = timeout if timeout is not None else _TIMEOUT
     try:
-        async with httpx.AsyncClient(base_url=_BASE_URL, timeout=_TIMEOUT) as client:
+        async with httpx.AsyncClient(base_url=_BASE_URL, timeout=effective_timeout) as client:
             response = await client.get(path, params=merged)
     except httpx.TimeoutException:
-        raise PolygonError(f"Polygon request timed out after {_TIMEOUT}s: {path}")
+        raise PolygonError(f"Polygon request timed out after {effective_timeout}s: {path}")
     except httpx.RequestError as exc:
         raise PolygonError(f"Polygon network error: {exc}")
 
@@ -116,10 +121,14 @@ async def get_recent_minute_bars(
     return sorted(results, key=lambda b: b.get("t", 0))
 
 
-async def get_bulk_ticker_snapshots(symbols: list[str]) -> list[dict[str, Any]]:
+async def get_bulk_ticker_snapshots(
+    symbols: list[str],
+    timeout: float | None = None,
+) -> list[dict[str, Any]]:
     """
     Fetch snapshots for multiple tickers in one Polygon request.
     Returns list of raw ticker objects (same structure as the ticker field in single-ticker snapshot).
+    timeout: optional per-call override; defaults to _TIMEOUT (10s) when None.
     Phase D1: market data collector bulk fetch.
     """
     _assert_configured()
@@ -129,6 +138,7 @@ async def get_bulk_ticker_snapshots(symbols: list[str]) -> list[dict[str, Any]]:
     raw = await _get(
         "/v2/snapshot/locale/us/markets/stocks/tickers",
         params={"tickers": tickers_str},
+        timeout=timeout,
     )
     return raw.get("tickers", [])
 

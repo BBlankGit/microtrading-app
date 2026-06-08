@@ -52,7 +52,10 @@ def get_service_status() -> dict[str, Any]:
         "last_cycle_at": None,
         "last_success_at": None,
         "last_error": None,
-        "requests_last_minute": 0,
+        "cycles_last_minute": 0,
+        "polygon_attempts_last_minute": 0,
+        "retries_last_minute": 0,
+        "skipped_due_to_rate_limit_last_minute": 0,
         "timeouts_last_minute": 0,
         "errors_last_minute": 0,
     }

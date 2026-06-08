@@ -1,5 +1,5 @@
 """
-Shared market data collector. Phase D1.
+Shared market data collector. Phase D1 / D1-H1.
 Polls Polygon REST once per cycle, writes to Redis.
 No broker. No live trading. No real orders. No real-money execution.
 No AI/LLM/Ollama. Data collection only.
@@ -22,6 +22,11 @@ class MarketDataCollector:
     """
     Collects market data from Polygon REST and writes to Redis.
     One instance per process. Runs as a background asyncio task.
+
+    Rate-limit design (D1-H1):
+      _polygon_attempt_ts counts every actual Polygon HTTP call (including retries).
+      Budget is checked before each attempt; retries are skipped if budget is exhausted.
+      This ensures MARKETDATA_MAX_REQUESTS_PER_MINUTE limits real Polygon calls, not just cycles.
     """
 
     def __init__(self, symbols: list[str] | None = None) -> None:
@@ -30,10 +35,13 @@ class MarketDataCollector:
         self._last_cycle_at: str | None = None
         self._last_success_at: str | None = None
         self._last_error: str | None = None
-        # Sliding-window request counters (monotonic timestamps)
-        self._request_ts: deque[float] = deque()
-        self._timeout_ts: deque[float] = deque()
-        self._error_ts: deque[float] = deque()
+        # Sliding-window counters (monotonic timestamps, 60-second window)
+        self._cycle_ts: deque[float] = deque()           # one per cycle started
+        self._polygon_attempt_ts: deque[float] = deque() # one per actual Polygon HTTP call
+        self._retry_ts: deque[float] = deque()           # one per retry (excludes first attempt)
+        self._skipped_ts: deque[float] = deque()         # one per cycle skipped due to rate limit
+        self._timeout_ts: deque[float] = deque()         # one per timeout error
+        self._error_ts: deque[float] = deque()           # one per non-timeout error
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -44,7 +52,10 @@ class MarketDataCollector:
             "last_cycle_at": self._last_cycle_at,
             "last_success_at": self._last_success_at,
             "last_error": self._last_error,
-            "requests_last_minute": self._count_recent(self._request_ts),
+            "cycles_last_minute": self._count_recent(self._cycle_ts),
+            "polygon_attempts_last_minute": self._count_recent(self._polygon_attempt_ts),
+            "retries_last_minute": self._count_recent(self._retry_ts),
+            "skipped_due_to_rate_limit_last_minute": self._count_recent(self._skipped_ts),
             "timeouts_last_minute": self._count_recent(self._timeout_ts),
             "errors_last_minute": self._count_recent(self._error_ts),
         }
@@ -78,17 +89,41 @@ class MarketDataCollector:
             dq.popleft()
         return len(dq)
 
-    def _can_request(self) -> bool:
-        return self._count_recent(self._request_ts) < settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE
-
-    def _record_request(self) -> None:
-        self._request_ts.append(time.monotonic())
+    def _has_budget(self) -> bool:
+        """True if at least one Polygon attempt slot remains within the rate limit."""
+        return (
+            self._count_recent(self._polygon_attempt_ts)
+            < settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE
+        )
 
     async def _fetch_with_retry(self) -> list[SymbolPayload]:
+        """
+        Fetch bulk snapshots with retry.
+        Each attempt (including retries) consumes one slot from the rate-limit budget.
+        If the budget is exhausted before a retry, the retry is skipped.
+        """
         last_exc: Exception | None = None
         for attempt in range(settings.MARKETDATA_RETRY_COUNT + 1):
+            if not self._has_budget():
+                logger.warning(
+                    "rate limit: budget exhausted (%d/%d req/min), "
+                    "stopping at attempt %d",
+                    self._count_recent(self._polygon_attempt_ts),
+                    settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE,
+                    attempt + 1,
+                )
+                if last_exc:
+                    self._last_error = (
+                        f"budget exhausted after {attempt} attempt(s): {last_exc}"
+                    )
+                break
+
+            # Consume one budget slot before the actual HTTP call
+            self._polygon_attempt_ts.append(time.monotonic())
             if attempt > 0:
+                self._retry_ts.append(time.monotonic())
                 await asyncio.sleep(settings.MARKETDATA_RETRY_BACKOFF_SECONDS)
+
             try:
                 return await polygon_source.fetch_bulk_snapshots(
                     self._symbols,
@@ -102,19 +137,22 @@ class MarketDataCollector:
                     self._error_ts.append(time.monotonic())
                 last_exc = exc
                 logger.debug("fetch attempt %d failed: %s", attempt + 1, exc)
+
         if last_exc:
             self._last_error = str(last_exc)
         return []
 
     async def _cycle(self) -> None:
-        if not self._can_request():
+        # Gate the entire cycle on having at least one budget slot
+        if not self._has_budget():
+            self._skipped_ts.append(time.monotonic())
             logger.warning(
                 "rate limit reached (%d req/min max), skipping cycle",
                 settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE,
             )
             return
 
-        self._record_request()
+        self._cycle_ts.append(time.monotonic())
         payloads = await self._fetch_with_retry()
         now_iso = datetime.now(timezone.utc).isoformat()
         self._last_cycle_at = now_iso

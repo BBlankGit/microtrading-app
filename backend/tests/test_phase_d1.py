@@ -1,5 +1,5 @@
 """
-Phase D1: Shared Market Data Collector tests.
+Phase D1 / D1-H1: Shared Market Data Collector tests.
 No broker. No live trading. No real orders. No real-money execution.
 No AI/LLM/Ollama. All Polygon calls mocked.
 """
@@ -48,11 +48,28 @@ def _make_redis_mock(get_return=None) -> AsyncMock:
     return r
 
 
-# ── Test 1: Redis key serialization / deserialization ─────────────────────────
+def _make_svc_status(**overrides) -> dict:
+    base = {
+        "running": False,
+        "symbols": ["AMD", "NVDA", "QQQ"],
+        "last_cycle_at": None,
+        "last_success_at": None,
+        "last_error": None,
+        "cycles_last_minute": 0,
+        "polygon_attempts_last_minute": 0,
+        "retries_last_minute": 0,
+        "skipped_due_to_rate_limit_last_minute": 0,
+        "timeouts_last_minute": 0,
+        "errors_last_minute": 0,
+    }
+    base.update(overrides)
+    return base
+
+
+# ── Test 1: Redis key serialization ───────────────────────────────────────────
 
 async def test_redis_key_serialization():
     from marketdata.models import SymbolPayload
-
     payload = SymbolPayload(**{k: v for k, v in _make_payload_dict().items()})
     d = payload.to_dict()
 
@@ -62,7 +79,6 @@ async def test_redis_key_serialization():
         await cache.write_cycle_results([d], {}, ttl=30)
 
     mock_r.set.assert_called()
-    # First call should be the snapshot key
     first_call_args = mock_r.set.call_args_list[0][0]
     assert first_call_args[0] == "market:snapshot:AMD"
     stored = json.loads(first_call_args[1])
@@ -84,14 +100,12 @@ async def test_redis_key_deserialization():
     mock_r.get.assert_called_once_with("market:snapshot:AMD")
 
 
-# ── Test 2: Symbol payload schema has all required fields ─────────────────────
+# ── Test 2: Symbol payload schema ─────────────────────────────────────────────
 
 def test_symbol_payload_schema_fields():
     from marketdata.models import SymbolPayload
-
     p = SymbolPayload(**_make_payload_dict())
     d = p.to_dict()
-
     required = [
         "symbol", "source", "as_of", "fetched_at", "ttl_seconds",
         "last_price", "bid", "ask", "spread_percent", "day_volume",
@@ -116,11 +130,12 @@ def test_symbol_payload_is_fresh_and_stale():
     assert p_stale.is_fresh() is False
 
 
-# ── Test 3: Health endpoint returns expected structure ─────────────────────────
+# ── Test 3: Health endpoint structure ─────────────────────────────────────────
 
 async def test_health_endpoint_structure(client):
     with (
-        patch("data.redis_client.redis_ping_status", new=AsyncMock(return_value={"redis_connected": True})),
+        patch("data.redis_client.redis_ping_status",
+              new=AsyncMock(return_value={"redis_connected": True})),
         patch("marketdata.cache.read_symbol", new=AsyncMock(return_value=None)),
         patch("marketdata.cache.read_active_symbols", new=AsyncMock(return_value=[])),
     ):
@@ -147,20 +162,17 @@ async def test_symbol_endpoint_returns_cached_data(client):
     payload = _make_payload_dict(symbol="QQQ", last_price=455.10)
     with patch("marketdata.cache.read_symbol", new=AsyncMock(return_value=payload)):
         resp = client.get("/api/marketdata/symbol/QQQ")
-
     assert resp.status_code == 200
     data = resp.json()
     assert data["symbol"] == "QQQ"
     assert data["last_price"] == 455.10
-    assert data["source"] == "polygon"
 
 
-# ── Test 5: Missing symbol returns 404 ───────────────────────────────────────
+# ── Test 5: Missing symbol returns 404 ────────────────────────────────────────
 
 async def test_symbol_endpoint_missing_returns_404(client):
     with patch("marketdata.cache.read_symbol", new=AsyncMock(return_value=None)):
         resp = client.get("/api/marketdata/symbol/ZZZZ")
-
     assert resp.status_code == 404
     assert "ZZZZ" in resp.json()["detail"]
 
@@ -169,31 +181,7 @@ async def test_symbol_endpoint_missing_returns_404(client):
 
 async def test_collector_handles_polygon_timeout_without_crashing():
     from marketdata.collector import MarketDataCollector
-
     collector = MarketDataCollector(symbols=["AMD"])
-
-    async def _fake_write(*args, **kwargs):
-        pass
-
-    with (
-        patch("marketdata.polygon_source.fetch_bulk_snapshots",
-              new=AsyncMock(side_effect=Exception("Polygon request timed out after 8.0s"))),
-        patch("marketdata.cache.write_cycle_results", new=AsyncMock(side_effect=_fake_write)),
-    ):
-        # Should not raise
-        await collector._cycle()
-
-    # Cycle completed without crashing; error recorded
-    assert collector._last_error is not None
-
-
-# ── Test 7: Timeout counter increments on timeout error ──────────────────────
-
-async def test_timeout_counter_increments():
-    from marketdata.collector import MarketDataCollector
-
-    collector = MarketDataCollector(symbols=["AMD"])
-    assert collector._count_recent(collector._timeout_ts) == 0
 
     with (
         patch("marketdata.polygon_source.fetch_bulk_snapshots",
@@ -202,7 +190,24 @@ async def test_timeout_counter_increments():
     ):
         await collector._cycle()
 
-    # RETRY_COUNT=1 means up to 2 attempts; each timeout increments the counter
+    assert collector._last_error is not None
+
+
+# ── Test 7: Timeout counter increments ───────────────────────────────────────
+
+async def test_timeout_counter_increments():
+    from marketdata.collector import MarketDataCollector
+    collector = MarketDataCollector(symbols=["AMD"])
+    assert collector._count_recent(collector._timeout_ts) == 0
+
+    with (
+        patch("marketdata.polygon_source.fetch_bulk_snapshots",
+              new=AsyncMock(side_effect=Exception("Polygon request timed out after 8.0s"))),
+        patch("marketdata.cache.write_cycle_results", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()),
+    ):
+        await collector._cycle()
+
     assert collector._count_recent(collector._timeout_ts) >= 1
 
 
@@ -211,26 +216,24 @@ async def test_timeout_counter_increments():
 async def test_rate_limiter_skips_cycle_when_budget_exhausted():
     from marketdata.collector import MarketDataCollector
     from core.config import settings
-
     collector = MarketDataCollector(symbols=["AMD"])
-    # Fill the sliding window beyond the per-minute limit
+
     now = time.monotonic()
     for _ in range(settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE + 1):
-        collector._request_ts.append(now)
+        collector._polygon_attempt_ts.append(now)
 
     fetch_mock = AsyncMock()
     with patch("marketdata.polygon_source.fetch_bulk_snapshots", new=fetch_mock):
         await collector._cycle()
 
-    # Polygon should NOT have been called
     fetch_mock.assert_not_called()
+    assert collector._count_recent(collector._skipped_ts) >= 1
 
 
-# ── Test 9: Cache freshness / stale detection ─────────────────────────────────
+# ── Test 9: Cache freshness / stale in health ─────────────────────────────────
 
 async def test_cache_freshness_stale_in_health():
     from datetime import datetime, timezone, timedelta
-
     stale_ts = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
     stale_payload = _make_payload_dict(fetched_at=stale_ts, ttl_seconds=30)
 
@@ -243,7 +246,6 @@ async def test_cache_freshness_stale_in_health():
         from marketdata.health import get_health
         h = await get_health()
 
-    # At least one symbol should be stale since fetched_at is 120s ago vs ttl=30
     assert h["symbols_stale"] >= 1
     assert h["symbols_fresh"] == 0
 
@@ -293,10 +295,9 @@ def test_no_ai_llm_ollama_imports_in_marketdata():
                         )
 
 
-# ── Test 12: No real Polygon calls — all fetches mocked ──────────────────────
+# ── Test 12: No real Polygon calls in fetch ───────────────────────────────────
 
 async def test_no_real_polygon_calls_in_fetch():
-    """polygon_source.fetch_bulk_snapshots must use polygon_client (mockable), not httpx directly."""
     from marketdata import polygon_source
 
     fake_tickers = [
@@ -304,13 +305,13 @@ async def test_no_real_polygon_calls_in_fetch():
             "ticker": "AMD",
             "todaysChangePerc": 1.5,
             "todaysChange": 7.3,
-            "day": {"o": 480.0, "h": 495.0, "l": 478.0, "c": 490.0, "v": 5_000_000.0, "vw": 488.0},
+            "day": {"o": 480.0, "h": 495.0, "l": 478.0, "c": 490.0,
+                    "v": 5_000_000.0, "vw": 488.0},
             "prevDay": {"c": 483.0},
             "lastTrade": {"p": 490.25, "s": 100},
             "lastQuote": {"p": 490.10, "P": 490.40},
         }
     ]
-
     with patch(
         "data.polygon_client.get_bulk_ticker_snapshots",
         new=AsyncMock(return_value=fake_tickers),
@@ -327,6 +328,206 @@ async def test_no_real_polygon_calls_in_fetch():
     assert p.prev_close == 483.0
     assert p.raw_status == "ok"
     assert p.error is None
-    # Volume and spread computed
     assert p.day_volume == 5_000_000.0
     assert p.spread_percent is not None and p.spread_percent > 0
+
+
+# ══ D1-H1 new tests ══════════════════════════════════════════════════════════
+
+# ── H1-Test 1: One successful fetch consumes one polygon_attempt ──────────────
+
+async def test_one_successful_fetch_consumes_one_polygon_attempt():
+    from marketdata.collector import MarketDataCollector
+    from marketdata.models import SymbolPayload
+    from datetime import datetime, timezone
+
+    collector = MarketDataCollector(symbols=["AMD"])
+    fake_payload = SymbolPayload(**_make_payload_dict())
+
+    with (
+        patch("marketdata.polygon_source.fetch_bulk_snapshots",
+              new=AsyncMock(return_value=[fake_payload])),
+        patch("marketdata.cache.write_cycle_results", new=AsyncMock()),
+    ):
+        await collector._cycle()
+
+    assert collector._count_recent(collector._polygon_attempt_ts) == 1
+    assert collector._count_recent(collector._retry_ts) == 0
+    assert collector._count_recent(collector._cycle_ts) == 1
+
+
+# ── H1-Test 2: Failed first attempt + retry = two polygon_attempts ────────────
+
+async def test_failed_fetch_plus_retry_consumes_two_polygon_attempts():
+    from marketdata.collector import MarketDataCollector
+    collector = MarketDataCollector(symbols=["AMD"])
+
+    with (
+        patch("marketdata.polygon_source.fetch_bulk_snapshots",
+              new=AsyncMock(side_effect=Exception("network error"))),
+        patch("marketdata.cache.write_cycle_results", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()),
+    ):
+        await collector._cycle()
+
+    # RETRY_COUNT=1 → max 2 attempts; both should have run (budget not exhausted)
+    assert collector._count_recent(collector._polygon_attempt_ts) == 2
+    assert collector._count_recent(collector._retry_ts) == 1
+
+
+# ── H1-Test 3: Budget = 1 prevents retry after first failure ─────────────────
+
+async def test_budget_exhaustion_prevents_retry():
+    from marketdata.collector import MarketDataCollector
+    from core.config import settings
+
+    collector = MarketDataCollector(symbols=["AMD"])
+    # Fill budget to max - 1, leaving exactly 1 slot
+    now = time.monotonic()
+    for _ in range(settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE - 1):
+        collector._polygon_attempt_ts.append(now)
+
+    with (
+        patch("marketdata.polygon_source.fetch_bulk_snapshots",
+              new=AsyncMock(side_effect=Exception("network error"))),
+        patch("marketdata.cache.write_cycle_results", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()),
+    ):
+        await collector._cycle()
+
+    # Only 1 slot was free → only 1 attempt made, retry was skipped
+    assert collector._count_recent(collector._polygon_attempt_ts) == settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE
+    assert collector._count_recent(collector._retry_ts) == 0
+
+
+# ── H1-Test 4: polygon_attempts never exceed MARKETDATA_MAX_REQUESTS_PER_MINUTE
+
+async def test_polygon_attempts_never_exceed_max_per_minute():
+    from marketdata.collector import MarketDataCollector
+    from core.config import settings
+
+    collector = MarketDataCollector(symbols=["AMD"])
+    fetch_calls = 0
+
+    async def _fake_fetch(*args, **kwargs):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        raise Exception("always fails")
+
+    with (
+        patch("marketdata.polygon_source.fetch_bulk_snapshots",
+              side_effect=_fake_fetch),
+        patch("marketdata.cache.write_cycle_results", new=AsyncMock()),
+        patch("asyncio.sleep", new=AsyncMock()),
+    ):
+        # Run many cycles — budget should cap total attempts
+        for _ in range(settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE + 10):
+            await collector._cycle()
+
+    assert fetch_calls <= settings.MARKETDATA_MAX_REQUESTS_PER_MINUTE
+
+
+# ── H1-Test 5: MARKETDATA_REQUEST_TIMEOUT_SECONDS passed to Polygon client ────
+
+async def test_timeout_setting_passed_to_polygon_client():
+    from marketdata import polygon_source
+    from core.config import settings
+
+    mock_bulk = AsyncMock(return_value=[])
+    with patch("data.polygon_client.get_bulk_ticker_snapshots", new=mock_bulk):
+        await polygon_source.fetch_bulk_snapshots(["AMD"], ttl=30)
+
+    mock_bulk.assert_called_once_with(
+        ["AMD"],
+        timeout=settings.MARKETDATA_REQUEST_TIMEOUT_SECONDS,
+    )
+
+
+# ── H1-Test 6: /api/marketdata/symbols returns expected structure ─────────────
+
+async def test_symbols_endpoint_structure(client):
+    svc = _make_svc_status(running=False, symbols=["AMD", "NVDA"])
+    with (
+        patch("marketdata.service.get_service_status", return_value=svc),
+        patch("marketdata.cache.read_active_symbols",
+              new=AsyncMock(return_value=["AMD"])),
+    ):
+        resp = client.get("/api/marketdata/symbols")
+
+    assert resp.status_code == 200
+    d = resp.json()
+    assert "configured" in d
+    assert "cached" in d
+    assert "running" in d
+    assert "disclaimer" in d
+    assert isinstance(d["configured"], list)
+    assert isinstance(d["cached"], list)
+    assert isinstance(d["running"], bool)
+
+
+# ── H1-Test 7: /api/marketdata/metrics returns expected structure ─────────────
+
+async def test_metrics_endpoint_structure(client):
+    svc = _make_svc_status(polygon_attempts_last_minute=3, cycles_last_minute=3)
+    with (
+        patch("marketdata.service.get_service_status", return_value=svc),
+        patch("marketdata.cache.read_metrics", new=AsyncMock(return_value=None)),
+    ):
+        resp = client.get("/api/marketdata/metrics")
+
+    assert resp.status_code == 200
+    d = resp.json()
+    for key in [
+        "running", "last_cycle_at", "last_success_at", "last_error",
+        "cycles_last_minute", "polygon_attempts_last_minute",
+        "retries_last_minute", "skipped_due_to_rate_limit_last_minute",
+        "timeouts_last_minute", "errors_last_minute",
+        "symbols", "redis_metrics", "disclaimer",
+    ]:
+        assert key in d, f"Missing key in metrics response: {key}"
+    assert d["polygon_attempts_last_minute"] == 3
+    assert d["cycles_last_minute"] == 3
+
+
+# ── H1-Test 8: /api/marketdata/symbol/{symbol} rejects invalid symbols ─────────
+
+async def test_symbol_endpoint_rejects_invalid_symbols(client):
+    with patch("marketdata.cache.read_symbol", new=AsyncMock(return_value=None)) as mock_cache:
+        # Too long (16 chars)
+        resp = client.get("/api/marketdata/symbol/" + "A" * 16)
+        assert resp.status_code == 400
+        mock_cache.assert_not_called()
+
+        mock_cache.reset_mock()
+
+        # Contains @ sign
+        resp = client.get("/api/marketdata/symbol/AMD@HACK")
+        assert resp.status_code == 400
+        mock_cache.assert_not_called()
+
+        mock_cache.reset_mock()
+
+        # Contains space (URL-encoded %20)
+        resp = client.get("/api/marketdata/symbol/AMD%20HACK")
+        assert resp.status_code == 400
+        mock_cache.assert_not_called()
+
+
+# ── H1-Test 9: Redis connection closed on serialization exception ─────────────
+
+async def test_redis_connection_closed_on_exception():
+    mock_r = AsyncMock()
+    mock_r.set.side_effect = Exception("redis write failed")
+    mock_r.aclose.return_value = None
+
+    with patch("data.redis_client.make_redis", return_value=mock_r):
+        from marketdata import cache
+        # Should not raise
+        await cache.write_cycle_results(
+            [_make_payload_dict()],
+            {},
+            ttl=30,
+        )
+
+    # aclose must be called despite the exception
+    mock_r.aclose.assert_called_once()

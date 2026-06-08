@@ -6,6 +6,7 @@ No broker. No live trading. No real orders. No real-money execution.
 import logging
 from datetime import datetime, timezone
 
+from core.config import settings
 from data import polygon_client
 from data.schemas import normalize_bulk_ticker_entry
 from marketdata.models import SymbolPayload, make_error_payload
@@ -63,7 +64,10 @@ async def fetch_bulk_snapshots(symbols: list[str], ttl: int) -> list[SymbolPaylo
     """
     if not symbols:
         return []
-    raw_tickers = await polygon_client.get_bulk_ticker_snapshots(symbols)
+    raw_tickers = await polygon_client.get_bulk_ticker_snapshots(
+        symbols,
+        timeout=settings.MARKETDATA_REQUEST_TIMEOUT_SECONDS,
+    )
     payloads: list[SymbolPayload] = []
     for entry in raw_tickers:
         try:
