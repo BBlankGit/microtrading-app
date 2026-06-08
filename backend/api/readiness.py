@@ -191,7 +191,7 @@ async def _check_polygon_data() -> dict:
     try:
         from data import polygon_client
         snapshot = await polygon_client.get_ticker_snapshot("SPY")
-        last_price = snapshot.get("last_trade_price")
+        last_price = (snapshot.get("last_trade") or {}).get("price") or snapshot.get("last_trade_price")
         change_pct = snapshot.get("change_percent")
         if last_price and last_price > 0:
             result = _pass("polygon_data",
