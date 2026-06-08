@@ -122,5 +122,20 @@ class Settings(BaseSettings):
     def polygon_configured(self) -> bool:
         return bool(self.POLYGON_API_KEY)
 
+    # ── Market data collector (Phase D1 — read-only, no broker, no live trading) ─
+    MARKETDATA_COLLECTOR_ENABLED: bool = False
+    MARKETDATA_BASE_SYMBOLS: str = "AMD,NVDA,TSLA,SMCI,AAPL,MSFT,QQQ,SPY,IWM"
+    MARKETDATA_POLL_INTERVAL_SECONDS: int = 10
+    MARKETDATA_BULK_SNAPSHOT_INTERVAL_SECONDS: int = 10
+    MARKETDATA_AGG1M_INTERVAL_SECONDS: int = 30
+    MARKETDATA_CACHE_TTL_SECONDS: int = 30
+    MARKETDATA_REQUEST_TIMEOUT_SECONDS: int = 8
+    MARKETDATA_MAX_REQUESTS_PER_MINUTE: int = 50
+    MARKETDATA_RETRY_COUNT: int = 1
+    MARKETDATA_RETRY_BACKOFF_SECONDS: float = 2.0
+
+    def marketdata_base_symbols_list(self) -> list[str]:
+        return [s.strip().upper() for s in self.MARKETDATA_BASE_SYMBOLS.split(",") if s.strip()]
+
 
 settings = Settings()

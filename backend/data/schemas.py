@@ -84,6 +84,15 @@ def normalize_mover_snapshot(ticker: dict[str, Any], direction: str = "") -> dic
     }
 
 
+def normalize_bulk_ticker_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """
+    Normalize one element from the bulk /v2/snapshot/.../tickers response.
+    Each element IS the ticker object (not wrapped). Reuses normalize_snapshot logic.
+    Phase D1.
+    """
+    return normalize_snapshot({"ticker": entry}, entry.get("ticker", ""))
+
+
 def normalize_news_item(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": item.get("id"),

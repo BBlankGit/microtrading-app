@@ -9,6 +9,7 @@ from api.data_status import router as data_status_router
 from api.journal import router as journal_router
 from api.market import router as market_router
 from api.market_regime import router as market_regime_router
+from api.marketdata import router as marketdata_router
 from api.monitoring import router as monitoring_router
 from api.paper import router as paper_router
 from api.quality import router as quality_router
@@ -24,7 +25,21 @@ async def lifespan(app: FastAPI):
     from paper.runtime_config import init_runtime_config_tables
     await init_journal()
     await init_runtime_config_tables()
+
+    # Start shared market data collector if enabled (Phase D1)
+    if settings.MARKETDATA_COLLECTOR_ENABLED:
+        from marketdata import service as md_service
+        await md_service.start_collector()
+
     yield
+
+    # Graceful shutdown of collector
+    try:
+        from marketdata import service as md_service
+        if md_service.is_running():
+            await md_service.stop_collector()
+    except Exception:
+        pass
 
 
 app = FastAPI(
@@ -47,6 +62,7 @@ app.include_router(data_status_router)
 app.include_router(journal_router)
 app.include_router(market_router)
 app.include_router(market_regime_router)
+app.include_router(marketdata_router)
 app.include_router(monitoring_router)
 app.include_router(paper_router)
 app.include_router(quality_router)

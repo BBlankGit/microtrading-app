@@ -116,6 +116,23 @@ async def get_recent_minute_bars(
     return sorted(results, key=lambda b: b.get("t", 0))
 
 
+async def get_bulk_ticker_snapshots(symbols: list[str]) -> list[dict[str, Any]]:
+    """
+    Fetch snapshots for multiple tickers in one Polygon request.
+    Returns list of raw ticker objects (same structure as the ticker field in single-ticker snapshot).
+    Phase D1: market data collector bulk fetch.
+    """
+    _assert_configured()
+    if not symbols:
+        return []
+    tickers_str = ",".join(s.upper() for s in symbols[:200])
+    raw = await _get(
+        "/v2/snapshot/locale/us/markets/stocks/tickers",
+        params={"tickers": tickers_str},
+    )
+    return raw.get("tickers", [])
+
+
 async def get_ticker_news(symbol: str, limit: int = 10) -> list[dict[str, Any]]:
     _assert_configured()
     sym = _validate_symbol(symbol)
