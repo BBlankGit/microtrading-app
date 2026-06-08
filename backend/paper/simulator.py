@@ -227,6 +227,9 @@ async def run_tick() -> dict[str, Any]:
         "intrabar_tp_exits_today": 0,
         "intrabar_sl_exits_today": 0,
         "conservative_both_touched_exits_today": 0,
+        "marketdata_cache_hits": 0,
+        "marketdata_cache_misses": 0,
+        "marketdata_cache_fallbacks": 0,
     }
 
     # ── 0. Resolve active universe ────────────────────────────────────────────
@@ -258,14 +261,61 @@ async def run_tick() -> dict[str, Any]:
 
     # ── 1. Fetch market quality for all symbols concurrently ──────────────────
     quality_map: dict[str, dict] = {}
+    source_meta_map: dict[str, dict] = {}
+    _cache_stats: dict[str, int] = {"hits": 0, "misses": 0, "fallbacks": 0}
 
     async def _fetch_quality(sym: str) -> None:
+        _sym_meta: dict[str, Any] = {
+            "marketdata_source": "polygon_direct",
+            "marketdata_age_seconds": None,
+            "marketdata_fetched_at": None,
+            "marketdata_stale": False,
+        }
+
+        # Cache layer — only consulted when enabled
+        if _cfg("PAPER_USE_MARKETDATA_CACHE"):
+            from paper.marketdata_adapter import try_cache_for_quality
+            cached_q, cache_meta = await try_cache_for_quality(sym)
+            _sym_meta.update(cache_meta)
+
+            if cached_q is not None:
+                # Fresh cache hit — skip Polygon
+                source_meta_map[sym] = _sym_meta
+                quality_map[sym] = cached_q
+                _cache_stats["hits"] += 1
+                price = cached_q.get("bid") or cached_q.get("last_trade_price")
+                if price and price > 0:
+                    _last_prices[sym] = price
+                return
+
+            src = cache_meta.get("marketdata_source", "")
+            if src.endswith("_no_fallback"):
+                # Fallback disabled — reject this symbol for this tick
+                source_meta_map[sym] = _sym_meta
+                _cache_stats["misses"] += 1
+                result["errors"].append({
+                    "symbol": sym,
+                    "error": src.removesuffix("_no_fallback") + "_marketdata",
+                })
+                return
+
+            # Stale or missing with fallback enabled → fall through to Polygon
+            _sym_meta["marketdata_source"] = "polygon_fallback"
+            _sym_meta["marketdata_stale"] = True
+            _cache_stats["fallbacks"] += 1
+
+        source_meta_map[sym] = _sym_meta
+
+        # Polygon path — called when cache disabled, stale/miss with fallback, or direct
         try:
             snapshot = await polygon_client.get_ticker_snapshot(sym)
             prev = await polygon_client.get_previous_close(sym)
             q = evaluate_market_quality(snapshot, prev)
             quality_map[sym] = q
-            # Track last known price
+            # Fresh Polygon data: clear stale flag unless the cache had a stale hit
+            # (stale cache hit means the pipeline may be lagging; missing/error is ok)
+            if _sym_meta.get("marketdata_source") != "polygon_fallback" or cache_meta.get("marketdata_source") not in ("stale", "stale_no_fallback"):
+                _sym_meta["marketdata_stale"] = False
             price = q.get("bid") or q.get("last_trade_price")
             if price and price > 0:
                 _last_prices[sym] = price
@@ -276,6 +326,9 @@ async def run_tick() -> dict[str, Any]:
 
     await asyncio.gather(*[_fetch_quality(sym) for sym in symbols])
     result["symbols_evaluated"] = len(quality_map)
+    result["marketdata_cache_hits"] = _cache_stats["hits"]
+    result["marketdata_cache_misses"] = _cache_stats["misses"]
+    result["marketdata_cache_fallbacks"] = _cache_stats["fallbacks"]
 
     # ── 2. Fetch filtered + classified catalysts for tradable symbols ─────────
     tradable = [s for s, q in quality_map.items() if q.get("tradable")]
@@ -445,6 +498,7 @@ async def run_tick() -> dict[str, Any]:
             # These gates hard-reject regardless of mode.
             hard_rejection: str | None = None
             is_no_catalyst_rejection: bool = False
+            _sym_meta = source_meta_map.get(sym, {})
 
             if not q.get("tradable"):
                 reasons = q.get("rejection_reasons", [])
@@ -468,6 +522,14 @@ async def run_tick() -> dict[str, Any]:
             elif all(c.get("classified_event_type") == "generic_news" for c in cats):
                 hard_rejection = "only generic_news catalysts"
                 is_no_catalyst_rejection = True
+
+            # Block new entries when data is stale and fresh cache is required for entries
+            if (
+                hard_rejection is None
+                and _cfg("PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY")
+                and _sym_meta.get("marketdata_stale")
+            ):
+                hard_rejection = "stale_marketdata_entry_blocked"
 
             cat_type = cats[0].get("classified_event_type") if cats else None
 
@@ -516,6 +578,11 @@ async def run_tick() -> dict[str, Any]:
                 "momentum_gate_results": momentum_eval["gate_results"] if momentum_eval else None,
                 # Daily loss guard (Phase 2N)
                 "daily_loss_guard_triggered": _guard["triggered"],
+                # Market-data cache metadata (Phase D2)
+                "marketdata_source": _sym_meta.get("marketdata_source"),
+                "marketdata_age_seconds": _sym_meta.get("marketdata_age_seconds"),
+                "marketdata_fetched_at": _sym_meta.get("marketdata_fetched_at"),
+                "marketdata_stale": _sym_meta.get("marketdata_stale", False),
             }
 
             # ── Entry decision ────────────────────────────────────────────────

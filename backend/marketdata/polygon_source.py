@@ -21,6 +21,7 @@ def _snap_to_payload(snap: dict, ttl: int) -> SymbolPayload:
     last_quote = snap.get("last_quote") or {}
     day = snap.get("day") or {}
     prev_day = snap.get("prev_day") or {}
+    prev_day_volume: float | None = prev_day.get("volume")
 
     last_price: float | None = last_trade.get("price")
     bid: float | None = last_quote.get("bid")
@@ -47,6 +48,7 @@ def _snap_to_payload(snap: dict, ttl: int) -> SymbolPayload:
         volume_ratio=None,
         change_percent=snap.get("change_percent"),
         prev_close=prev_day.get("close"),
+        prev_day_volume=prev_day_volume,
         minute_high=None,
         minute_low=None,
         minute_close=None,

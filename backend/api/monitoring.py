@@ -191,6 +191,38 @@ async def monitoring_status():
     except Exception as exc:
         daily_loss_guard = {"triggered": False, "enabled": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ── Market-data cache status (Phase D2) ───────────────────────────────────
+    marketdata_cache: dict = {}
+    try:
+        from paper.runtime_config import effective_value as _cfg_md
+        _use_cache = _cfg_md("PAPER_USE_MARKETDATA_CACHE")
+        _fallback = _cfg_md("PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED")
+        _max_age = _cfg_md("PAPER_MARKETDATA_CACHE_MAX_AGE_SECONDS")
+        _require_fresh = _cfg_md("PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY")
+        from marketdata import service as _md_svc
+        _md_svc_status = _md_svc.get_service_status()
+        _collector_running = _md_svc_status.get("running", False)
+        marketdata_cache = {
+            "enabled": _use_cache,
+            "collector_running": _collector_running,
+            "max_age_seconds": _max_age,
+            "fallback_to_polygon": _fallback,
+            "require_fresh_for_entry": _require_fresh,
+        }
+        if _use_cache and not _collector_running:
+            if _fallback:
+                warnings.append(
+                    "Market-data cache enabled but collector not running — "
+                    "falling back to direct Polygon polling."
+                )
+            else:
+                warnings.append(
+                    "Market-data cache enabled but collector not running and fallback disabled — "
+                    "new fake-money entries will be rejected for missing cache data."
+                )
+    except Exception as exc:
+        marketdata_cache = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+
     return {
         "backend_ok": True,
         "paper_running": paper_running,
@@ -207,6 +239,7 @@ async def monitoring_status():
         "runtime_config": runtime_config_status,
         "momentum_mode": momentum_mode,
         "daily_loss_guard": daily_loss_guard,
+        "marketdata_cache": marketdata_cache,
         "warnings": warnings,
     }
 

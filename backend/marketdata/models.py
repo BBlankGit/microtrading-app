@@ -27,6 +27,7 @@ class SymbolPayload:
     minute_close: float | None
     raw_status: str            # "ok" | "stale" | "error"
     error: str | None
+    prev_day_volume: float | None = None  # previous session volume; populated D2+
 
     def to_dict(self) -> dict:
         return asdict(self)

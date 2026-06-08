@@ -130,6 +130,9 @@ ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_score_threshold I
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_rejection_reason TEXT;
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_gate_results_json JSONB;
 ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS entry_mode TEXT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS marketdata_source TEXT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS marketdata_age_seconds DOUBLE PRECISION;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS marketdata_stale BOOLEAN;
 """
 
 

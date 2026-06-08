@@ -137,5 +137,11 @@ class Settings(BaseSettings):
     def marketdata_base_symbols_list(self) -> list[str]:
         return [s.strip().upper() for s in self.MARKETDATA_BASE_SYMBOLS.split(",") if s.strip()]
 
+    # Paper simulator market-data cache integration (Phase D2 — no broker, no real orders)
+    PAPER_USE_MARKETDATA_CACHE: bool = True
+    PAPER_MARKETDATA_CACHE_MAX_AGE_SECONDS: int = 30
+    PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED: bool = True
+    PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY: bool = True
+
 
 settings = Settings()

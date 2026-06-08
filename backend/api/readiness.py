@@ -451,6 +451,51 @@ def _check_daily_loss_guard() -> dict:
         return _warn("daily_loss_guard", f"Could not check daily loss guard: {type(exc).__name__}: {exc}")
 
 
+def _check_marketdata_cache() -> dict:
+    try:
+        from paper.runtime_config import effective_value as _cfg
+        use_cache = _cfg("PAPER_USE_MARKETDATA_CACHE")
+        if not use_cache:
+            return _pass(
+                "marketdata_cache",
+                "Shared market-data cache disabled — paper simulator uses direct Polygon polling.",
+                {"enabled": False},
+            )
+        from marketdata import service as _md_svc
+        svc = _md_svc.get_service_status()
+        collector_running = svc.get("running", False)
+        fallback = _cfg("PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED")
+        details = {
+            "enabled": True,
+            "collector_running": collector_running,
+            "fallback_to_polygon": fallback,
+            "max_age_seconds": _cfg("PAPER_MARKETDATA_CACHE_MAX_AGE_SECONDS"),
+        }
+        if collector_running:
+            return _pass(
+                "marketdata_cache",
+                "Shared market-data cache enabled and collector running.",
+                details,
+            )
+        if fallback:
+            return _warn(
+                "marketdata_cache",
+                "Market-data cache enabled but collector not running — fallback to Polygon active.",
+                details,
+            )
+        return _fail(
+            "marketdata_cache",
+            "Market-data cache enabled, collector not running, and fallback disabled — "
+            "fake-money entries will be rejected for missing cache data.",
+            details,
+        )
+    except Exception as exc:
+        return _warn(
+            "marketdata_cache",
+            f"Could not check market-data cache state: {type(exc).__name__}: {exc}",
+        )
+
+
 def _check_safety_invariants() -> dict:
     try:
         import paper.simulator as _sim
@@ -489,6 +534,7 @@ async def _run_all_checks(market_open: bool) -> list[dict]:
     checks.append(_check_dashboard())
     checks.append(_check_momentum_mode())
     checks.append(_check_daily_loss_guard())
+    checks.append(_check_marketdata_cache())
     checks.append(_check_safety_invariants())
     return checks
 

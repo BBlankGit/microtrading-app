@@ -268,6 +268,40 @@ _SCHEMA: dict[str, dict] = {
         "category": "risk",
         "runtime_applied": True, "applies_to": "risk", "restart_required": False,
     },
+    # Market-data cache integration (Phase D2 — no broker, no real orders)
+    "PAPER_USE_MARKETDATA_CACHE": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Route paper simulator quality fetches through the shared Redis market-data cache "
+            "instead of independently polling Polygon for every symbol each tick."
+        ),
+        "category": "marketdata",
+        "runtime_applied": True, "applies_to": "marketdata", "restart_required": False,
+    },
+    "PAPER_MARKETDATA_CACHE_MAX_AGE_SECONDS": {
+        "type": "int", "min": 1, "max": 300,
+        "description": "Maximum cache entry age in seconds before it is treated as stale.",
+        "category": "marketdata",
+        "runtime_applied": True, "applies_to": "marketdata", "restart_required": False,
+    },
+    "PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "When cache entry is stale or missing, fall back to direct Polygon polling. "
+            "If false, symbols with stale/missing cache data are rejected for that tick."
+        ),
+        "category": "marketdata",
+        "runtime_applied": True, "applies_to": "marketdata", "restart_required": False,
+    },
+    "PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Block new fake-money entries when the symbol's data came from a stale cache "
+            "(even when fallback is enabled). Exits are not affected."
+        ),
+        "category": "marketdata",
+        "runtime_applied": True, "applies_to": "marketdata", "restart_required": False,
+    },
 }
 
 # Sentinel: fields that map to settings attributes under different names

@@ -95,7 +95,7 @@ def test_all_schema_fields_are_runtime_applied():
 def test_schema_applies_to_categories_valid():
     """applies_to values must be known categories."""
     import paper.runtime_config as rc
-    valid = {"scoring", "risk", "universe", "discovery", "market_regime", "position_sizing", "momentum"}
+    valid = {"scoring", "risk", "universe", "discovery", "market_regime", "position_sizing", "momentum", "marketdata"}
     schema = rc.get_schema()
     for field, spec in schema.items():
         cat = spec.get("applies_to")
