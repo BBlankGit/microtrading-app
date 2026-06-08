@@ -421,6 +421,9 @@ def _check_daily_loss_guard() -> dict:
         details = {
             "enabled": enabled,
             "triggered": triggered,
+            "trading_date": guard.get("trading_date"),
+            "daily_start_equity": guard.get("daily_start_equity"),
+            "current_equity": guard.get("current_equity"),
             "daily_pnl": guard.get("daily_pnl", 0.0),
             "daily_pnl_percent": guard.get("daily_pnl_percent", 0.0),
             "threshold_percent": guard.get("threshold_percent"),

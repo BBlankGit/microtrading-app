@@ -30,8 +30,21 @@ logger = logging.getLogger(__name__)
 
 _REDIS_KEY = "paper:state"
 
+
+def _ny_trading_date() -> str:
+    """Return current calendar date in America/New_York as YYYY-MM-DD."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+    except Exception:
+        from datetime import timedelta
+        return datetime.now(timezone(timedelta(hours=-4))).strftime("%Y-%m-%d")
+
+
 # Module-level state — one instance per process
 _account: PaperAccount = PaperAccount(settings.PAPER_STARTING_CASH)
+_account.daily_baseline_date = _ny_trading_date()
+_account.daily_start_equity = settings.PAPER_STARTING_CASH
 _lock: asyncio.Lock = asyncio.Lock()
 _simulator_task: asyncio.Task | None = None
 _stop_event: asyncio.Event | None = None
@@ -111,6 +124,8 @@ async def reset_simulator() -> None:
     await stop_simulator()
     async with _lock:
         _account.reset()
+        _account.daily_baseline_date = _ny_trading_date()
+        _account.daily_start_equity = _account.starting_cash
         _last_prices = {}
         _state["last_tick_at"] = None
         _state["last_error"] = None
@@ -348,6 +363,16 @@ async def run_tick() -> dict[str, Any]:
             if t.entry_mode == "momentum" and t.entry_time.startswith(_today_str)
         )
         result["today_momentum_entry_count"] = today_momentum_count
+
+        # Trading-day baseline rollover — reset if NY calendar date changed
+        _today_ny = _ny_trading_date()
+        if _account.daily_baseline_date != _today_ny:
+            _account.daily_start_equity = _account.get_equity(_last_prices)
+            _account.daily_baseline_date = _today_ny
+            logger.info(
+                "Daily loss guard baseline reset: date=%s equity=%.4f",
+                _today_ny, _account.daily_start_equity,
+            )
 
         # Daily loss guard (fake-money only — blocks new entries, never exits)
         _guard = _daily_loss_guard(_account, _last_prices)
@@ -591,6 +616,8 @@ async def _save_state() -> None:
             "trades": [asdict(t) for t in _account.trades],
             "daily_trade_count": _account._daily_trade_count,
             "daily_date": _account._daily_date,
+            "daily_baseline_date": _account.daily_baseline_date,
+            "daily_start_equity": _account.daily_start_equity,
             "last_prices": dict(_last_prices),
         }
     try:

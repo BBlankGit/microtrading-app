@@ -197,11 +197,8 @@ def test_guard_loss_below_percent_threshold_triggers():
     from paper import runtime_config as rc
     from paper.risk import daily_loss_guard_triggered
     acc = _make_account(1000.0)
-    # Simulate a realized loss of -30 (3% of 1000)
+    # Equity = cash = 970 (loss of 30 embedded in cash); daily_start_equity = 1000
     acc.cash = 970.0
-    acc.trades.append(
-        _make_closed_trade("AAPL", pnl=-30.0)
-    )
     old = dict(rc._runtime_overrides)
     try:
         rc._runtime_overrides.update({
@@ -218,12 +215,12 @@ def test_guard_loss_below_percent_threshold_triggers():
     assert result["daily_pnl_percent"] == pytest.approx(-3.0, rel=1e-3)
 
 
-def test_guard_loss_exactly_at_threshold_not_triggered():
-    """Loss exactly at -2.0% must NOT trigger (strict less-than)."""
+def test_guard_loss_exactly_at_threshold_triggers():
+    """Loss exactly at -2.0% triggers (<=)."""
     from paper import runtime_config as rc
     from paper.risk import daily_loss_guard_triggered
     acc = _make_account(1000.0)
-    acc.trades.append(_make_closed_trade("AAPL", pnl=-20.0))
+    acc.cash = 980.0  # -2.0% equity loss
     old = dict(rc._runtime_overrides)
     try:
         rc._runtime_overrides.update({
@@ -234,7 +231,26 @@ def test_guard_loss_exactly_at_threshold_not_triggered():
         result = daily_loss_guard_triggered(acc, {})
     finally:
         rc._runtime_overrides = old
-    # -20 / 1000 = -2.0%, which is NOT strictly less than -2.0%
+    # -20 / 1000 = -2.0% <= -2.0% → triggered
+    assert result["triggered"] is True
+
+
+def test_guard_loss_just_under_threshold_not_triggered():
+    """Loss slightly less than -2.0% does not trigger."""
+    from paper import runtime_config as rc
+    from paper.risk import daily_loss_guard_triggered
+    acc = _make_account(1000.0)
+    acc.cash = 980.1  # -1.99% equity loss — just under threshold
+    old = dict(rc._runtime_overrides)
+    try:
+        rc._runtime_overrides.update({
+            "PAPER_DAILY_MAX_LOSS_ENABLED": True,
+            "PAPER_DAILY_MAX_LOSS_PERCENT": 2.0,
+            "PAPER_DAILY_MAX_LOSS_USD": 0.0,
+        })
+        result = daily_loss_guard_triggered(acc, {})
+    finally:
+        rc._runtime_overrides = old
     assert result["triggered"] is False
 
 
@@ -242,14 +258,14 @@ def test_guard_usd_threshold_triggers():
     from paper import runtime_config as rc
     from paper.risk import daily_loss_guard_triggered
     acc = _make_account(10_000.0)
-    # -0.1% loss ($10) — below percent threshold, but above USD threshold of $5
-    acc.trades.append(_make_closed_trade("AAPL", pnl=-10.0))
+    # Equity = 9990 (loss of $10 embedded in cash)
+    acc.cash = 9990.0
     old = dict(rc._runtime_overrides)
     try:
         rc._runtime_overrides.update({
             "PAPER_DAILY_MAX_LOSS_ENABLED": True,
-            "PAPER_DAILY_MAX_LOSS_PERCENT": 2.0,   # not triggered by percent
-            "PAPER_DAILY_MAX_LOSS_USD": 5.0,       # triggered by USD
+            "PAPER_DAILY_MAX_LOSS_PERCENT": 2.0,   # not triggered by percent (-0.1%)
+            "PAPER_DAILY_MAX_LOSS_USD": 5.0,       # triggered: -10 <= -5
         })
         result = daily_loss_guard_triggered(acc, {})
     finally:
@@ -263,7 +279,7 @@ def test_guard_both_thresholds_both_active():
     from paper import runtime_config as rc
     from paper.risk import daily_loss_guard_triggered
     acc = _make_account(1000.0)
-    acc.trades.append(_make_closed_trade("AAPL", pnl=-50.0))  # -5%
+    acc.cash = 950.0  # -5% equity loss
     old = dict(rc._runtime_overrides)
     try:
         rc._runtime_overrides.update({
@@ -320,9 +336,9 @@ def test_guard_exception_returns_safe_default():
     from paper.risk import daily_loss_guard_triggered
 
     class BrokenAccount:
-        starting_cash = 1000.0
-        def get_realized_pnl(self): raise RuntimeError("broken")
-        def get_unrealized_pnl(self, _): raise RuntimeError("broken")
+        daily_start_equity = 1000.0
+        daily_baseline_date = "2026-06-08"
+        def get_equity(self, _): raise RuntimeError("broken")
 
     result = daily_loss_guard_triggered(BrokenAccount(), {})
     assert result["triggered"] is False
@@ -374,6 +390,9 @@ def test_get_status_includes_daily_loss_guard():
     dlg = status["daily_loss_guard"]
     assert "triggered" in dlg
     assert "enabled" in dlg
+    assert "trading_date" in dlg
+    assert "daily_start_equity" in dlg
+    assert "current_equity" in dlg
 
 
 # ── 5. Candidate output — daily_loss_guard_triggered field ────────────────────
@@ -492,8 +511,9 @@ def test_guard_triggered_blocks_catalyst_entry():
     old_overrides = dict(rc._runtime_overrides)
     old_account = sim._account
     acc = PaperAccount(1000.0)
-    # Simulate a loss exceeding the threshold
-    acc.trades.append(_make_closed_trade("MSFT", pnl=-30.0))  # -3% of 1000
+    # Equity loss of -3% embedded in cash; daily_start_equity remains 1000 from __init__
+    acc.cash = 970.0
+    acc.daily_baseline_date = sim._ny_trading_date()  # prevent rollover reset during tick
     sim._account = acc
 
     rc._runtime_overrides.update({
@@ -579,7 +599,8 @@ def test_guard_triggered_blocks_momentum_entry():
     old_overrides = dict(rc._runtime_overrides)
     old_account = sim._account
     acc = PaperAccount(1000.0)
-    acc.trades.append(_make_closed_trade("MSFT", pnl=-30.0))  # -3% → guard triggers
+    acc.cash = 970.0  # -3% equity loss → guard triggers
+    acc.daily_baseline_date = sim._ny_trading_date()  # prevent rollover reset during tick
     sim._account = acc
 
     rc._runtime_overrides.update({
@@ -660,7 +681,9 @@ def test_guard_does_not_prevent_exits():
     old_prices = dict(sim._last_prices)
 
     acc = PaperAccount(1000.0)
-    # Add an open position that should hit take-profit
+    # AAPL position: bought at 100, 1 share, cost=100
+    # Cash = 850 reflects: 1000 - 50 (MSFT loss) - 100 (AAPL purchase)
+    # daily_start_equity=1000; after AAPL exits at 110: equity=850+110=960 → -4% → triggered
     p = Position(
         position_id=uuid.uuid4().hex[:8],
         symbol="AAPL",
@@ -671,9 +694,8 @@ def test_guard_does_not_prevent_exits():
         entry_catalyst_type="earnings",
     )
     acc.positions["AAPL"] = p
-    acc.cash = 900.0
-    # -5% realized loss: even after AAPL exits at +$10, net = -50+10 = -40 (-4%) → guard triggers
-    acc.trades.append(_make_closed_trade("MSFT", pnl=-50.0))
+    acc.cash = 850.0  # accounts for prior realized loss (-50) and AAPL purchase (-100)
+    acc.daily_baseline_date = sim._ny_trading_date()  # prevent rollover reset during tick
     sim._account = acc
     sim._last_prices["AAPL"] = 110.0  # above take-profit threshold (0.60%)
 
@@ -740,13 +762,13 @@ def test_guard_does_not_prevent_exits():
 # ── 9. Re-entry allowed when guard clears ─────────────────────────────────────
 
 def test_guard_clears_when_loss_recovers():
-    """Guard must not trigger when P&L recovers above threshold."""
+    """Guard must not trigger when equity loss is within threshold."""
     from paper import runtime_config as rc
     from paper.risk import daily_loss_guard_triggered
 
     acc = _make_account(1000.0)
-    # Small realized loss (-1.0%) — below 2.0% threshold
-    acc.trades.append(_make_closed_trade("AAPL", pnl=-10.0))
+    # Equity = 990 (-1.0%) — within 2.0% threshold
+    acc.cash = 990.0
 
     old = dict(rc._runtime_overrides)
     try:
@@ -771,6 +793,8 @@ def test_monitoring_has_daily_loss_guard_field(client):
             "running": False, "last_tick_at": None, "last_error": None,
             "daily_loss_guard": {
                 "triggered": False, "enabled": True, "reason": None,
+                "trading_date": "2026-06-08", "daily_start_equity": 1000.0,
+                "current_equity": 1000.0,
                 "daily_pnl": 0.0, "daily_pnl_percent": 0.0,
                 "threshold_percent": 2.0, "threshold_usd": None,
             },
@@ -810,6 +834,7 @@ def test_monitoring_has_daily_loss_guard_field(client):
     dlg = data["daily_loss_guard"]
     assert "triggered" in dlg
     assert "enabled" in dlg
+    assert "trading_date" in dlg
 
 
 def test_monitoring_guard_triggered_adds_warning(client):
@@ -819,6 +844,8 @@ def test_monitoring_guard_triggered_adds_warning(client):
             "daily_loss_guard": {
                 "triggered": True, "enabled": True,
                 "reason": "daily_max_loss_percent",
+                "trading_date": "2026-06-08", "daily_start_equity": 1000.0,
+                "current_equity": 975.0,
                 "daily_pnl": -25.0, "daily_pnl_percent": -2.5,
                 "threshold_percent": 2.0, "threshold_usd": None,
             },

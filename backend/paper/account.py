@@ -20,6 +20,9 @@ class PaperAccount:
         self.trades: list[ClosedTrade] = []
         self._daily_trade_count: int = 0
         self._daily_date: str = ""
+        # Daily loss guard baseline (Phase 2N-H1 — trading-day scoped)
+        self.daily_baseline_date: str = ""         # "YYYY-MM-DD" in America/New_York
+        self.daily_start_equity: float = starting_cash  # equity at start of current NY trading day
 
     def reset(self) -> None:
         self.cash = self.starting_cash
@@ -27,6 +30,8 @@ class PaperAccount:
         self.trades = []
         self._daily_trade_count = 0
         self._daily_date = ""
+        self.daily_baseline_date = ""
+        self.daily_start_equity = self.starting_cash
 
     def today_str(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y-%m-%d")
