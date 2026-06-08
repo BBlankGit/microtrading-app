@@ -822,6 +822,121 @@ def test_make_json_safe_unit():
     assert isinstance(result["t"], list)
 
 
+# ── H4: non-finite float JSON-safety ─────────────────────────────────────────
+
+def test_make_json_safe_non_finite_floats():
+    """nan/inf/-inf must become None; normal float must be preserved."""
+    import api.readiness as rd
+    import json as _json
+
+    result = rd.make_json_safe({
+        "nan": float("nan"),
+        "inf": float("inf"),
+        "neg_inf": float("-inf"),
+        "normal": 1.23,
+    })
+    # Must serialize with allow_nan=False — no ValueError
+    _json.dumps(result, allow_nan=False)
+    assert result["nan"] is None
+    assert result["inf"] is None
+    assert result["neg_inf"] is None
+    assert result["normal"] == 1.23
+
+
+def test_session_nan_in_details_returns_200(client):
+    """Session endpoint must return 200 when details contain nan/inf."""
+    import json as _json
+
+    checks = [{"name": "x", "status": "pass", "message": "ok",
+               "details": {"bad": float("nan"), "nested": {"inf": float("inf")}}}]
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=checks)):
+        r = client.get("/api/readiness/session")
+    assert r.status_code == 200
+    data = r.json()
+    assert "checks" in data
+    check = next(c for c in data["checks"] if c["name"] == "x")
+    assert check["details"]["bad"] is None
+    assert check["details"]["nested"]["inf"] is None
+    # Confirm the whole response round-trips with allow_nan=False
+    _json.dumps(data, allow_nan=False)
+
+
+def test_compact_nan_in_details_returns_200(client):
+    """Compact endpoint must return 200 when details contain nan/inf."""
+    import json as _json
+
+    checks = [{"name": "x", "status": "pass", "message": "ok",
+               "details": {"bad": float("nan"), "nested": {"inf": float("inf")}}}]
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=checks)):
+        r = client.get("/api/readiness/session/compact")
+    assert r.status_code == 200
+    data = r.json()
+    _json.dumps(data, allow_nan=False)
+
+
+def test_session_nested_complex_details_returns_200(client):
+    """Deeply nested object/datetime/set/tuple in details must not cause 500."""
+    import json as _json
+    from datetime import datetime, timezone as tz
+
+    now = datetime.now(tz.utc)
+    checks = [{
+        "name": "x",
+        "status": "pass",
+        "message": "ok",
+        "details": {
+            "obj": object(),
+            "dt": now,
+            "s": {1, 2, 3},
+            "t": (4, 5),
+            "nested": {
+                "inner": object(),
+                "deep": {"dt": now, "fs": frozenset([6, 7]), "nan": float("nan")},
+            },
+        },
+    }]
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=checks)):
+        r = client.get("/api/readiness/session")
+    assert r.status_code == 200
+    data = _json.loads(r.text)
+    assert "checks" in data
+
+
+def test_compact_nested_complex_details_returns_200(client):
+    """Compact endpoint handles deeply nested complex details without 500."""
+    import json as _json
+    from datetime import datetime, timezone as tz
+
+    now = datetime.now(tz.utc)
+    checks = [{
+        "name": "x",
+        "status": "pass",
+        "message": "ok",
+        "details": {
+            "obj": object(),
+            "dt": now,
+            "s": {1, 2, 3},
+            "t": (4, 5),
+            "nested": {"inner": object(), "nan": float("nan")},
+        },
+    }]
+    with patch("api.readiness._run_all_checks", new=AsyncMock(return_value=checks)):
+        r = client.get("/api/readiness/session/compact")
+    assert r.status_code == 200
+    _json.loads(r.text)
+
+
+def test_make_json_safe_string_redaction():
+    """Strings containing secret patterns are redacted by make_json_safe."""
+    import api.readiness as rd
+
+    result = rd.make_json_safe({"x": "password: hunter2 token=SECRET"})
+    assert isinstance(result["x"], str)
+    assert "hunter2" not in result["x"]
+    assert "SECRET" not in result["x"]
+    assert "[REDACTED]" in result["x"]
+
+
 # ── Router registration ───────────────────────────────────────────────────────
 
 def test_readiness_router_registered_in_main():

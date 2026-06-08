@@ -7,6 +7,7 @@ simulation monitoring only.
 """
 
 import logging
+import math
 import re
 import time
 from datetime import date, datetime, timezone
@@ -76,7 +77,17 @@ def redact_sensitive_error(value: Any) -> str:
 def make_json_safe(value: Any) -> Any:
     """Recursively sanitize a value for JSON serialization. Never raises."""
     try:
-        if value is None or isinstance(value, (bool, int, float, str)):
+        if value is None:
+            return value
+        if isinstance(value, bool):  # bool before int — bool is a subclass of int
+            return value
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return value if math.isfinite(value) else None
+        if isinstance(value, str):
+            if any(pat.search(value) for pat, _ in _REDACT_PATTERNS):
+                return redact_sensitive_error(value)
             return value
         if isinstance(value, (datetime, date)):
             return value.isoformat()
