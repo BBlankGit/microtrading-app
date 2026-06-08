@@ -385,6 +385,32 @@ def _check_dashboard() -> dict:
         return _fail("dashboard", f"Dashboard check failed: {type(exc).__name__}: {exc}")
 
 
+def _check_momentum_mode() -> dict:
+    try:
+        from paper.runtime_config import effective_value as _cfg
+        enabled = bool(_cfg("PAPER_MOMENTUM_MODE_ENABLED"))
+        threshold = _cfg("PAPER_MOMENTUM_ENTRY_SCORE_THRESHOLD")
+        max_trades = _cfg("PAPER_MOMENTUM_MAX_TRADES_PER_DAY")
+        details = {
+            "enabled": enabled,
+            "momentum_score_threshold": threshold,
+            "momentum_max_trades_per_day": max_trades,
+        }
+        if enabled:
+            return _warn(
+                "momentum_mode",
+                "Momentum entry mode is ENABLED. Fake-money simulation only — no broker, no real orders.",
+                details,
+            )
+        return _pass(
+            "momentum_mode",
+            "Momentum entry mode disabled (default). Catalyst-only entry path active.",
+            details,
+        )
+    except Exception as exc:
+        return _warn("momentum_mode", f"Could not check momentum mode: {type(exc).__name__}: {exc}")
+
+
 def _check_safety_invariants() -> dict:
     try:
         import paper.simulator as _sim
@@ -421,6 +447,7 @@ async def _run_all_checks(market_open: bool) -> list[dict]:
     checks.append(_check_market_regime())
     checks.append(_check_tick_freshness(market_open))
     checks.append(_check_dashboard())
+    checks.append(_check_momentum_mode())
     checks.append(_check_safety_invariants())
     return checks
 
@@ -455,6 +482,11 @@ def _recommended_actions(checks: list[dict], market_open: bool, sim_running: boo
         actions.append("Refresh the universe via POST /api/paper/universe/refresh.")
     if m.get("runtime_config") == "warn":
         actions.append("Runtime overrides active — review or reset via POST /api/config/runtime/reset.")
+    if m.get("momentum_mode") == "warn":
+        actions.append(
+            "Momentum mode is ENABLED — fake-money only. "
+            "Disable with PAPER_MOMENTUM_MODE_ENABLED=false when not testing."
+        )
     return actions
 
 

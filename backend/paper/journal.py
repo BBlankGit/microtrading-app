@@ -140,11 +140,15 @@ async def persist_tick_result(
                             score_components_json, positive_reasons_json,
                             negative_reasons_json, decision_reason,
                             catalyst_sentiment, catalyst_sentiment_score,
-                            catalyst_materiality_score
+                            catalyst_materiality_score,
+                            entry_mode, momentum_eligible, momentum_score,
+                            momentum_score_threshold, momentum_rejection_reason,
+                            momentum_gate_results_json
                         ) VALUES (
                             $1,$2,$3,$4,$5,$6,$7,$8,
                             $9,$10,$11,$12,$13,$14,
-                            $15,$16,$17,$18,$19,$20,$21
+                            $15,$16,$17,$18,$19,$20,$21,
+                            $22,$23,$24,$25,$26,$27
                         )
                         """,
                         [
@@ -170,6 +174,12 @@ async def persist_tick_result(
                                 c.get("catalyst_sentiment"),
                                 _float(c.get("catalyst_sentiment_score")),
                                 _float(c.get("catalyst_materiality_score")),
+                                c.get("entry_mode"),
+                                _bool(c.get("momentum_eligible")),
+                                _int(c.get("momentum_score")),
+                                _int(c.get("momentum_score_threshold")),
+                                c.get("momentum_rejection_reason"),
+                                json.dumps(c["momentum_gate_results"]) if c.get("momentum_gate_results") else None,
                             )
                             for c in candidates
                         ],
@@ -182,8 +192,8 @@ async def persist_tick_result(
                         INSERT INTO paper_trades_journal (
                             tick_id, symbol, side, event,
                             entry_price, shares, cost_basis,
-                            catalyst_type, total_score, opened_at
-                        ) VALUES ($1,$2,'long','entry',$3,$4,$5,$6,$7,$8)
+                            catalyst_type, total_score, opened_at, entry_mode
+                        ) VALUES ($1,$2,'long','entry',$3,$4,$5,$6,$7,$8,$9)
                         """,
                         tick_id,
                         entry.get("symbol"),
@@ -193,6 +203,7 @@ async def persist_tick_result(
                         entry.get("catalyst_type"),
                         _int(entry.get("total_score")),
                         now,
+                        entry.get("entry_mode"),
                     )
 
                 # 4. Exit events
@@ -202,8 +213,9 @@ async def persist_tick_result(
                         INSERT INTO paper_trades_journal (
                             tick_id, symbol, side, event,
                             entry_price, exit_price, pnl, pnl_percent,
-                            exit_reason, catalyst_type, total_score, closed_at
-                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10)
+                            exit_reason, catalyst_type, total_score, closed_at,
+                            entry_mode
+                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10,$11)
                         """,
                         tick_id,
                         exit_.get("symbol"),
@@ -215,6 +227,7 @@ async def persist_tick_result(
                         exit_.get("catalyst_type"),
                         _int(exit_.get("total_score")),
                         now,
+                        exit_.get("entry_mode"),
                     )
 
                 # 5. Universe snapshot (if available)

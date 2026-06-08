@@ -123,6 +123,13 @@ CREATE INDEX IF NOT EXISTS idx_paper_trades_event_symbol_created_at
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS catalyst_sentiment TEXT;
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS catalyst_sentiment_score NUMERIC(5,3);
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS catalyst_materiality_score NUMERIC(5,3);
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS entry_mode TEXT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_eligible BOOLEAN;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_score INT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_score_threshold INT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_rejection_reason TEXT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS momentum_gate_results_json JSONB;
+ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS entry_mode TEXT;
 """
 
 

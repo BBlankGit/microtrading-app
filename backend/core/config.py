@@ -64,6 +64,17 @@ class Settings(BaseSettings):
     PAPER_REJECT_STRONG_BEARISH_CATALYST: bool = True
     PAPER_BEARISH_CATALYST_REJECT_MATERIALITY: float = 0.8
 
+    # Momentum entry mode (Phase 2M — disabled by default, no broker, no real orders)
+    PAPER_MOMENTUM_MODE_ENABLED: bool = False
+    PAPER_MOMENTUM_ENTRY_SCORE_THRESHOLD: int = 85
+    PAPER_MOMENTUM_MIN_CHANGE_PERCENT: float = 1.5
+    PAPER_MOMENTUM_MIN_VOLUME_RATIO: float = 2.0
+    PAPER_MOMENTUM_MAX_SPREAD_PERCENT: float = 0.25
+    PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON: bool = True
+    PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE: int = 60
+    PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER: float = 0.5
+    PAPER_MOMENTUM_MAX_TRADES_PER_DAY: int = 5
+
     # Market-wide movers discovery (Phase 2J — no broker, no real orders)
     PAPER_MARKET_DISCOVERY_ENABLED: bool = True
     PAPER_MARKET_DISCOVERY_MAX_SYMBOLS: int = 100

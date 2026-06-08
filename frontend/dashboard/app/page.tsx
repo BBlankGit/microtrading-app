@@ -89,6 +89,12 @@ interface Candidate {
   bearish_flags: string[] | null;
   strongest_catalyst_title: string | null;
   strongest_catalyst_sentiment: string | null;
+  // Phase 2M momentum fields
+  entry_mode: string | null;
+  momentum_eligible: boolean | null;
+  momentum_score: number | null;
+  momentum_score_threshold: number | null;
+  momentum_rejection_reason: string | null;
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -688,7 +694,7 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
-            {["Symbol","✓","Action","Score","Components","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection"].map((h) => (
+            {["Symbol","✓","Mode","Action","Score","Components","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection"].map((h) => (
               <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
             ))}
           </tr>
@@ -701,6 +707,15 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                 {c.eligible
                   ? <span className="text-green-400 font-bold">✓</span>
                   : <span className="text-red-400 font-bold">✗</span>}
+              </td>
+              <td className="py-2 pr-4 whitespace-nowrap">
+                {c.entry_mode === "momentum"
+                  ? <span className="text-purple-400 text-xs font-semibold px-1 rounded bg-purple-950 border border-purple-700">mom</span>
+                  : c.entry_mode === "catalyst"
+                  ? <span className="text-blue-400 text-xs font-semibold px-1 rounded bg-blue-950 border border-blue-700">cat</span>
+                  : c.momentum_eligible
+                  ? <span className="text-purple-600 text-xs font-mono">m?</span>
+                  : <span className="text-gray-600 text-xs">—</span>}
               </td>
               <td className="py-2 pr-4 text-blue-300 whitespace-nowrap">{c.action || "—"}</td>
               <td className={`py-2 pr-4 font-mono font-semibold whitespace-nowrap ${scoreColor(c.total_score, c.score_threshold)}`}>
@@ -1284,6 +1299,19 @@ const STRATEGY_BOOL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "MARKET_REGIME_ENABLED",                label: "Market Regime Monitor" },
 ];
 
+// Momentum mode fields (Phase 2M — disabled by default)
+const MOMENTUM_NUMERIC_FIELDS: Array<{
+  key: string; label: string; type: string; min?: number; max?: number; step?: number;
+}> = [
+  { key: "PAPER_MOMENTUM_ENTRY_SCORE_THRESHOLD",    label: "Momentum Score Threshold",  type: "int",   min: 0,   max: 100 },
+  { key: "PAPER_MOMENTUM_MIN_CHANGE_PERCENT",       label: "Min Change %",              type: "float", min: 0,   max: 20,  step: 0.1 },
+  { key: "PAPER_MOMENTUM_MIN_VOLUME_RATIO",         label: "Min Volume Ratio",          type: "float", min: 0,   max: 100, step: 0.1 },
+  { key: "PAPER_MOMENTUM_MAX_SPREAD_PERCENT",       label: "Max Spread %",              type: "float", min: 0.01,max: 5,   step: 0.01 },
+  { key: "PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE",    label: "Min Regime Risk Score",     type: "int",   min: 0,   max: 100 },
+  { key: "PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER", label: "Position Size Multiplier",  type: "float", min: 0.1, max: 1,   step: 0.05 },
+  { key: "PAPER_MOMENTUM_MAX_TRADES_PER_DAY",       label: "Momentum Max Trades/Day",   type: "int",   min: 0,   max: 100 },
+];
+
 function StrategySettingsPanel({
   token,
   onRefresh,
@@ -1310,6 +1338,15 @@ function StrategySettingsPanel({
         const v = c.effective_config[f.key];
         init[f.key] = typeof v === "boolean" ? v : false;
       }
+      // Momentum fields
+      for (const f of MOMENTUM_NUMERIC_FIELDS) {
+        const v = c.effective_config[f.key];
+        init[f.key] = v !== null && v !== undefined ? String(v) : "";
+      }
+      const mv = c.effective_config["PAPER_MOMENTUM_MODE_ENABLED"];
+      init["PAPER_MOMENTUM_MODE_ENABLED"] = typeof mv === "boolean" ? mv : false;
+      const mrv = c.effective_config["PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON"];
+      init["PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON"] = typeof mrv === "boolean" ? mrv : true;
       setDrafts(init);
     }
   }, []);
@@ -1331,6 +1368,17 @@ function StrategySettingsPanel({
     for (const f of STRATEGY_BOOL_FIELDS) {
       if (f.key in drafts) updates[f.key] = drafts[f.key] as boolean;
     }
+    // Momentum fields
+    for (const f of MOMENTUM_NUMERIC_FIELDS) {
+      const raw = drafts[f.key] as string;
+      if (raw === undefined || raw === "") continue;
+      const parsed = f.type === "int" ? parseInt(raw, 10) : parseFloat(raw);
+      if (!isNaN(parsed)) updates[f.key] = parsed;
+    }
+    if ("PAPER_MOMENTUM_MODE_ENABLED" in drafts)
+      updates["PAPER_MOMENTUM_MODE_ENABLED"] = drafts["PAPER_MOMENTUM_MODE_ENABLED"] as boolean;
+    if ("PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON" in drafts)
+      updates["PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON"] = drafts["PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON"] as boolean;
 
     try {
       const r = await fetch("/api/config/runtime", {
@@ -1478,6 +1526,89 @@ function StrategySettingsPanel({
             </div>
           );
         })}
+      </div>
+
+      {/* Momentum Mode section (Phase 2M — disabled by default) */}
+      <div className="border border-purple-800 rounded p-3 bg-gray-950">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-sm font-semibold text-purple-300">Momentum Mode</span>
+          <span className={`text-xs px-2 py-0.5 rounded border font-semibold ${
+            drafts["PAPER_MOMENTUM_MODE_ENABLED"]
+              ? "bg-orange-900 text-orange-300 border-orange-700"
+              : "bg-gray-800 text-gray-500 border-gray-600"
+          }`}>
+            {drafts["PAPER_MOMENTUM_MODE_ENABLED"] ? "ENABLED" : "DISABLED (default)"}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 italic mb-3">
+          Fake-money simulation only. No broker. No live trading. No real orders.
+          Momentum mode is a secondary entry path for candidates with no catalyst
+          but strong price/volume signals. Disabled by default. Only enable for explicit research testing.
+        </p>
+        {/* Enable toggle */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+          {[
+            { key: "PAPER_MOMENTUM_MODE_ENABLED", label: "Momentum Mode Enabled" },
+            { key: "PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON", label: "Require Risk-On Regime" },
+          ].map((f) => {
+            const base = config.base_config[f.key];
+            const hasOverride = f.key in config.runtime_overrides;
+            const effective = config.effective_config[f.key];
+            return (
+              <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+                hasOverride ? "border-orange-700" : "border-gray-700"
+              }`}>
+                <label className="block text-xs text-gray-400 mb-2">{f.label}</label>
+                <button
+                  onClick={() => setDrafts((d) => ({ ...d, [f.key]: !(d[f.key] as boolean) }))}
+                  className={`w-full text-sm font-semibold py-1 rounded border transition-colors ${
+                    drafts[f.key]
+                      ? "bg-purple-800 border-purple-600 text-purple-300"
+                      : "bg-gray-700 border-gray-600 text-gray-400"
+                  }`}
+                >
+                  {drafts[f.key] ? "ON" : "OFF"}
+                </button>
+                <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
+                  <span>base: {String(base)}</span>
+                  {hasOverride && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        {/* Numeric fields */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {MOMENTUM_NUMERIC_FIELDS.map((f) => {
+            const base = config.base_config[f.key];
+            const override = config.runtime_overrides[f.key];
+            const effective = config.effective_config[f.key];
+            const hasOverride = f.key in config.runtime_overrides;
+            return (
+              <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+                hasOverride ? "border-orange-700" : "border-gray-700"
+              }`}>
+                <label className="block text-xs text-gray-400 mb-1">{f.label}</label>
+                <input
+                  type="number"
+                  min={f.min}
+                  max={f.max}
+                  step={f.step ?? (f.type === "int" ? 1 : 0.01)}
+                  value={drafts[f.key] as string ?? ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [f.key]: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm font-mono text-white focus:outline-none focus:border-purple-500"
+                />
+                <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono">
+                  <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
+                  {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
+                  <span className={hasOverride ? "text-orange-300 font-semibold" : "text-gray-400"}>
+                    eff: {effective !== null && effective !== undefined ? String(effective) : "—"}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Action buttons */}
@@ -2062,7 +2193,7 @@ export default function Home() {
 
       <h1 className="text-3xl font-bold mb-1">Microtrading Research Dashboard</h1>
       <p className="text-gray-400 text-sm mb-1">
-        Fake-money simulator · No broker · No live trading · No real orders · Phase 2L
+        Fake-money simulator · No broker · No live trading · No real orders · Phase 2M
       </p>
       <p className="text-gray-500 text-xs mb-6">
         Auto-refreshes every 30s · Last: <span className="font-mono text-gray-400">{lastRefresh || "—"}</span>
@@ -2075,7 +2206,7 @@ export default function Home() {
         <h2 className="text-lg font-semibold mb-3">
           Market Session Readiness
           <span className="ml-2 text-xs font-normal text-gray-400">
-            12 checks · fake-money only · no broker · no real orders
+            13 checks · fake-money only · no broker · no real orders
           </span>
         </h2>
         <ReadinessPanel readiness={readiness} />

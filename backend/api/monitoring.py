@@ -150,6 +150,34 @@ async def monitoring_status():
         runtime_config_status = {"overrides_active": False, "override_count": 0,
                                  "persistent": False, "warnings": []}
 
+    # ── Momentum mode status ──────────────────────────────────────────────────
+    momentum_mode: dict = {}
+    try:
+        from paper.runtime_config import effective_value as _cfg_m
+        enabled = bool(_cfg_m("PAPER_MOMENTUM_MODE_ENABLED"))
+        momentum_mode = {
+            "enabled": enabled,
+            "entry_score_threshold": _cfg_m("PAPER_MOMENTUM_ENTRY_SCORE_THRESHOLD"),
+            "min_change_percent": _cfg_m("PAPER_MOMENTUM_MIN_CHANGE_PERCENT"),
+            "min_volume_ratio": _cfg_m("PAPER_MOMENTUM_MIN_VOLUME_RATIO"),
+            "max_spread_percent": _cfg_m("PAPER_MOMENTUM_MAX_SPREAD_PERCENT"),
+            "require_market_risk_on": _cfg_m("PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON"),
+            "min_market_risk_score": _cfg_m("PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE"),
+            "position_size_multiplier": _cfg_m("PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER"),
+            "max_trades_per_day": _cfg_m("PAPER_MOMENTUM_MAX_TRADES_PER_DAY"),
+            "disclaimer": (
+                "Momentum mode is fake-money simulation only. "
+                "No live trading. No real-money execution."
+            ),
+        }
+        if enabled:
+            warnings.append(
+                "Momentum entry mode is ENABLED — fake-money simulation only. "
+                "No live trading. No real-money execution."
+            )
+    except Exception as exc:
+        momentum_mode = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+
     return {
         "backend_ok": True,
         "paper_running": paper_running,
@@ -164,6 +192,7 @@ async def monitoring_status():
         "market_session": ms,
         "market_regime": regime_summary,
         "runtime_config": runtime_config_status,
+        "momentum_mode": momentum_mode,
         "warnings": warnings,
     }
 

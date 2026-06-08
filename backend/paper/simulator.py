@@ -21,6 +21,7 @@ from data.polygon_client import PolygonError
 from data.redis_client import make_redis
 from paper.account import PaperAccount
 from paper.journal import persist_tick_result as _persist_journal_tick
+from paper.momentum import evaluate_momentum_entry
 from paper.scoring import score_candidate
 from paper.universe import get_active_paper_universe, get_cached_universe
 
@@ -198,6 +199,8 @@ async def run_tick() -> dict[str, Any]:
         "take_profit_percent": None,
         "stop_loss_percent": None,
         "max_hold_minutes": None,
+        "momentum_mode_enabled": False,
+        "today_momentum_entry_count": 0,
     }
 
     # ── 0. Resolve active universe ────────────────────────────────────────────
@@ -225,6 +228,7 @@ async def run_tick() -> dict[str, Any]:
     result["take_profit_percent"] = _cfg("PAPER_TAKE_PROFIT_PERCENT")
     result["stop_loss_percent"] = _cfg("PAPER_STOP_LOSS_PERCENT")
     result["max_hold_minutes"] = _cfg("PAPER_MAX_HOLD_MINUTES")
+    result["momentum_mode_enabled"] = bool(_cfg("PAPER_MOMENTUM_MODE_ENABLED"))
 
     # ── 1. Fetch market quality for all symbols concurrently ──────────────────
     quality_map: dict[str, dict] = {}
@@ -268,6 +272,22 @@ async def run_tick() -> dict[str, Any]:
         except Exception as exc:
             result["errors"].append({"phase": "catalysts", "error": str(exc)})
 
+    # ── 2b. Pre-fetch market regime for momentum gating (best-effort) ───────────
+    _tick_regime: dict | None = None
+    try:
+        if _cfg("MARKET_REGIME_ENABLED"):
+            from market.regime import get_market_regime
+            _regime_data = await get_market_regime()
+            _tick_regime = {
+                "regime": _regime_data["risk"]["regime"],
+                "risk_on_score": _regime_data["risk"]["risk_on_score"],
+                "confidence": _regime_data["risk"]["confidence"],
+                "as_of": _regime_data["as_of"],
+            }
+    except Exception:
+        pass
+    result["market_regime"] = _tick_regime
+
     # ── 3 & 4. Process exits then entries — single lock, no awaits inside ─────
     async with _lock:
         # Exits first
@@ -308,7 +328,19 @@ async def run_tick() -> dict[str, Any]:
                         "hold_minutes": trade.hold_minutes,
                         "catalyst_type": trade.entry_catalyst_type,
                         "total_score": trade.entry_score,
+                        "entry_mode": trade.entry_mode,
                     })
+
+        # Compute today's momentum entry count from current positions + closed trades
+        _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today_momentum_count = sum(
+            1 for p in _account.positions.values()
+            if p.entry_mode == "momentum" and p.entry_time.startswith(_today_str)
+        ) + sum(
+            1 for t in _account.trades
+            if t.entry_mode == "momentum" and t.entry_time.startswith(_today_str)
+        )
+        result["today_momentum_entry_count"] = today_momentum_count
 
         # Entries
         for sym in symbols:
@@ -320,8 +352,11 @@ async def run_tick() -> dict[str, Any]:
             # Score every candidate (transparent, always computed)
             scoring = score_candidate(sym, q, cats)
 
-            # Hard safety gates (checked before score)
+            # ── Hard safety gates shared by both entry paths ───────────────────
+            # These gates hard-reject regardless of mode.
             hard_rejection: str | None = None
+            is_no_catalyst_rejection: bool = False
+
             if not q.get("tradable"):
                 reasons = q.get("rejection_reasons", [])
                 hard_rejection = f"not tradable: {reasons[0] if reasons else 'failed quality gate'}"
@@ -331,10 +366,6 @@ async def run_tick() -> dict[str, Any]:
                 hard_rejection = f"change_percent {q.get('change_percent')} not positive"
             elif q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < 0.8:
                 hard_rejection = f"volume_ratio {q.get('volume_ratio')} < 0.8"
-            elif not cats:
-                hard_rejection = "no accepted catalysts"
-            elif all(c.get("classified_event_type") == "generic_news" for c in cats):
-                hard_rejection = "only generic_news catalysts"
             elif (
                 _cfg("PAPER_REJECT_STRONG_BEARISH_CATALYST")
                 and scoring.get("catalyst_sentiment") == "bearish"
@@ -342,11 +373,26 @@ async def run_tick() -> dict[str, Any]:
                 >= _cfg("PAPER_BEARISH_CATALYST_REJECT_MATERIALITY")
             ):
                 hard_rejection = "strong_bearish_catalyst"
+            elif not cats:
+                hard_rejection = "no accepted catalysts"
+                is_no_catalyst_rejection = True
+            elif all(c.get("classified_event_type") == "generic_news" for c in cats):
+                hard_rejection = "only generic_news catalysts"
+                is_no_catalyst_rejection = True
 
             cat_type = cats[0].get("classified_event_type") if cats else None
+
+            # ── Momentum evaluation (always computed when mode enabled) ────────
+            momentum_eval: dict | None = None
+            if _cfg("PAPER_MOMENTUM_MODE_ENABLED"):
+                try:
+                    momentum_eval = evaluate_momentum_entry(sym, q, _tick_regime)
+                except Exception:
+                    momentum_eval = None
+
             candidate: dict[str, Any] = {
                 "symbol": sym,
-                "eligible": hard_rejection is None and scoring["score_pass"],
+                "eligible": False,
                 "rejection_reason": hard_rejection,
                 "action": None,
                 "quality_tradable": q.get("tradable"),
@@ -372,15 +418,20 @@ async def run_tick() -> dict[str, Any]:
                 "bearish_flags": scoring.get("bearish_flags"),
                 "strongest_catalyst_title": scoring.get("strongest_catalyst_title"),
                 "strongest_catalyst_sentiment": scoring.get("strongest_catalyst_sentiment"),
+                # Momentum fields (Phase 2M)
+                "entry_mode": None,
+                "momentum_eligible": momentum_eval["eligible"] if momentum_eval else False,
+                "momentum_score": momentum_eval["momentum_score"] if momentum_eval else None,
+                "momentum_score_threshold": momentum_eval["momentum_score_threshold"] if momentum_eval else None,
+                "momentum_rejection_reason": momentum_eval["rejection_reason"] if momentum_eval else None,
+                "momentum_gate_results": momentum_eval["gate_results"] if momentum_eval else None,
             }
 
-            if hard_rejection is not None:
-                # Hard gate failed — don't attempt entry
-                pass
-            elif not scoring["score_pass"]:
-                candidate["action"] = "score_rejected"
-                candidate["rejection_reason"] = scoring["decision_reason"]
-            else:
+            # ── Entry decision ────────────────────────────────────────────────
+            # Path A: Catalyst entry (existing logic, unchanged)
+            if hard_rejection is None and scoring["score_pass"]:
+                candidate["eligible"] = True
+                candidate["entry_mode"] = "catalyst"
                 can, block = _account.can_enter(
                     sym,
                     _cfg("PAPER_MAX_OPEN_POSITIONS"),
@@ -389,8 +440,6 @@ async def run_tick() -> dict[str, Any]:
                 if can:
                     entry_price = q.get("ask") or q.get("last_trade_price", 0)
                     if entry_price and entry_price > 0:
-                        # Compute position budget from runtime position-size percent,
-                        # capped by the hard PAPER_MAX_POSITION_SIZE_USD ceiling.
                         pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
                         budget_pct = _account.cash * (pos_pct / 100.0)
                         position_budget = min(budget_pct, settings.PAPER_MAX_POSITION_SIZE_USD)
@@ -399,6 +448,7 @@ async def run_tick() -> dict[str, Any]:
                             position_budget,
                             cat_type or "unknown",
                             entry_score=scoring["total_score"],
+                            entry_mode="catalyst",
                         )
                         if pos:
                             candidate["action"] = "entered"
@@ -409,6 +459,7 @@ async def run_tick() -> dict[str, Any]:
                                 "cost_basis": round(pos.cost_basis, 4),
                                 "catalyst_type": cat_type,
                                 "total_score": scoring["total_score"],
+                                "entry_mode": "catalyst",
                             })
                         else:
                             candidate["action"] = "entry_failed"
@@ -416,6 +467,72 @@ async def run_tick() -> dict[str, Any]:
                         candidate["action"] = "no_valid_price"
                 else:
                     candidate["action"] = f"blocked: {block}"
+
+            # Path B: Momentum fallback (only when catalyst path not taken)
+            elif (
+                hard_rejection is not None
+                and is_no_catalyst_rejection
+                and momentum_eval is not None
+                and momentum_eval["eligible"]
+            ):
+                # Momentum daily limit gate
+                momentum_max = _cfg("PAPER_MOMENTUM_MAX_TRADES_PER_DAY")
+                if today_momentum_count >= momentum_max:
+                    candidate["action"] = f"momentum_blocked: daily limit {momentum_max}"
+                    candidate["rejection_reason"] = hard_rejection
+                else:
+                    candidate["eligible"] = True
+                    candidate["entry_mode"] = "momentum"
+                    candidate["rejection_reason"] = None
+                    can, block = _account.can_enter(
+                        sym,
+                        _cfg("PAPER_MAX_OPEN_POSITIONS"),
+                        _cfg("PAPER_MAX_TRADES_PER_DAY"),
+                    )
+                    if can:
+                        entry_price = q.get("ask") or q.get("last_trade_price", 0)
+                        if entry_price and entry_price > 0:
+                            pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
+                            size_multiplier = _cfg("PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER")
+                            budget_pct = _account.cash * (pos_pct / 100.0) * size_multiplier
+                            position_budget = min(budget_pct, settings.PAPER_MAX_POSITION_SIZE_USD)
+                            pos = _account.enter_position(
+                                sym, entry_price,
+                                position_budget,
+                                "momentum",
+                                entry_score=momentum_eval["momentum_score"],
+                                entry_mode="momentum",
+                            )
+                            if pos:
+                                today_momentum_count += 1
+                                result["today_momentum_entry_count"] = today_momentum_count
+                                candidate["action"] = "entered"
+                                result["entries"].append({
+                                    "symbol": sym,
+                                    "entry_price": round(entry_price, 4),
+                                    "shares": round(pos.shares, 6),
+                                    "cost_basis": round(pos.cost_basis, 4),
+                                    "catalyst_type": "momentum",
+                                    "total_score": momentum_eval["momentum_score"],
+                                    "entry_mode": "momentum",
+                                })
+                            else:
+                                candidate["action"] = "entry_failed"
+                                candidate["eligible"] = False
+                        else:
+                            candidate["action"] = "no_valid_price"
+                            candidate["eligible"] = False
+                    else:
+                        candidate["action"] = f"blocked: {block}"
+                        candidate["eligible"] = False
+
+            elif hard_rejection is not None:
+                # Hard gate failed and not eligible for momentum
+                pass
+            else:
+                # Catalyst score failed
+                candidate["action"] = "score_rejected"
+                candidate["rejection_reason"] = scoring["decision_reason"]
 
             result["candidates"].append(candidate)
 
@@ -436,20 +553,8 @@ async def run_tick() -> dict[str, Any]:
     except Exception as exc:
         result["journal"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    # ── 7. Market regime metadata (observational only — no strategy changes) ──
-    result["market_regime"] = None
-    try:
-        if _cfg("MARKET_REGIME_ENABLED"):
-            from market.regime import get_market_regime
-            regime_data = await get_market_regime()
-            result["market_regime"] = {
-                "regime": regime_data["risk"]["regime"],
-                "risk_on_score": regime_data["risk"]["risk_on_score"],
-                "confidence": regime_data["risk"]["confidence"],
-                "as_of": regime_data["as_of"],
-            }
-    except Exception:
-        pass
+    # ── 7. Market regime already fetched in step 2b (observational only) ────────
+    # result["market_regime"] is already set from step 2b.
 
     return result
 

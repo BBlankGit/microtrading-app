@@ -174,6 +174,60 @@ _SCHEMA: dict[str, dict] = {
         "category": "regime",
         "runtime_applied": True, "applies_to": "market_regime", "restart_required": False,
     },
+    "PAPER_MOMENTUM_MODE_ENABLED": {
+        "type": "bool", "min": None, "max": None,
+        "description": "Enable momentum entry mode fallback (disabled by default). No broker, no real orders.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_ENTRY_SCORE_THRESHOLD": {
+        "type": "int", "min": 0, "max": 100,
+        "description": "Minimum momentum score (0-100) required for momentum-mode entry.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_MIN_CHANGE_PERCENT": {
+        "type": "float", "min": 0.0, "max": 20.0,
+        "description": "Minimum price change % required for momentum-mode entry.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_MIN_VOLUME_RATIO": {
+        "type": "float", "min": 0.0, "max": 100.0,
+        "description": "Minimum volume ratio required for momentum-mode entry.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_MAX_SPREAD_PERCENT": {
+        "type": "float", "min": 0.01, "max": 5.0,
+        "description": "Maximum spread % allowed for momentum-mode entry.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON": {
+        "type": "bool", "min": None, "max": None,
+        "description": "Require risk-on market regime for momentum-mode entries.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE": {
+        "type": "int", "min": 0, "max": 100,
+        "description": "Minimum market risk-on score for momentum-mode entry.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER": {
+        "type": "float", "min": 0.1, "max": 1.0,
+        "description": "Position size multiplier for momentum entries (fraction of normal size).",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    "PAPER_MOMENTUM_MAX_TRADES_PER_DAY": {
+        "type": "int", "min": 0, "max": 100,
+        "description": "Maximum momentum-mode entries per calendar day.",
+        "category": "momentum",
+        "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
 }
 
 # Sentinel: fields that map to settings attributes under different names
