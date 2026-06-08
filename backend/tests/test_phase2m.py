@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 BACKEND_ROOT = Path(__file__).parent.parent
 
 FORBIDDEN_MODULES = {
-    "openai", "anthropic", "langchain", "broker", "alpaca", "ibapi",
+    "openai", "anthropic", "langchain", "ollama", "broker", "alpaca", "ibapi",
     "tastytrade", "td_ameritrade", "schwab",
 }
 FORBIDDEN_EXECUTION = {"place_order", "submit_order", "execute_order", "send_order"}
@@ -585,3 +585,219 @@ def test_momentum_mode_disabled_after_runtime_reset():
         assert rc.effective_value("PAPER_MOMENTUM_MODE_ENABLED") is False
     finally:
         rc._runtime_overrides = old
+
+
+# ── 11. Cap-bound momentum sizing ─────────────────────────────────────────────
+
+def test_momentum_sizing_cap_applied_before_multiplier():
+    """
+    Multiplier must apply after the USD cap, not before it.
+
+    cash=10000, pct=25%, cap=250, multiplier=0.5:
+      normal_budget = min(2500, 250) = 250  (capped)
+      momentum_budget = 250 * 0.5 = 125     (correct)
+
+    Pre-fix bug: min(2500 * 0.5, 250) = min(1250, 250) = 250
+    which equals the full cap — same as a catalyst entry on large accounts.
+    """
+    cash, pct, cap, mult = 10_000.0, 25.0, 250.0, 0.5
+
+    normal_budget = min(cash * (pct / 100.0), cap)
+    momentum_budget = normal_budget * mult
+
+    assert normal_budget == pytest.approx(250.0)
+    assert momentum_budget == pytest.approx(125.0)
+
+    # Confirm the old formula produced the wrong value (equal to cap)
+    old_formula = min(cash * (pct / 100.0) * mult, cap)
+    assert old_formula == pytest.approx(250.0)
+    assert momentum_budget < old_formula   # fixed formula is strictly smaller
+
+
+def test_catalyst_sizing_no_multiplier_applied():
+    """Catalyst path uses the normal capped budget with no multiplier."""
+    cash, pct, cap = 10_000.0, 25.0, 250.0
+
+    catalyst_budget = min(cash * (pct / 100.0), cap)
+    assert catalyst_budget == pytest.approx(250.0)
+
+    momentum_budget = catalyst_budget * 0.5
+    assert momentum_budget == pytest.approx(125.0)
+    assert catalyst_budget > momentum_budget
+
+
+# ── 12. Simulator-level momentum fallback ─────────────────────────────────────
+
+def test_simulator_momentum_fallback_entry_mode():
+    """
+    When catalyst path fails due to no accepted catalysts, the simulator falls back
+    to the momentum path and records entry_mode='momentum'.
+    No Polygon calls — all I/O is mocked.
+    """
+    import asyncio
+    from paper import runtime_config as rc
+    import paper.simulator as sim
+    from paper.account import PaperAccount
+
+    quality = {
+        "tradable": True, "bid": 100.0, "ask": 100.1, "last_trade_price": 100.05,
+        "spread_percent": 0.10, "change_percent": 3.0, "volume_ratio": 4.0,
+        "has_valid_quote": True, "has_valid_trade": True,
+        "has_sufficient_volume": True, "has_acceptable_spread": True,
+        "rejection_reasons": [],
+    }
+
+    old_overrides = dict(rc._runtime_overrides)
+    old_account = sim._account
+    sim._account = PaperAccount(1000.0)
+
+    rc._runtime_overrides.update({
+        "PAPER_MOMENTUM_MODE_ENABLED": True,
+        "PAPER_MOMENTUM_ENTRY_SCORE_THRESHOLD": 85,
+        "PAPER_MOMENTUM_MIN_CHANGE_PERCENT": 1.5,
+        "PAPER_MOMENTUM_MIN_VOLUME_RATIO": 2.0,
+        "PAPER_MOMENTUM_MAX_SPREAD_PERCENT": 0.25,
+        "PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON": False,
+        "PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE": 60,
+        "PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER": 0.5,
+        "PAPER_MOMENTUM_MAX_TRADES_PER_DAY": 5,
+    })
+
+    try:
+        with (
+            patch("paper.simulator.get_active_paper_universe", new_callable=AsyncMock,
+                  return_value={
+                      "active_symbols": ["AAPL"],
+                      "active_count": 1,
+                      "last_refreshed_at": None,
+                      "refresh_reason": "test",
+                      "discovery": {"enabled": False, "discovered_count": 0, "errors": []},
+                  }),
+            patch("paper.simulator.polygon_client.get_ticker_snapshot",
+                  new_callable=AsyncMock, return_value=quality),
+            patch("paper.simulator.polygon_client.get_previous_close",
+                  new_callable=AsyncMock, return_value={}),
+            patch("paper.simulator.evaluate_market_quality", return_value=quality),
+            patch("paper.simulator.collect_news_for_symbols", new_callable=AsyncMock,
+                  return_value={"filter": {"accepted": []}}),
+            patch("paper.simulator._persist_journal_tick", new_callable=AsyncMock,
+                  return_value={"ok": True}),
+            patch("paper.simulator.get_cached_universe", return_value=None),
+            patch("paper.simulator._save_state", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(sim.run_tick())
+    finally:
+        sim._account = old_account
+        rc._runtime_overrides = old_overrides
+
+    entries = result.get("entries", [])
+    assert len(entries) == 1, f"Expected 1 momentum entry, got {len(entries)}: {entries}"
+    assert entries[0]["entry_mode"] == "momentum"
+    assert result["today_momentum_entry_count"] == 1
+    assert result["momentum_mode_enabled"] is True
+
+
+# ── 13. Strong bearish catalyst cannot be rescued by momentum ─────────────────
+
+def test_strong_bearish_catalyst_not_rescued_by_momentum():
+    """
+    A strong bearish catalyst sets hard_rejection='strong_bearish_catalyst'
+    without setting is_no_catalyst_rejection, so the momentum path is never taken.
+    This replicates the exact gate logic from simulator.py.
+    """
+    q = {
+        "tradable": True, "spread_percent": 0.10,
+        "change_percent": 3.0, "volume_ratio": 4.0, "rejection_reasons": [],
+    }
+    cats = [{"classified_event_type": "earnings", "ticker": "AAPL"}]
+    scoring = {"catalyst_sentiment": "bearish", "catalyst_materiality_score": 0.95}
+
+    hard_rejection: str | None = None
+    is_no_catalyst_rejection: bool = False
+
+    if not q.get("tradable"):
+        hard_rejection = "not tradable"
+    elif (q.get("spread_percent") or 999) > 0.50:
+        hard_rejection = "spread too wide"
+    elif (q.get("change_percent") or 0) <= 0:
+        hard_rejection = "change not positive"
+    elif q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < 0.8:
+        hard_rejection = "low volume"
+    elif (
+        True  # PAPER_REJECT_STRONG_BEARISH_CATALYST=True
+        and scoring.get("catalyst_sentiment") == "bearish"
+        and (scoring.get("catalyst_materiality_score") or 0.0) >= 0.8
+    ):
+        hard_rejection = "strong_bearish_catalyst"
+    elif not cats:
+        hard_rejection = "no accepted catalysts"
+        is_no_catalyst_rejection = True
+
+    assert hard_rejection == "strong_bearish_catalyst"
+    assert is_no_catalyst_rejection is False  # momentum fallback not accessible
+
+
+# ── 14. Momentum account gates ────────────────────────────────────────────────
+
+def test_momentum_blocked_max_open_positions():
+    """Momentum (and catalyst) entry is blocked when max open positions is reached."""
+    from paper.account import PaperAccount
+    acc = PaperAccount(10_000.0)
+    pos = acc.enter_position("AAPL", 100.0, 200.0, "earnings", entry_mode="catalyst")
+    assert pos is not None
+    can, reason = acc.can_enter("MSFT", max_positions=1, max_trades=100)
+    assert not can
+    assert "max positions" in reason
+
+
+def test_momentum_blocked_max_daily_trades():
+    """Momentum entry is blocked when max daily trade count is reached."""
+    from paper.account import PaperAccount
+    acc = PaperAccount(10_000.0)
+    acc.enter_position("AAPL", 100.0, 200.0, "earnings", entry_mode="catalyst")
+    acc.exit_position("AAPL", 110.0, "take_profit")  # consumes one daily trade
+    can, reason = acc.can_enter("MSFT", max_positions=10, max_trades=1)
+    assert not can
+    assert "max daily" in reason
+
+
+def test_momentum_daily_limit_blocks_at_threshold():
+    """
+    When today_momentum_count >= PAPER_MOMENTUM_MAX_TRADES_PER_DAY,
+    the simulator should block the momentum entry.
+    Replicates the count logic from simulator.py.
+    """
+    import uuid
+    from datetime import datetime, timezone
+    from paper.account import PaperAccount
+    from paper.models import Position
+
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    acc = PaperAccount(10_000.0)
+
+    # Inject a momentum position from today directly
+    p = Position(
+        position_id=uuid.uuid4().hex[:8],
+        symbol="XXXX",
+        entry_price=50.0,
+        shares=2.0,
+        cost_basis=100.0,
+        entry_time=f"{today_str}T10:00:00+00:00",
+        entry_catalyst_type="momentum",
+        entry_mode="momentum",
+    )
+    acc.positions["XXXX"] = p
+
+    today_momentum_count = sum(
+        1 for pos in acc.positions.values()
+        if pos.entry_mode == "momentum" and pos.entry_time.startswith(today_str)
+    ) + sum(
+        1 for t in acc.trades
+        if t.entry_mode == "momentum" and t.entry_time.startswith(today_str)
+    )
+    momentum_max = 1  # limit of 1 already consumed
+    assert today_momentum_count == 1
+    assert today_momentum_count >= momentum_max  # entry would be blocked
+
+    # Below limit: not blocked
+    assert (today_momentum_count < (momentum_max + 1)) is True

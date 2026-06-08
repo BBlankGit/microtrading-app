@@ -494,8 +494,8 @@ async def run_tick() -> dict[str, Any]:
                         if entry_price and entry_price > 0:
                             pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
                             size_multiplier = _cfg("PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER")
-                            budget_pct = _account.cash * (pos_pct / 100.0) * size_multiplier
-                            position_budget = min(budget_pct, settings.PAPER_MAX_POSITION_SIZE_USD)
+                            normal_budget = min(_account.cash * (pos_pct / 100.0), settings.PAPER_MAX_POSITION_SIZE_USD)
+                            position_budget = normal_budget * size_multiplier
                             pos = _account.enter_position(
                                 sym, entry_price,
                                 position_budget,
