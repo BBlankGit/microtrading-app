@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER: float = 0.5
     PAPER_MOMENTUM_MAX_TRADES_PER_DAY: int = 30
 
+    # Volume hard gate (Phase 2O — runtime configurable, no broker, no real orders)
+    PAPER_MIN_VOLUME_RATIO: float = 0.8
+
     # Daily loss guard (Phase 2N — fake-money only, no broker, no real orders)
     PAPER_DAILY_MAX_LOSS_ENABLED: bool = True
     PAPER_DAILY_MAX_LOSS_PERCENT: float = 2.0

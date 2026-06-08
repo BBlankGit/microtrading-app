@@ -228,6 +228,17 @@ _SCHEMA: dict[str, dict] = {
         "category": "momentum",
         "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
     },
+    # Volume hard gate (Phase 2O — runtime configurable, no broker, no real orders)
+    "PAPER_MIN_VOLUME_RATIO": {
+        "type": "float", "min": 0.0, "max": 5.0,
+        "description": (
+            "Minimum relative volume ratio required before opening a fake-money position. "
+            "Candidates with volume_ratio below this threshold are hard-rejected. "
+            "Lower values allow early-session entries with below-average volume."
+        ),
+        "category": "quality",
+        "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
+    },
     # Daily loss guard (Phase 2N — fake-money only, no broker, no real orders)
     "PAPER_DAILY_MAX_LOSS_ENABLED": {
         "type": "bool", "min": None, "max": None,

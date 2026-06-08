@@ -400,8 +400,8 @@ async def run_tick() -> dict[str, Any]:
                 hard_rejection = f"spread {q.get('spread_percent')}% > 0.50%"
             elif (q.get("change_percent") or 0) <= 0:
                 hard_rejection = f"change_percent {q.get('change_percent')} not positive"
-            elif q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < 0.8:
-                hard_rejection = f"volume_ratio {q.get('volume_ratio')} < 0.8"
+            elif q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < _cfg("PAPER_MIN_VOLUME_RATIO"):
+                hard_rejection = f"volume_ratio {q.get('volume_ratio')} < {_cfg('PAPER_MIN_VOLUME_RATIO')}"
             elif (
                 _cfg("PAPER_REJECT_STRONG_BEARISH_CATALYST")
                 and scoring.get("catalyst_sentiment") == "bearish"

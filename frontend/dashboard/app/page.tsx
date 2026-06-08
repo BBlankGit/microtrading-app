@@ -1300,6 +1300,7 @@ const STRATEGY_FIELDS: Array<{
   { key: "PAPER_MAX_OPEN_POSITIONS",                label: "Max Open Positions",          type: "int",   min: 1,    max: 50 },
   { key: "PAPER_MAX_TRADES_PER_DAY",                label: "Max Trades / Day",            type: "int",   min: 1,    max: 500 },
   { key: "PAPER_POSITION_SIZE_PERCENT",             label: "Position Size %",             type: "float", min: 1,    max: 100, step: 1 },
+  { key: "PAPER_MIN_VOLUME_RATIO",                  label: "Min Volume Ratio",            type: "float", min: 0,    max: 5,   step: 0.05 },
   { key: "PAPER_BEARISH_CATALYST_REJECT_MATERIALITY", label: "Bearish Reject Materiality",type: "float", min: 0,    max: 1,   step: 0.05 },
   { key: "PAPER_MAX_SYMBOLS_PER_TICK",              label: "Max Symbols / Tick",          type: "int",   min: 1,    max: 300 },
 ];
