@@ -514,6 +514,7 @@ async def test_tick_max_hold_time_exits_position(reset_simulator_state):
         patch("paper.simulator.evaluate_market_quality", return_value=q),
         patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
+        patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=None)),
     ):
         result = await sim.run_tick()
 
@@ -550,6 +551,7 @@ async def test_tick_respects_max_positions(reset_simulator_state):
         patch("paper.simulator.collect_news_for_symbols",
               new=AsyncMock(return_value={"filter": {"accepted": all_cats}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
+        patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=None)),
     ):
         result = await sim.run_tick()
 

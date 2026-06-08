@@ -94,6 +94,28 @@ async def get_market_movers(direction: str) -> list[dict[str, Any]]:
     return [normalize_mover_snapshot(t, direction) for t in tickers]
 
 
+async def get_recent_minute_bars(
+    symbol: str,
+    date_str: str,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """
+    Fetch recent 1-minute OHLCV bars for symbol on date_str.
+    Returns list sorted ascending by bar start timestamp.
+    Used only for open-position intrabar TP/SL detection (Phase 2Q-Lite).
+    No broker. Research only.
+    """
+    _assert_configured()
+    sym = _validate_symbol(symbol)
+    limit = max(1, min(limit, 10))
+    raw = await _get(
+        f"/v2/aggs/ticker/{sym}/range/1/minute/{date_str}/{date_str}",
+        params={"adjusted": "true", "sort": "desc", "limit": limit},
+    )
+    results = raw.get("results") or []
+    return sorted(results, key=lambda b: b.get("t", 0))
+
+
 async def get_ticker_news(symbol: str, limit: int = 10) -> list[dict[str, Any]]:
     _assert_configured()
     sym = _validate_symbol(symbol)

@@ -20,6 +20,7 @@ from data.market_quality import evaluate_market_quality
 from data.polygon_client import PolygonError
 from data.redis_client import make_redis
 from paper.account import PaperAccount
+from paper.exits import evaluate_virtual_bracket_exit, get_intrabar_data
 from paper.journal import persist_tick_result as _persist_journal_tick
 from paper.momentum import evaluate_momentum_entry
 from paper.risk import daily_loss_guard_triggered as _daily_loss_guard
@@ -223,6 +224,9 @@ async def run_tick() -> dict[str, Any]:
         "momentum_mode_enabled": False,
         "today_momentum_entry_count": 0,
         "daily_loss_guard": {"triggered": False, "reason": None, "enabled": False},
+        "intrabar_tp_exits_today": 0,
+        "intrabar_sl_exits_today": 0,
+        "conservative_both_touched_exits_today": 0,
     }
 
     # ── 0. Resolve active universe ────────────────────────────────────────────
@@ -310,48 +314,97 @@ async def run_tick() -> dict[str, Any]:
         pass
     result["market_regime"] = _tick_regime
 
+    # ── 2c. Fetch intrabar data for open positions only (Phase 2Q-Lite) ─────────
+    # Fetches recent 1-minute bars to detect TP/SL touches between polling cycles.
+    # Only called for currently-open positions (max PAPER_MAX_OPEN_POSITIONS = 5).
+    # Results cached for 20 s inside exits.py to avoid duplicate calls per tick.
+    intrabar_map: dict[str, dict | None] = {}
+    _open_syms_snapshot = list(_account.positions.keys())
+    if _open_syms_snapshot:
+        _today_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        async def _fetch_intrabar(sym: str) -> None:
+            try:
+                _pos = _account.positions.get(sym)
+                _entry_time = _pos.entry_time if _pos else ""
+                intrabar_map[sym] = await get_intrabar_data(sym, _entry_time, _today_date)
+            except Exception:
+                intrabar_map[sym] = None
+
+        await asyncio.gather(*[_fetch_intrabar(s) for s in _open_syms_snapshot])
+
     # ── 3 & 4. Process exits then entries — single lock, no awaits inside ─────
     async with _lock:
-        # Exits first
+        # Exits first — virtual bracket-order intrabar detection (Phase 2Q-Lite)
         for sym in list(_account.positions.keys()):
             pos = _account.positions.get(sym)
             if pos is None:
                 continue
             q = quality_map.get(sym)
-            exit_price = None
-            if q:
-                exit_price = q.get("bid") or q.get("last_trade_price")
-            if not exit_price or exit_price <= 0:
-                exit_price = _last_prices.get(sym, pos.entry_price)
 
-            tp = pos.entry_price * (1 + _cfg("PAPER_TAKE_PROFIT_PERCENT") / 100)
-            sl = pos.entry_price * (1 - _cfg("PAPER_STOP_LOSS_PERCENT") / 100)
+            bracket = evaluate_virtual_bracket_exit(
+                entry_price=pos.entry_price,
+                tp_pct=_cfg("PAPER_TAKE_PROFIT_PERCENT"),
+                sl_pct=_cfg("PAPER_STOP_LOSS_PERCENT"),
+                quote=q,
+                intrabar=intrabar_map.get(sym),
+            )
+
             entry_dt = datetime.fromisoformat(pos.entry_time)
             hold_min = (datetime.now(timezone.utc) - entry_dt).total_seconds() / 60
 
-            exit_reason: str | None = None
-            if exit_price >= tp:
-                exit_reason = "take_profit"
-            elif exit_price <= sl:
-                exit_reason = "stop_loss"
-            elif hold_min >= _cfg("PAPER_MAX_HOLD_MINUTES"):
+            exit_reason: str | None = bracket["exit_reason"] if bracket["should_exit"] else None
+            exit_price: float = bracket["exit_price"] if bracket["should_exit"] else 0.0
+
+            if not exit_reason and hold_min >= _cfg("PAPER_MAX_HOLD_MINUTES"):
                 exit_reason = "max_hold_time"
+                # Point-in-time price for time-based exits
+                _pt = (q.get("bid") or q.get("last_trade_price")) if q else None
+                exit_price = _pt or _last_prices.get(sym, pos.entry_price)
 
             if exit_reason:
                 trade = _account.exit_position(sym, exit_price, exit_reason)
                 if trade:
-                    result["exits"].append({
+                    # Enrich trade dataclass with intrabar metadata
+                    trade.exit_tp_price = round(bracket["tp_price"], 6)
+                    trade.exit_sl_price = round(bracket["sl_price"], 6)
+                    trade.exit_intrabar_source = bracket["intrabar_source"]
+                    trade.exit_intrabar_high = bracket["intrabar_high"]
+                    trade.exit_intrabar_low = bracket["intrabar_low"]
+                    trade.exit_conservative_both_touched = bracket["conservative_both_touched"]
+
+                    exit_record: dict = {
                         "symbol": sym,
                         "exit_reason": exit_reason,
                         "entry_price": round(pos.entry_price, 4),
                         "exit_price": round(exit_price, 4),
+                        "tp_price": round(bracket["tp_price"], 4),
+                        "sl_price": round(bracket["sl_price"], 4),
+                        "tp_touched": bracket["tp_touched"],
+                        "sl_touched": bracket["sl_touched"],
+                        "intrabar_high": bracket["intrabar_high"],
+                        "intrabar_low": bracket["intrabar_low"],
+                        "intrabar_source": bracket["intrabar_source"],
+                        "conservative_both_touched": bracket["conservative_both_touched"],
                         "pnl": round(trade.pnl, 4),
                         "pnl_percent": round(trade.pnl_percent, 4),
                         "hold_minutes": trade.hold_minutes,
                         "catalyst_type": trade.entry_catalyst_type,
                         "total_score": trade.entry_score,
                         "entry_mode": trade.entry_mode,
-                    })
+                    }
+                    result["exits"].append(exit_record)
+
+                    # Intrabar exit counters
+                    if exit_reason == "take_profit_intrabar":
+                        result["intrabar_tp_exits_today"] += 1
+                    elif exit_reason in (
+                        "stop_loss_intrabar",
+                        "stop_loss_intrabar_both_touched_conservative",
+                    ):
+                        result["intrabar_sl_exits_today"] += 1
+                        if bracket["conservative_both_touched"]:
+                            result["conservative_both_touched_exits_today"] += 1
 
         # Compute today's momentum entry count from current positions + closed trades
         _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
