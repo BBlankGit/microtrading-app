@@ -178,6 +178,19 @@ async def monitoring_status():
     except Exception as exc:
         momentum_mode = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    daily_loss_guard: dict = {}
+    try:
+        import paper.simulator as _sim_dlg
+        _status_dlg = _sim_dlg.get_status()
+        daily_loss_guard = _status_dlg.get("daily_loss_guard", {})
+        if daily_loss_guard.get("triggered"):
+            warnings.append(
+                "Daily max loss guard triggered — new fake-money entries blocked. "
+                f"Daily P&L: {daily_loss_guard.get('daily_pnl_percent', 0):.2f}%"
+            )
+    except Exception as exc:
+        daily_loss_guard = {"triggered": False, "enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+
     return {
         "backend_ok": True,
         "paper_running": paper_running,
@@ -193,6 +206,7 @@ async def monitoring_status():
         "market_regime": regime_summary,
         "runtime_config": runtime_config_status,
         "momentum_mode": momentum_mode,
+        "daily_loss_guard": daily_loss_guard,
         "warnings": warnings,
     }
 

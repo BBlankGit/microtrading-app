@@ -223,10 +223,39 @@ _SCHEMA: dict[str, dict] = {
         "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
     },
     "PAPER_MOMENTUM_MAX_TRADES_PER_DAY": {
-        "type": "int", "min": 0, "max": 100,
+        "type": "int", "min": 0, "max": 300,
         "description": "Maximum momentum-mode entries per calendar day.",
         "category": "momentum",
         "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
+    },
+    # Daily loss guard (Phase 2N — fake-money only, no broker, no real orders)
+    "PAPER_DAILY_MAX_LOSS_ENABLED": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Enable daily max loss guard for fake-money simulation. "
+            "Blocks new entries when daily P&L falls below threshold. "
+            "Never prevents exits. No broker, no real orders."
+        ),
+        "category": "risk",
+        "runtime_applied": True, "applies_to": "risk", "restart_required": False,
+    },
+    "PAPER_DAILY_MAX_LOSS_PERCENT": {
+        "type": "float", "min": 0.1, "max": 20.0,
+        "description": (
+            "Daily max loss as percent of starting cash. "
+            "Guard triggers when daily P&L < -threshold%. Fake-money only."
+        ),
+        "category": "risk",
+        "runtime_applied": True, "applies_to": "risk", "restart_required": False,
+    },
+    "PAPER_DAILY_MAX_LOSS_USD": {
+        "type": "float", "min": 0.0, "max": 1_000_000.0,
+        "description": (
+            "Daily max loss in USD. If <= 0, USD threshold is ignored. "
+            "Guard triggers when either percent or USD threshold is breached. Fake-money only."
+        ),
+        "category": "risk",
+        "runtime_applied": True, "applies_to": "risk", "restart_required": False,
     },
 }
 

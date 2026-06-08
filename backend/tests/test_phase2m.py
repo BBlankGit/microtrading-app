@@ -67,7 +67,7 @@ def test_momentum_mode_conservative_defaults():
     assert settings.PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON is True
     assert settings.PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE == 60
     assert settings.PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER == 0.5
-    assert settings.PAPER_MOMENTUM_MAX_TRADES_PER_DAY == 5
+    assert settings.PAPER_MOMENTUM_MAX_TRADES_PER_DAY == 30
 
 
 # ── 2. Runtime config schema ──────────────────────────────────────────────────

@@ -28,6 +28,7 @@ interface PaperStatus {
   take_profit_percent: number;
   stop_loss_percent: number;
   max_hold_minutes: number;
+  daily_loss_guard?: DailyLossGuard;
 }
 
 interface Position {
@@ -342,6 +343,16 @@ interface RuntimeConfigStatus {
   warnings: string[];
 }
 
+interface DailyLossGuard {
+  enabled: boolean;
+  triggered: boolean;
+  daily_pnl: number;
+  daily_pnl_percent: number;
+  threshold_percent: number;
+  threshold_usd: number | null;
+  reason: string | null;
+}
+
 interface MonitoringStatus {
   backend_ok: boolean;
   paper_running: boolean;
@@ -355,6 +366,7 @@ interface MonitoringStatus {
   last_error: string | null;
   market_session: MarketSession;
   runtime_config?: RuntimeConfigStatus;
+  daily_loss_guard?: DailyLossGuard;
   warnings: string[];
 }
 
@@ -1299,6 +1311,14 @@ const STRATEGY_BOOL_FIELDS: Array<{ key: string; label: string }> = [
   { key: "MARKET_REGIME_ENABLED",                label: "Market Regime Monitor" },
 ];
 
+// Daily loss guard fields (Phase 2N)
+const DAILY_LOSS_NUMERIC_FIELDS: Array<{
+  key: string; label: string; type: string; min?: number; max?: number; step?: number;
+}> = [
+  { key: "PAPER_DAILY_MAX_LOSS_PERCENT", label: "Max Daily Loss %",    type: "float", min: 0.1, max: 20,        step: 0.1 },
+  { key: "PAPER_DAILY_MAX_LOSS_USD",     label: "Max Daily Loss USD",  type: "float", min: 0,   max: 1_000_000, step: 1 },
+];
+
 // Momentum mode fields (Phase 2M — disabled by default)
 const MOMENTUM_NUMERIC_FIELDS: Array<{
   key: string; label: string; type: string; min?: number; max?: number; step?: number;
@@ -1338,6 +1358,13 @@ function StrategySettingsPanel({
         const v = c.effective_config[f.key];
         init[f.key] = typeof v === "boolean" ? v : false;
       }
+      // Daily loss guard fields
+      for (const f of DAILY_LOSS_NUMERIC_FIELDS) {
+        const v = c.effective_config[f.key];
+        init[f.key] = v !== null && v !== undefined ? String(v) : "";
+      }
+      const dlv = c.effective_config["PAPER_DAILY_MAX_LOSS_ENABLED"];
+      init["PAPER_DAILY_MAX_LOSS_ENABLED"] = typeof dlv === "boolean" ? dlv : true;
       // Momentum fields
       for (const f of MOMENTUM_NUMERIC_FIELDS) {
         const v = c.effective_config[f.key];
@@ -1368,6 +1395,15 @@ function StrategySettingsPanel({
     for (const f of STRATEGY_BOOL_FIELDS) {
       if (f.key in drafts) updates[f.key] = drafts[f.key] as boolean;
     }
+    // Daily loss guard fields
+    for (const f of DAILY_LOSS_NUMERIC_FIELDS) {
+      const raw = drafts[f.key] as string;
+      if (raw === undefined || raw === "") continue;
+      const parsed = f.type === "int" ? parseInt(raw, 10) : parseFloat(raw);
+      if (!isNaN(parsed)) updates[f.key] = parsed;
+    }
+    if ("PAPER_DAILY_MAX_LOSS_ENABLED" in drafts)
+      updates["PAPER_DAILY_MAX_LOSS_ENABLED"] = drafts["PAPER_DAILY_MAX_LOSS_ENABLED"] as boolean;
     // Momentum fields
     for (const f of MOMENTUM_NUMERIC_FIELDS) {
       const raw = drafts[f.key] as string;
@@ -1526,6 +1562,83 @@ function StrategySettingsPanel({
             </div>
           );
         })}
+      </div>
+
+      {/* Daily Loss Guard section (Phase 2N) */}
+      <div className="border border-red-900 rounded p-3 bg-gray-950">
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-sm font-semibold text-red-300">Daily Loss Guard</span>
+          <span className={`text-xs px-2 py-0.5 rounded border font-semibold ${
+            drafts["PAPER_DAILY_MAX_LOSS_ENABLED"]
+              ? "bg-green-900 text-green-300 border-green-700"
+              : "bg-gray-800 text-gray-500 border-gray-600"
+          }`}>
+            {drafts["PAPER_DAILY_MAX_LOSS_ENABLED"] ? "ENABLED" : "DISABLED"}
+          </span>
+        </div>
+        <p className="text-xs text-gray-500 italic mb-3">
+          Fake-money simulation only. Blocks new entries when daily P&L falls below the threshold.
+          Exits (stop-loss, take-profit, max-hold) are never blocked.
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
+          {[{ key: "PAPER_DAILY_MAX_LOSS_ENABLED", label: "Guard Enabled" }].map((f) => {
+            const base = config.base_config[f.key];
+            const hasOverride = f.key in config.runtime_overrides;
+            const effective = config.effective_config[f.key];
+            return (
+              <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+                hasOverride ? "border-orange-700" : "border-gray-700"
+              }`}>
+                <label className="block text-xs text-gray-400 mb-2">{f.label}</label>
+                <button
+                  onClick={() => setDrafts((d) => ({ ...d, [f.key]: !(d[f.key] as boolean) }))}
+                  className={`w-full text-sm font-semibold py-1 rounded border transition-colors ${
+                    drafts[f.key]
+                      ? "bg-green-800 border-green-600 text-green-300"
+                      : "bg-gray-700 border-gray-600 text-gray-400"
+                  }`}
+                >
+                  {drafts[f.key] ? "ON" : "OFF"}
+                </button>
+                <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
+                  <span>base: {String(base)}</span>
+                  {hasOverride && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {DAILY_LOSS_NUMERIC_FIELDS.map((f) => {
+            const base = config.base_config[f.key];
+            const override = config.runtime_overrides[f.key];
+            const effective = config.effective_config[f.key];
+            const hasOverride = f.key in config.runtime_overrides;
+            return (
+              <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+                hasOverride ? "border-orange-700" : "border-gray-700"
+              }`}>
+                <label className="block text-xs text-gray-400 mb-1">{f.label}</label>
+                <input
+                  type="number"
+                  min={f.min}
+                  max={f.max}
+                  step={f.step ?? 0.1}
+                  value={drafts[f.key] as string ?? ""}
+                  onChange={(e) => setDrafts((d) => ({ ...d, [f.key]: e.target.value }))}
+                  className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm font-mono text-white focus:outline-none focus:border-red-500"
+                />
+                <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono">
+                  <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
+                  {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
+                  <span className={hasOverride ? "text-orange-300 font-semibold" : "text-gray-400"}>
+                    eff: {effective !== null && effective !== undefined ? String(effective) : "—"}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Momentum Mode section (Phase 2M — disabled by default) */}
@@ -2278,6 +2391,20 @@ export default function Home() {
             <StatBox label="Snapshot Storage" value={s.snapshot_storage ?? "memory"} />
             <StatBox label="Restart Persistent" value="false" cls="text-red-400" />
           </div>
+          {s.daily_loss_guard && (
+            <div className={`mt-2 flex flex-wrap gap-3 text-xs font-mono px-1 py-1 rounded border ${
+              s.daily_loss_guard.triggered
+                ? "border-red-700 bg-red-950 text-red-300"
+                : "border-gray-700 bg-gray-900 text-gray-400"
+            }`}>
+              <span>Loss Guard: {s.daily_loss_guard.enabled ? (s.daily_loss_guard.triggered ? "TRIGGERED" : "active") : "disabled"}</span>
+              <span>Daily P&L: <span className={pnlClass(s.daily_loss_guard.daily_pnl)}>{fmtUSD(s.daily_loss_guard.daily_pnl)} ({fmt(s.daily_loss_guard.daily_pnl_percent)}%)</span></span>
+              <span>Threshold: -{s.daily_loss_guard.threshold_percent}%{s.daily_loss_guard.threshold_usd ? ` / $${s.daily_loss_guard.threshold_usd}` : ""}</span>
+              {s.daily_loss_guard.triggered && s.daily_loss_guard.reason && (
+                <span className="text-red-400 font-semibold">Reason: {s.daily_loss_guard.reason}</span>
+              )}
+            </div>
+          )}
           {s.last_tick_at && (
             <p className="text-xs text-gray-500 mt-2">Last tick: {utcShort(s.last_tick_at)}</p>
           )}

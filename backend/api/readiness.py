@@ -411,6 +411,43 @@ def _check_momentum_mode() -> dict:
         return _warn("momentum_mode", f"Could not check momentum mode: {type(exc).__name__}: {exc}")
 
 
+def _check_daily_loss_guard() -> dict:
+    try:
+        import paper.simulator as _sim
+        status = _sim.get_status()
+        guard = status.get("daily_loss_guard", {})
+        enabled = bool(guard.get("enabled", False))
+        triggered = bool(guard.get("triggered", False))
+        details = {
+            "enabled": enabled,
+            "triggered": triggered,
+            "daily_pnl": guard.get("daily_pnl", 0.0),
+            "daily_pnl_percent": guard.get("daily_pnl_percent", 0.0),
+            "threshold_percent": guard.get("threshold_percent"),
+            "threshold_usd": guard.get("threshold_usd"),
+            "reason": guard.get("reason"),
+        }
+        if triggered:
+            return _warn(
+                "daily_loss_guard",
+                "Daily max loss guard triggered — new fake-money entries blocked.",
+                details,
+            )
+        if enabled:
+            return _pass(
+                "daily_loss_guard",
+                "Daily max loss guard active — daily P&L within threshold.",
+                details,
+            )
+        return _pass(
+            "daily_loss_guard",
+            "Daily max loss guard disabled.",
+            details,
+        )
+    except Exception as exc:
+        return _warn("daily_loss_guard", f"Could not check daily loss guard: {type(exc).__name__}: {exc}")
+
+
 def _check_safety_invariants() -> dict:
     try:
         import paper.simulator as _sim
@@ -448,6 +485,7 @@ async def _run_all_checks(market_open: bool) -> list[dict]:
     checks.append(_check_tick_freshness(market_open))
     checks.append(_check_dashboard())
     checks.append(_check_momentum_mode())
+    checks.append(_check_daily_loss_guard())
     checks.append(_check_safety_invariants())
     return checks
 
@@ -486,6 +524,11 @@ def _recommended_actions(checks: list[dict], market_open: bool, sim_running: boo
         actions.append(
             "Momentum mode is ENABLED — fake-money only. "
             "Disable with PAPER_MOMENTUM_MODE_ENABLED=false when not testing."
+        )
+    if m.get("daily_loss_guard") == "warn":
+        actions.append(
+            "Daily max loss guard triggered — new fake-money entries are blocked. "
+            "Reset the simulator or adjust PAPER_DAILY_MAX_LOSS_PERCENT to resume entries."
         )
     return actions
 

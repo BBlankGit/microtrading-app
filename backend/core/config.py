@@ -19,8 +19,8 @@ class Settings(BaseSettings):
 
     # Paper simulator
     PAPER_STARTING_CASH: float = 1000.0
-    PAPER_MAX_POSITIONS: int = 2
-    PAPER_MAX_TRADES_PER_DAY: int = 20
+    PAPER_MAX_POSITIONS: int = 5
+    PAPER_MAX_TRADES_PER_DAY: int = 100
     PAPER_MAX_POSITION_SIZE_USD: float = 250.0
     PAPER_TAKE_PROFIT_PERCENT: float = 0.60
     PAPER_STOP_LOSS_PERCENT: float = 0.35
@@ -73,7 +73,12 @@ class Settings(BaseSettings):
     PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON: bool = True
     PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE: int = 60
     PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER: float = 0.5
-    PAPER_MOMENTUM_MAX_TRADES_PER_DAY: int = 5
+    PAPER_MOMENTUM_MAX_TRADES_PER_DAY: int = 30
+
+    # Daily loss guard (Phase 2N — fake-money only, no broker, no real orders)
+    PAPER_DAILY_MAX_LOSS_ENABLED: bool = True
+    PAPER_DAILY_MAX_LOSS_PERCENT: float = 2.0
+    PAPER_DAILY_MAX_LOSS_USD: float = 0.0
 
     # Market-wide movers discovery (Phase 2J — no broker, no real orders)
     PAPER_MARKET_DISCOVERY_ENABLED: bool = True

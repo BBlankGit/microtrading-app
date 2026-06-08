@@ -22,6 +22,7 @@ from data.redis_client import make_redis
 from paper.account import PaperAccount
 from paper.journal import persist_tick_result as _persist_journal_tick
 from paper.momentum import evaluate_momentum_entry
+from paper.risk import daily_loss_guard_triggered as _daily_loss_guard
 from paper.scoring import score_candidate
 from paper.universe import get_active_paper_universe, get_cached_universe
 
@@ -79,6 +80,11 @@ def get_status() -> dict[str, Any]:
         "live_trading_enabled": False,
         "broker_connected": False,
     })
+    # Daily loss guard status (fake-money only, observational)
+    try:
+        status["daily_loss_guard"] = _daily_loss_guard(_account, _last_prices)
+    except Exception:
+        status["daily_loss_guard"] = {"triggered": False, "reason": None, "enabled": False}
     return status
 
 
@@ -201,6 +207,7 @@ async def run_tick() -> dict[str, Any]:
         "max_hold_minutes": None,
         "momentum_mode_enabled": False,
         "today_momentum_entry_count": 0,
+        "daily_loss_guard": {"triggered": False, "reason": None, "enabled": False},
     }
 
     # ── 0. Resolve active universe ────────────────────────────────────────────
@@ -342,6 +349,10 @@ async def run_tick() -> dict[str, Any]:
         )
         result["today_momentum_entry_count"] = today_momentum_count
 
+        # Daily loss guard (fake-money only — blocks new entries, never exits)
+        _guard = _daily_loss_guard(_account, _last_prices)
+        result["daily_loss_guard"] = _guard
+
         # Entries
         for sym in symbols:
             q = quality_map.get(sym)
@@ -425,6 +436,8 @@ async def run_tick() -> dict[str, Any]:
                 "momentum_score_threshold": momentum_eval["momentum_score_threshold"] if momentum_eval else None,
                 "momentum_rejection_reason": momentum_eval["rejection_reason"] if momentum_eval else None,
                 "momentum_gate_results": momentum_eval["gate_results"] if momentum_eval else None,
+                # Daily loss guard (Phase 2N)
+                "daily_loss_guard_triggered": _guard["triggered"],
             }
 
             # ── Entry decision ────────────────────────────────────────────────
@@ -432,41 +445,46 @@ async def run_tick() -> dict[str, Any]:
             if hard_rejection is None and scoring["score_pass"]:
                 candidate["eligible"] = True
                 candidate["entry_mode"] = "catalyst"
-                can, block = _account.can_enter(
-                    sym,
-                    _cfg("PAPER_MAX_OPEN_POSITIONS"),
-                    _cfg("PAPER_MAX_TRADES_PER_DAY"),
-                )
-                if can:
-                    entry_price = q.get("ask") or q.get("last_trade_price", 0)
-                    if entry_price and entry_price > 0:
-                        pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
-                        budget_pct = _account.cash * (pos_pct / 100.0)
-                        position_budget = min(budget_pct, settings.PAPER_MAX_POSITION_SIZE_USD)
-                        pos = _account.enter_position(
-                            sym, entry_price,
-                            position_budget,
-                            cat_type or "unknown",
-                            entry_score=scoring["total_score"],
-                            entry_mode="catalyst",
-                        )
-                        if pos:
-                            candidate["action"] = "entered"
-                            result["entries"].append({
-                                "symbol": sym,
-                                "entry_price": round(entry_price, 4),
-                                "shares": round(pos.shares, 6),
-                                "cost_basis": round(pos.cost_basis, 4),
-                                "catalyst_type": cat_type,
-                                "total_score": scoring["total_score"],
-                                "entry_mode": "catalyst",
-                            })
-                        else:
-                            candidate["action"] = "entry_failed"
-                    else:
-                        candidate["action"] = "no_valid_price"
+                if _guard["triggered"]:
+                    candidate["action"] = "daily_max_loss_guard"
+                    candidate["rejection_reason"] = "daily_max_loss_guard"
+                    candidate["eligible"] = False
                 else:
-                    candidate["action"] = f"blocked: {block}"
+                    can, block = _account.can_enter(
+                        sym,
+                        _cfg("PAPER_MAX_OPEN_POSITIONS"),
+                        _cfg("PAPER_MAX_TRADES_PER_DAY"),
+                    )
+                    if can:
+                        entry_price = q.get("ask") or q.get("last_trade_price", 0)
+                        if entry_price and entry_price > 0:
+                            pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
+                            budget_pct = _account.cash * (pos_pct / 100.0)
+                            position_budget = min(budget_pct, settings.PAPER_MAX_POSITION_SIZE_USD)
+                            pos = _account.enter_position(
+                                sym, entry_price,
+                                position_budget,
+                                cat_type or "unknown",
+                                entry_score=scoring["total_score"],
+                                entry_mode="catalyst",
+                            )
+                            if pos:
+                                candidate["action"] = "entered"
+                                result["entries"].append({
+                                    "symbol": sym,
+                                    "entry_price": round(entry_price, 4),
+                                    "shares": round(pos.shares, 6),
+                                    "cost_basis": round(pos.cost_basis, 4),
+                                    "catalyst_type": cat_type,
+                                    "total_score": scoring["total_score"],
+                                    "entry_mode": "catalyst",
+                                })
+                            else:
+                                candidate["action"] = "entry_failed"
+                        else:
+                            candidate["action"] = "no_valid_price"
+                    else:
+                        candidate["action"] = f"blocked: {block}"
 
             # Path B: Momentum fallback (only when catalyst path not taken)
             elif (
@@ -480,6 +498,9 @@ async def run_tick() -> dict[str, Any]:
                 if today_momentum_count >= momentum_max:
                     candidate["action"] = f"momentum_blocked: daily limit {momentum_max}"
                     candidate["rejection_reason"] = hard_rejection
+                elif _guard["triggered"]:
+                    candidate["action"] = "daily_max_loss_guard"
+                    candidate["rejection_reason"] = "daily_max_loss_guard"
                 else:
                     candidate["eligible"] = True
                     candidate["entry_mode"] = "momentum"
