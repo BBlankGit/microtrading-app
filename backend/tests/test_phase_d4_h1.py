@@ -219,7 +219,7 @@ async def test_stop_clears_started_at_and_auto_started():
 
 def test_no_broker_or_ai_imports_in_service():
     """service.py must not import broker, live-trading, or AI/LLM modules."""
-    src = Path("marketdata/service.py").read_text()
+    src = (Path(__file__).resolve().parents[1] / "marketdata" / "service.py").read_text()
     tree = ast.parse(src)
     banned = {
         "alpaca", "broker", "openai", "anthropic", "langchain",

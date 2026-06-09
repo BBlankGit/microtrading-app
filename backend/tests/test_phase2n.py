@@ -322,6 +322,7 @@ def test_day_rollover_resets_baseline_in_tick():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:
@@ -437,6 +438,7 @@ def test_guard_triggered_blocks_catalyst_entry_path():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:
@@ -522,6 +524,7 @@ def test_guard_triggered_blocks_momentum_entry_path():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:
@@ -615,6 +618,7 @@ def test_guard_triggered_does_not_block_exits():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:

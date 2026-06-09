@@ -137,6 +137,7 @@ def test_default_rejects_volume_ratio_below_0_8():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:
@@ -223,6 +224,7 @@ def test_override_to_0_1_allows_low_volume_candidate():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:
@@ -309,6 +311,7 @@ def test_rejection_reason_shows_configured_threshold():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:

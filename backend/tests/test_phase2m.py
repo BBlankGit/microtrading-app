@@ -684,6 +684,7 @@ def test_simulator_momentum_fallback_entry_mode():
                   return_value={"ok": True}),
             patch("paper.simulator.get_cached_universe", return_value=None),
             patch("paper.simulator._save_state", new_callable=AsyncMock),
+            patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
         ):
             result = asyncio.run(sim.run_tick())
     finally:

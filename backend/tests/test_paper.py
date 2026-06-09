@@ -481,6 +481,7 @@ async def test_tick_stop_loss_exits_position(reset_simulator_state):
         patch("paper.simulator.evaluate_market_quality", return_value=q),
         patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
+        patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
     ):
         result = await sim.run_tick()
 
@@ -517,6 +518,7 @@ async def test_tick_max_hold_time_exits_position(reset_simulator_state):
         patch("paper.simulator.collect_news_for_symbols", new=AsyncMock(return_value={"filter": {"accepted": []}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
         patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=None)),
+        patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
     ):
         result = await sim.run_tick()
 
@@ -554,6 +556,7 @@ async def test_tick_respects_max_positions(reset_simulator_state):
               new=AsyncMock(return_value={"filter": {"accepted": all_cats}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
         patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=None)),
+        patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
     ):
         result = await sim.run_tick()
 
@@ -587,6 +590,7 @@ async def test_tick_no_duplicate_position_same_symbol(reset_simulator_state):
         patch("paper.simulator.collect_news_for_symbols",
               new=AsyncMock(return_value={"filter": {"accepted": [_catalyst(sym)]}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
+        patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
     ):
         result = await sim.run_tick()
 
@@ -769,6 +773,7 @@ async def test_tick_score_below_threshold_does_not_enter(reset_simulator_state):
         patch("paper.simulator.collect_news_for_symbols",
               new=AsyncMock(return_value={"filter": {"accepted": [cat]}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
+        patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
     ):
         result = await sim.run_tick()
 
@@ -818,6 +823,7 @@ async def test_tick_score_above_threshold_enters_position(reset_simulator_state)
         patch("paper.simulator.collect_news_for_symbols",
               new=AsyncMock(return_value={"filter": {"accepted": [cat]}})),
         patch("paper.simulator._save_state", new=AsyncMock()),
+        patch("paper.marketdata_adapter.try_cache_for_quality", new=AsyncMock(return_value=(None, {}))),
     ):
         result = await sim.run_tick()
 

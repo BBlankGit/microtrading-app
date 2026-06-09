@@ -227,6 +227,7 @@ async def monitoring_status():
         _fallback = _cfg_md("PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED")
         _max_age = _cfg_md("PAPER_MARKETDATA_CACHE_MAX_AGE_SECONDS")
         _require_fresh = _cfg_md("PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY")
+        from core.config import settings as _md_settings
         from marketdata import service as _md_svc
         _md_svc_status = _md_svc.get_service_status()
         _collector_running = _md_svc_status.get("running", False)
@@ -234,7 +235,10 @@ async def monitoring_status():
         _last_tick_md: dict = sim_status.get("last_tick_marketdata", {})
         marketdata_cache = {
             "enabled": _use_cache,
+            "collector_enabled": _md_settings.MARKETDATA_COLLECTOR_ENABLED,
             "collector_running": _collector_running,
+            "collector_auto_started": _md_svc_status.get("auto_started", False),
+            "collector_started_at": _md_svc_status.get("started_at"),
             "max_age_seconds": _max_age,
             "fallback_to_polygon": _fallback,
             "require_fresh_for_entry": _require_fresh,
