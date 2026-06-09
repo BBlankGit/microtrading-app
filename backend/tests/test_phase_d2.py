@@ -320,7 +320,8 @@ async def test_tick_cache_hit_skips_polygon():
             "refresh_reason": "test",
             "discovery": {"enabled": False, "discovered_count": 0, "errors": []},
         })),
-        patch("paper.runtime_config.effective_value", side_effect=_cfg_enabled),
+        # Patch paper.simulator._cfg (module-level alias) so regime is disabled
+        patch("paper.simulator._cfg", side_effect=_cfg_enabled),
         patch("paper.runtime_config.get_runtime_status",
               return_value={"overrides_active": False, "override_count": 0,
                             "persistent": False, "warnings": []}),
@@ -343,8 +344,24 @@ async def test_tick_cache_hit_skips_polygon():
 
     assert mock_snap.call_count == 0, "Polygon must not be called on cache hit"
     assert mock_prev.call_count == 0
+    # Backward-compat counters
     assert result["marketdata_cache_hits"] == 1
     assert result["marketdata_cache_misses"] == 0
+    # D2-H1 canonical counter names
+    md = result.get("marketdata", {})
+    assert md.get("cache_hits_last_tick") == 1
+    assert md.get("cache_misses_last_tick") == 0
+    assert md.get("cache_stale_last_tick") == 0
+    assert md.get("polygon_fallbacks_last_tick") == 0
+    assert md.get("polygon_direct_last_tick") == 0
+    assert md.get("missing_marketdata_last_tick") == 0
+    # Candidate metadata
+    candidates = result.get("candidates", [])
+    amd = next((c for c in candidates if c.get("symbol") == "AMD"), None)
+    assert amd is not None
+    assert amd.get("marketdata_source") == "cache"
+    assert amd.get("marketdata_fallback_used") is False
+    assert amd.get("marketdata_error") is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -439,12 +456,23 @@ async def test_tick_result_includes_cache_counters():
     ):
         result = await sim.run_tick()
 
-    assert "marketdata_cache_hits" in result
-    assert "marketdata_cache_misses" in result
-    assert "marketdata_cache_fallbacks" in result
+    # Backward-compat counter keys
     assert result["marketdata_cache_hits"] == 2
     assert result["marketdata_cache_misses"] == 0
     assert result["marketdata_cache_fallbacks"] == 0
+    # D2-H1 canonical counter names in result["marketdata"]
+    md = result.get("marketdata", {})
+    assert md.get("cache_hits_last_tick") == 2, md
+    assert md.get("cache_misses_last_tick") == 0
+    assert md.get("cache_stale_last_tick") == 0
+    assert md.get("polygon_fallbacks_last_tick") == 0
+    assert md.get("polygon_direct_last_tick") == 0
+    assert md.get("missing_marketdata_last_tick") == 0
+    # D2-H1: counters must be persisted to _state for get_status()
+    import paper.simulator as sim
+    status = sim.get_status()
+    last_md = status.get("last_tick_marketdata", {})
+    assert last_md.get("cache_hits_last_tick") == 2, last_md
 
 
 # ─────────────────────────────────────────────────────────────────────────────

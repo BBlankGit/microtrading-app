@@ -202,12 +202,15 @@ async def monitoring_status():
         from marketdata import service as _md_svc
         _md_svc_status = _md_svc.get_service_status()
         _collector_running = _md_svc_status.get("running", False)
+        # D2-H1: include last-tick counters from simulator state
+        _last_tick_md: dict = sim_status.get("last_tick_marketdata", {})
         marketdata_cache = {
             "enabled": _use_cache,
             "collector_running": _collector_running,
             "max_age_seconds": _max_age,
             "fallback_to_polygon": _fallback,
             "require_fresh_for_entry": _require_fresh,
+            "last_tick_stats": _last_tick_md,
         }
         if _use_cache and not _collector_running:
             if _fallback:

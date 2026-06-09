@@ -59,6 +59,7 @@ _state: dict[str, Any] = {
     "snapshot_storage": "memory",
     "state_restored_from_snapshot": False,
     "restart_persistent": False,
+    "last_tick_marketdata": {},  # D2-H1: per-tick cache counters, updated after each tick
 }
 
 
@@ -99,6 +100,8 @@ def get_status() -> dict[str, Any]:
         status["daily_loss_guard"] = _daily_loss_guard(_account, _last_prices)
     except Exception:
         status["daily_loss_guard"] = {"triggered": False, "reason": None, "enabled": False}
+    # D2-H1: per-tick cache counters (empty until first tick completes)
+    status["last_tick_marketdata"] = _state.get("last_tick_marketdata", {})
     return status
 
 
@@ -262,7 +265,15 @@ async def run_tick() -> dict[str, Any]:
     # ── 1. Fetch market quality for all symbols concurrently ──────────────────
     quality_map: dict[str, dict] = {}
     source_meta_map: dict[str, dict] = {}
-    _cache_stats: dict[str, int] = {"hits": 0, "misses": 0, "fallbacks": 0}
+    # D2-H1: granular per-tick cache counters
+    _cache_stats: dict[str, int] = {
+        "hits": 0,          # fresh cache hit, Polygon skipped
+        "stale": 0,         # cache had data but it was stale (pre-fallback or no-fallback reject)
+        "misses": 0,        # cache miss/error (pre-fallback or no-fallback reject)
+        "fallbacks": 0,     # stale/miss → fell through to Polygon successfully
+        "polygon_direct": 0,  # cache disabled, called Polygon directly
+        "missing": 0,       # _no_fallback: symbol rejected, no quality produced
+    }
 
     async def _fetch_quality(sym: str) -> None:
         _sym_meta: dict[str, Any] = {
@@ -270,7 +281,10 @@ async def run_tick() -> dict[str, Any]:
             "marketdata_age_seconds": None,
             "marketdata_fetched_at": None,
             "marketdata_stale": False,
+            "marketdata_fallback_used": False,
+            "marketdata_error": None,
         }
+        cache_meta: dict[str, Any] = {}  # populated only when cache path taken
 
         # Cache layer — only consulted when enabled
         if _cfg("PAPER_USE_MARKETDATA_CACHE"):
@@ -279,7 +293,7 @@ async def run_tick() -> dict[str, Any]:
             _sym_meta.update(cache_meta)
 
             if cached_q is not None:
-                # Fresh cache hit — skip Polygon
+                # Fresh cache hit — skip Polygon entirely
                 source_meta_map[sym] = _sym_meta
                 quality_map[sym] = cached_q
                 _cache_stats["hits"] += 1
@@ -288,21 +302,31 @@ async def run_tick() -> dict[str, Any]:
                     _last_prices[sym] = price
                 return
 
-            src = cache_meta.get("marketdata_source", "")
-            if src.endswith("_no_fallback"):
+            orig_src = cache_meta.get("marketdata_source", "")
+            if orig_src.endswith("_no_fallback"):
                 # Fallback disabled — reject this symbol for this tick
+                error_key = orig_src.removesuffix("_no_fallback") + "_marketdata"
+                _sym_meta["marketdata_error"] = error_key
                 source_meta_map[sym] = _sym_meta
-                _cache_stats["misses"] += 1
-                result["errors"].append({
-                    "symbol": sym,
-                    "error": src.removesuffix("_no_fallback") + "_marketdata",
-                })
+                if "stale" in orig_src:
+                    _cache_stats["stale"] += 1
+                else:
+                    _cache_stats["misses"] += 1
+                _cache_stats["missing"] += 1
+                result["errors"].append({"symbol": sym, "error": error_key})
                 return
 
             # Stale or missing with fallback enabled → fall through to Polygon
+            if "stale" in orig_src:
+                _cache_stats["stale"] += 1
+            else:
+                _cache_stats["misses"] += 1
             _sym_meta["marketdata_source"] = "polygon_fallback"
             _sym_meta["marketdata_stale"] = True
+            _sym_meta["marketdata_fallback_used"] = True
             _cache_stats["fallbacks"] += 1
+        else:
+            _cache_stats["polygon_direct"] += 1
 
         source_meta_map[sym] = _sym_meta
 
@@ -313,19 +337,35 @@ async def run_tick() -> dict[str, Any]:
             q = evaluate_market_quality(snapshot, prev)
             quality_map[sym] = q
             # Fresh Polygon data: clear stale flag unless the cache had a stale hit
-            # (stale cache hit means the pipeline may be lagging; missing/error is ok)
+            # (stale cache hit signals pipeline lag; missing/error → Polygon is authoritative)
             if _sym_meta.get("marketdata_source") != "polygon_fallback" or cache_meta.get("marketdata_source") not in ("stale", "stale_no_fallback"):
                 _sym_meta["marketdata_stale"] = False
             price = q.get("bid") or q.get("last_trade_price")
             if price and price > 0:
                 _last_prices[sym] = price
         except PolygonError as exc:
+            _sym_meta["marketdata_error"] = str(exc)
             result["errors"].append({"symbol": sym, "error": str(exc)})
         except Exception as exc:
-            result["errors"].append({"symbol": sym, "error": f"{type(exc).__name__}: {exc}"})
+            err = f"{type(exc).__name__}: {exc}"
+            _sym_meta["marketdata_error"] = err
+            result["errors"].append({"symbol": sym, "error": err})
 
     await asyncio.gather(*[_fetch_quality(sym) for sym in symbols])
     result["symbols_evaluated"] = len(quality_map)
+
+    # D2-H1: named counters (canonical form for monitoring/status/dashboard)
+    _md_stats = {
+        "cache_hits_last_tick": _cache_stats["hits"],
+        "cache_misses_last_tick": _cache_stats["misses"],
+        "cache_stale_last_tick": _cache_stats["stale"],
+        "polygon_fallbacks_last_tick": _cache_stats["fallbacks"],
+        "polygon_direct_last_tick": _cache_stats["polygon_direct"],
+        "missing_marketdata_last_tick": _cache_stats["missing"],
+    }
+    result["marketdata"] = _md_stats
+    _state["last_tick_marketdata"] = _md_stats
+    # Backward-compat aliases
     result["marketdata_cache_hits"] = _cache_stats["hits"]
     result["marketdata_cache_misses"] = _cache_stats["misses"]
     result["marketdata_cache_fallbacks"] = _cache_stats["fallbacks"]
@@ -578,11 +618,13 @@ async def run_tick() -> dict[str, Any]:
                 "momentum_gate_results": momentum_eval["gate_results"] if momentum_eval else None,
                 # Daily loss guard (Phase 2N)
                 "daily_loss_guard_triggered": _guard["triggered"],
-                # Market-data cache metadata (Phase D2)
+                # Market-data cache metadata (Phase D2 / D2-H1)
                 "marketdata_source": _sym_meta.get("marketdata_source"),
                 "marketdata_age_seconds": _sym_meta.get("marketdata_age_seconds"),
                 "marketdata_fetched_at": _sym_meta.get("marketdata_fetched_at"),
                 "marketdata_stale": _sym_meta.get("marketdata_stale", False),
+                "marketdata_fallback_used": _sym_meta.get("marketdata_fallback_used", False),
+                "marketdata_error": _sym_meta.get("marketdata_error"),
             }
 
             # ── Entry decision ────────────────────────────────────────────────

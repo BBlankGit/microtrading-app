@@ -144,13 +144,14 @@ async def persist_tick_result(
                             entry_mode, momentum_eligible, momentum_score,
                             momentum_score_threshold, momentum_rejection_reason,
                             momentum_gate_results_json,
-                            marketdata_source, marketdata_age_seconds, marketdata_stale
+                            marketdata_source, marketdata_age_seconds, marketdata_stale,
+                            marketdata_fallback_used, marketdata_error
                         ) VALUES (
                             $1,$2,$3,$4,$5,$6,$7,$8,
                             $9,$10,$11,$12,$13,$14,
                             $15,$16,$17,$18,$19,$20,$21,
                             $22,$23,$24,$25,$26,$27,
-                            $28,$29,$30
+                            $28,$29,$30,$31,$32
                         )
                         """,
                         [
@@ -185,6 +186,8 @@ async def persist_tick_result(
                                 c.get("marketdata_source"),
                                 _float(c.get("marketdata_age_seconds")),
                                 _bool(c.get("marketdata_stale")) if c.get("marketdata_stale") is not None else None,
+                                _bool(c.get("marketdata_fallback_used")) if c.get("marketdata_fallback_used") is not None else None,
+                                c.get("marketdata_error"),
                             )
                             for c in candidates
                         ],
