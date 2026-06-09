@@ -34,7 +34,14 @@ class PaperAccount:
         self.daily_start_equity = self.starting_cash
 
     def today_str(self) -> str:
-        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        """Return today's date in America/New_York timezone (YYYY-MM-DD).
+        Must match _ny_trading_date() in simulator for restore/baseline consistency."""
+        try:
+            from zoneinfo import ZoneInfo
+            return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        except Exception:
+            from datetime import timedelta
+            return datetime.now(timezone(timedelta(hours=-4))).strftime("%Y-%m-%d")
 
     def daily_trade_count(self) -> int:
         if self._daily_date != self.today_str():

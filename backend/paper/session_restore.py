@@ -47,6 +47,8 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
     Requires position_id column (added Phase 2S) for reliable open-position matching.
     Rows written before Phase 2S deployment have NULL position_id and are excluded
     from open-position restore; closed trades are always included.
+
+    restore_warnings in the returned dict lists any excluded rows with reasons.
     """
     pool = await _db.get_pool()
     if pool is None:
@@ -84,6 +86,21 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
                 """,
                 ny_date,
             )
+
+            # Count open entries skipped because position_id IS NULL
+            # (rows written before Phase 2S deployment lack position_id)
+            try:
+                null_pid_count: int = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)::int FROM paper_trades_journal
+                    WHERE event = 'entry'
+                      AND position_id IS NULL
+                      AND (opened_at AT TIME ZONE 'America/New_York')::date = $1
+                    """,
+                    ny_date,
+                ) or 0
+            except Exception:
+                null_pid_count = 0
 
         trades: list[ClosedTrade] = []
         for row in closed_rows:
@@ -144,12 +161,25 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
         open_cost_basis = sum(p.cost_basis for p in positions.values())
         cash = starting_cash + realized_pnl - open_cost_basis
 
+        restore_warnings: list[str] = []
+        if null_pid_count:
+            restore_warnings.append(
+                f"{null_pid_count} open position entry row(s) skipped: "
+                "position_id IS NULL (written before Phase 2S deployment; "
+                "cannot reliably match entry to exit for restore)."
+            )
+            logger.warning(
+                "session_restore: %d open entry row(s) with NULL position_id skipped.",
+                null_pid_count,
+            )
+
         return {
             "trades": trades,
             "positions": positions,
             "cash": cash,
             "daily_trade_count": len(closed_rows) + len(open_rows),
             "daily_start_equity": starting_cash,
+            "restore_warnings": restore_warnings,
         }
 
     except Exception as exc:
@@ -171,6 +201,7 @@ async def restore_session(ny_today: str, starting_cash: float) -> dict[str, Any]
         "daily_realized_pnl": 0.0,
         "trades_today": 0,
         "warning": None,
+        "restore_warnings": [],
     }
 
     snapshot = await try_redis_restore(ny_today)
@@ -204,11 +235,13 @@ async def restore_session(ny_today: str, starting_cash: float) -> dict[str, Any]
         )
         result["trades_today"] = int(db_data["daily_trade_count"])
         result["warning"] = "cash_estimated_from_db"
+        result["restore_warnings"] = db_data.get("restore_warnings", [])
         logger.info(
-            "session_restore: DB fallback — closed=%d open=%d pnl=%.4f",
+            "session_restore: DB fallback — closed=%d open=%d pnl=%.4f warnings=%d",
             result["closed_trades_count"],
             result["open_positions_count"],
             result["daily_realized_pnl"],
+            len(result["restore_warnings"]),
         )
         return result
 

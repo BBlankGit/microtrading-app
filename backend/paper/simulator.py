@@ -68,6 +68,7 @@ _state: dict[str, Any] = {
     "restored_daily_realized_pnl": 0.0,
     "restored_trades_today": 0,
     "restore_warning": None,
+    "restore_warnings": [],
 }
 
 
@@ -113,6 +114,7 @@ def get_status() -> dict[str, Any]:
         "restored_daily_realized_pnl": _state.get("restored_daily_realized_pnl", 0.0),
         "restored_trades_today": _state.get("restored_trades_today", 0),
         "restore_warning": _state.get("restore_warning"),
+        "restore_warnings": _state.get("restore_warnings", []),
         "mode": "research_paper_simulation",
         "live_trading_enabled": False,
         "broker_connected": False,
@@ -166,6 +168,7 @@ async def reset_simulator() -> None:
         _state["restored_daily_realized_pnl"] = 0.0
         _state["restored_trades_today"] = 0
         _state["restore_warning"] = None
+        _state["restore_warnings"] = []
     await _save_state()
 
 
@@ -937,7 +940,7 @@ async def restore_paper_session() -> dict[str, Any]:
     if _restore_attempted:
         return {"source": "none", "closed_trades_count": 0,
                 "open_positions_count": 0, "daily_realized_pnl": 0.0,
-                "trades_today": 0, "warning": None}
+                "trades_today": 0, "warning": None, "restore_warnings": []}
     _restore_attempted = True
 
     from paper.models import ClosedTrade, Position
@@ -951,7 +954,7 @@ async def restore_paper_session() -> dict[str, Any]:
         return {
             "source": "none", "closed_trades_count": 0,
             "open_positions_count": 0, "daily_realized_pnl": 0.0,
-            "trades_today": 0, "warning": None,
+            "trades_today": 0, "warning": None, "restore_warnings": [],
         }
 
     source = result.get("source", "none")
@@ -1000,6 +1003,7 @@ async def restore_paper_session() -> dict[str, Any]:
             _state["restored_daily_realized_pnl"] = result.get("daily_realized_pnl", 0.0)
             _state["restored_trades_today"] = result.get("trades_today", 0)
             _state["restore_warning"] = result.get("warning")
+            _state["restore_warnings"] = result.get("restore_warnings", [])
 
     except Exception as exc:
         logger.warning("restore_paper_session: failed to apply state: %s", exc)

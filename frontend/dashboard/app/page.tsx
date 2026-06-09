@@ -22,6 +22,13 @@ interface PaperStatus {
   snapshot_storage: string;
   state_restored_from_snapshot: boolean;
   restart_persistent: boolean;
+  restore_source?: string;
+  restored_closed_trades_count?: number;
+  restored_open_positions_count?: number;
+  restored_daily_realized_pnl?: number;
+  restored_trades_today?: number;
+  restore_warning?: string | null;
+  restore_warnings?: string[];
   mode: string;
   live_trading_enabled: boolean;
   broker_connected: boolean;
@@ -2543,11 +2550,18 @@ export default function Home() {
         <p>{dashboard?.disclaimer}</p>
         <p>
           mode: {s?.mode ?? "—"} · live_trading: {String(s?.live_trading_enabled ?? false)} ·{" "}
-          broker: {String(s?.broker_connected ?? false)} · restart_persistent: false
+          broker: {String(s?.broker_connected ?? false)} · restart_persistent: {String(s?.restart_persistent ?? false)}
         </p>
         <p className="text-gray-700">
-          Redis is used only for best-effort latest-state snapshot. Simulator state is not restored after container restart.
+          {s?.restart_persistent
+            ? `Session restored from ${s.restore_source ?? "persistence"} — ${s.restored_closed_trades_count ?? 0} closed trade(s), ${s.restored_open_positions_count ?? 0} open position(s), realized P&L: $${(s.restored_daily_realized_pnl ?? 0).toFixed(2)}.`
+            : "Session not restored from persistence (fresh start or no snapshot available for today)."}
         </p>
+        {s?.restore_warnings && s.restore_warnings.length > 0 && (
+          <p className="text-yellow-600">
+            Restore warnings: {s.restore_warnings.join(" | ")}
+          </p>
+        )}
       </footer>
     </main>
   );

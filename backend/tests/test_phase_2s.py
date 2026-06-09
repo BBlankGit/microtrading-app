@@ -74,8 +74,12 @@ def _make_open_row(symbol="MSFT", shares=2.0, cost_basis=200.0,
     }
 
 
-def _make_async_pool(closed_rows=None, open_rows=None):
-    """Build a mock asyncpg pool whose conn.fetch alternates results."""
+def _make_async_pool(closed_rows=None, open_rows=None, null_pid_count=0):
+    """Build a mock asyncpg pool whose conn.fetch alternates results.
+
+    null_pid_count: value returned by conn.fetchval (count of NULL position_id
+    open entries skipped during restore — 0 by default, no warnings generated).
+    """
     closed_rows = closed_rows or []
     open_rows = open_rows or []
     conn = MagicMock()
@@ -87,10 +91,11 @@ def _make_async_pool(closed_rows=None, open_rows=None):
         call_count["n"] += 1
         return fetch_results[idx] if idx < len(fetch_results) else []
 
-    conn.fetch = fetch
+    async def fetchval(*args, **kwargs):
+        return null_pid_count
 
-    async def acquire_cm():
-        return conn
+    conn.fetch = fetch
+    conn.fetchval = fetchval
 
     pool = MagicMock()
     pool.acquire = MagicMock()
