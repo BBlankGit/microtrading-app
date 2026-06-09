@@ -137,6 +137,34 @@ class Settings(BaseSettings):
     def marketdata_base_symbols_list(self) -> list[str]:
         return [s.strip().upper() for s in self.MARKETDATA_BASE_SYMBOLS.split(",") if s.strip()]
 
+    # Dynamic universe coverage (Phase D4 — no broker, no live trading, no real orders)
+    MARKETDATA_INCLUDE_PAPER_UNIVERSE: bool = True
+    MARKETDATA_INCLUDE_V5_UNIVERSE: bool = True
+    MARKETDATA_V5_SYMBOLS: str = (
+        "BBAI,RKLB,IONQ,SMCI,SERV,CLSK,SOUN,ASTS,PLTR,AMD,"
+        "MARA,RIOT,HUT,BTDR,CIFR,WULF,AI,PATH,UPST,AFRM,"
+        "HOOD,COIN,RIVN,LCID,CAVA,CVNA,ROKU,U,"
+        "NEXT,MKSI,APLD,LUNR,METC,WVE,AXTI,SPIR,TSLR,"
+        "DXYZ,SOC,AEVA,AAOI,AXON,CORT,COGT,ADMA,XPO,JOBY,"
+        "QQQ,IWM,SPY"
+    )
+    MARKETDATA_V5_SYMBOLS_FILE: str = ""
+    MARKETDATA_EXTRA_SYMBOLS: str = ""
+    MARKETDATA_MAX_SYMBOLS_PER_CYCLE: int = 100
+
+    def marketdata_v5_symbols_list(self) -> list[str]:
+        if self.MARKETDATA_V5_SYMBOLS_FILE:
+            try:
+                from pathlib import Path
+                text = Path(self.MARKETDATA_V5_SYMBOLS_FILE).read_text()
+                return [s.strip().upper() for s in text.replace("\n", ",").split(",") if s.strip()]
+            except Exception:
+                pass
+        return [s.strip().upper() for s in self.MARKETDATA_V5_SYMBOLS.split(",") if s.strip()]
+
+    def marketdata_extra_symbols_list(self) -> list[str]:
+        return [s.strip().upper() for s in self.MARKETDATA_EXTRA_SYMBOLS.split(",") if s.strip()]
+
     # Paper simulator market-data cache integration (Phase D2 — no broker, no real orders)
     PAPER_USE_MARKETDATA_CACHE: bool = True
     PAPER_MARKETDATA_CACHE_MAX_AGE_SECONDS: int = 30

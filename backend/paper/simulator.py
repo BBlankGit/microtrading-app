@@ -71,6 +71,14 @@ def get_state() -> dict[str, Any]:
     return dict(_state)
 
 
+def get_open_position_symbols() -> list[str]:
+    """Return ticker symbols of all currently open virtual positions.
+    Used by the market-data collector universe builder (Phase D4).
+    No broker. No real orders. Research/fake-money only.
+    """
+    return list(_account.positions.keys())
+
+
 def get_status() -> dict[str, Any]:
     status = _account.to_status(
         _last_prices,

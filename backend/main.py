@@ -26,6 +26,11 @@ async def lifespan(app: FastAPI):
     await init_journal()
     await init_runtime_config_tables()
 
+    # Register open-positions provider for universe builder (Phase D4)
+    from paper.simulator import get_open_position_symbols
+    from marketdata.universe_builder import register_open_positions_provider
+    register_open_positions_provider(get_open_position_symbols)
+
     # Start shared market data collector if enabled (Phase D1)
     if settings.MARKETDATA_COLLECTOR_ENABLED:
         from marketdata import service as md_service

@@ -1,8 +1,11 @@
 """
-Shared market data collector. Phase D1 / D1-H1.
+Shared market data collector. Phase D1 / D1-H1 / D4.
 Polls Polygon REST once per cycle, writes to Redis.
 No broker. No live trading. No real orders. No real-money execution.
 No AI/LLM/Ollama. Data collection only.
+
+Phase D4: symbol list is rebuilt each cycle from the dynamic universe builder,
+merging open positions, paper universe, V5 universe, base, and extra symbols.
 """
 
 import asyncio
@@ -31,6 +34,7 @@ class MarketDataCollector:
 
     def __init__(self, symbols: list[str] | None = None) -> None:
         self._symbols: list[str] = symbols or settings.marketdata_base_symbols_list()
+        self._universe_info: dict = {}   # populated each cycle by universe builder (D4)
         self._running: bool = False
         self._last_cycle_at: str | None = None
         self._last_success_at: str | None = None
@@ -49,6 +53,7 @@ class MarketDataCollector:
         return {
             "running": self._running,
             "symbols": list(self._symbols),
+            "universe_info": dict(self._universe_info),
             "last_cycle_at": self._last_cycle_at,
             "last_success_at": self._last_success_at,
             "last_error": self._last_error,
@@ -153,6 +158,14 @@ class MarketDataCollector:
             return
 
         self._cycle_ts.append(time.monotonic())
+
+        # Rebuild symbol universe each cycle (Phase D4)
+        from marketdata.universe_builder import build_collector_universe
+        symbols, tier_info = build_collector_universe()
+        if symbols:
+            self._symbols = symbols
+        self._universe_info = tier_info
+
         payloads = await self._fetch_with_retry()
         now_iso = datetime.now(timezone.utc).isoformat()
         self._last_cycle_at = now_iso

@@ -1,5 +1,5 @@
 """
-Health metrics for the market data collector. Phase D1.
+Health metrics for the market data collector. Phase D1 / D4.
 No broker. No live trading. No real orders. No real-money execution.
 """
 
@@ -15,6 +15,7 @@ async def get_health() -> dict[str, Any]:
 
     svc = service.get_service_status()
     symbols: list[str] = svc.get("symbols") or settings.marketdata_base_symbols_list()
+    universe_info: dict = svc.get("universe_info") or {}
 
     redis_status = await redis_ping_status()
     redis_ok: bool = redis_status.get("redis_connected", False)
@@ -25,7 +26,6 @@ async def get_health() -> dict[str, Any]:
     for sym in symbols:
         data = await cache.read_symbol(sym)
         if data and data.get("raw_status") == "ok":
-            # Verify TTL hasn't lapsed (key may exist as near-expired)
             try:
                 fetched = datetime.fromisoformat(
                     data["fetched_at"].replace("Z", "+00:00")
@@ -44,6 +44,15 @@ async def get_health() -> dict[str, Any]:
         "enabled": settings.MARKETDATA_COLLECTOR_ENABLED,
         "running": svc.get("running", False),
         "source": "polygon",
+        # Universe composition (Phase D4)
+        "configured_base_symbols_count": len(settings.marketdata_base_symbols_list()),
+        "paper_universe_symbols_count": universe_info.get("paper_universe_count", 0),
+        "v5_symbols_count": universe_info.get("v5_symbols_count", 0),
+        "extra_symbols_count": len(settings.marketdata_extra_symbols_list()),
+        "total_collector_symbols": universe_info.get("total_collector_symbols", len(symbols)),
+        "skipped_due_to_budget": universe_info.get("skipped_due_to_budget", 0),
+        "skipped_by_tier": universe_info.get("skipped_by_tier", {}),
+        # Per-symbol freshness
         "symbols_total": len(symbols),
         "symbols_fresh": symbols_fresh,
         "symbols_stale": symbols_stale,

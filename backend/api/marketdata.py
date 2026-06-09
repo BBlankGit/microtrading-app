@@ -88,6 +88,7 @@ async def marketdata_metrics():
         "timeouts_last_minute": svc.get("timeouts_last_minute", 0),
         "errors_last_minute": svc.get("errors_last_minute", 0),
         "symbols": svc.get("symbols", []),
+        "universe_info": svc.get("universe_info", {}),
         "redis_metrics": redis_metrics,
         "disclaimer": _DISCLAIMER,
     }
