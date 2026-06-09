@@ -74,25 +74,31 @@ def _make_open_row(symbol="MSFT", shares=2.0, cost_basis=200.0,
     }
 
 
-def _make_async_pool(closed_rows=None, open_rows=None, null_pid_count=0):
+def _make_async_pool(closed_rows=None, open_rows=None, null_pid_count=0,
+                     prior_day_count=0):
     """Build a mock asyncpg pool whose conn.fetch alternates results.
 
-    null_pid_count: value returned by conn.fetchval (count of NULL position_id
-    open entries skipped during restore — 0 by default, no warnings generated).
+    null_pid_count: first fetchval result (NULL position_id open entries skipped).
+    prior_day_count: second fetchval result (prior-day open entries skipped).
+    Both default to 0 — no warnings generated.
     """
     closed_rows = closed_rows or []
     open_rows = open_rows or []
     conn = MagicMock()
     fetch_results = [closed_rows, open_rows]
-    call_count = {"n": 0}
+    fetch_count = {"n": 0}
+    fetchval_results = [null_pid_count, prior_day_count]
+    fetchval_count = {"n": 0}
 
     async def fetch(*args, **kwargs):
-        idx = call_count["n"]
-        call_count["n"] += 1
+        idx = fetch_count["n"]
+        fetch_count["n"] += 1
         return fetch_results[idx] if idx < len(fetch_results) else []
 
     async def fetchval(*args, **kwargs):
-        return null_pid_count
+        idx = fetchval_count["n"]
+        fetchval_count["n"] += 1
+        return fetchval_results[idx] if idx < len(fetchval_results) else 0
 
     conn.fetch = fetch
     conn.fetchval = fetchval

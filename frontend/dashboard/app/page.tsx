@@ -2550,16 +2550,26 @@ export default function Home() {
         <p>{dashboard?.disclaimer}</p>
         <p>
           mode: {s?.mode ?? "—"} · live_trading: {String(s?.live_trading_enabled ?? false)} ·{" "}
-          broker: {String(s?.broker_connected ?? false)} · restart_persistent: {String(s?.restart_persistent ?? false)}
+          broker: {String(s?.broker_connected ?? false)} · restart_persistent:{" "}
+          {s != null ? String(s.restart_persistent) : "unknown"}
         </p>
         <p className="text-gray-700">
-          {s?.restart_persistent
-            ? `Session restored from ${s.restore_source ?? "persistence"} — ${s.restored_closed_trades_count ?? 0} closed trade(s), ${s.restored_open_positions_count ?? 0} open position(s), realized P&L: $${(s.restored_daily_realized_pnl ?? 0).toFixed(2)}.`
-            : "Session not restored from persistence (fresh start or no snapshot available for today)."}
+          restore_source: {s?.restore_source ?? "none"} · restored_closed_trades:{" "}
+          {s?.restored_closed_trades_count ?? "—"} · restored_open_positions:{" "}
+          {s?.restored_open_positions_count ?? "—"} · restored_pnl:{" "}
+          {typeof s?.restored_daily_realized_pnl === "number"
+            ? `$${s.restored_daily_realized_pnl.toFixed(2)}`
+            : "—"}{" "}
+          · restored_trades_today: {s?.restored_trades_today ?? "—"}
         </p>
+        {s?.restore_warning && (
+          <p className="text-yellow-500">
+            restore_warning: {s.restore_warning}
+          </p>
+        )}
         {s?.restore_warnings && s.restore_warnings.length > 0 && (
           <p className="text-yellow-600">
-            Restore warnings: {s.restore_warnings.join(" | ")}
+            restore_warnings: {s.restore_warnings.join(" | ")}
           </p>
         )}
       </footer>

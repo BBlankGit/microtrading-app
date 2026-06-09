@@ -102,6 +102,25 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
             except Exception:
                 null_pid_count = 0
 
+            # Count open entries from prior NY days not yet exited
+            # (excluded by the same-day filter above; useful diagnostics)
+            try:
+                prior_day_count: int = await conn.fetchval(
+                    """
+                    SELECT COUNT(*)::int FROM paper_trades_journal
+                    WHERE event = 'entry'
+                      AND position_id IS NOT NULL
+                      AND (opened_at AT TIME ZONE 'America/New_York')::date < $1
+                      AND position_id NOT IN (
+                          SELECT position_id FROM paper_trades_journal
+                          WHERE event = 'exit' AND position_id IS NOT NULL
+                      )
+                    """,
+                    ny_date,
+                ) or 0
+            except Exception:
+                prior_day_count = 0
+
         trades: list[ClosedTrade] = []
         for row in closed_rows:
             try:
@@ -138,6 +157,7 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
                 logger.warning("session_restore: skipping malformed closed row: %s", exc)
 
         positions: dict[str, Position] = {}
+        skipped_malformed: int = 0
         for row in open_rows:
             try:
                 sym = row["symbol"]
@@ -155,6 +175,7 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
                     entry_mode=row["entry_mode"],
                 )
             except Exception as exc:
+                skipped_malformed += 1
                 logger.warning("session_restore: skipping malformed open row: %s", exc)
 
         realized_pnl = sum(t.pnl for t in trades)
@@ -172,6 +193,20 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
                 "session_restore: %d open entry row(s) with NULL position_id skipped.",
                 null_pid_count,
             )
+        if prior_day_count:
+            restore_warnings.append(
+                f"{prior_day_count} open position entry row(s) skipped: "
+                "opened on a prior NY trading day (same-day restore only)."
+            )
+            logger.warning(
+                "session_restore: %d prior-day open entry row(s) skipped.",
+                prior_day_count,
+            )
+        if skipped_malformed:
+            restore_warnings.append(
+                f"{skipped_malformed} open position entry row(s) skipped: "
+                "malformed row could not be reconstructed."
+            )
 
         return {
             "trades": trades,
@@ -180,6 +215,9 @@ async def try_db_restore(ny_today: str, starting_cash: float) -> dict[str, Any] 
             "daily_trade_count": len(closed_rows) + len(open_rows),
             "daily_start_equity": starting_cash,
             "restore_warnings": restore_warnings,
+            "skipped_open_positions_missing_position_id": null_pid_count,
+            "skipped_open_positions_prior_day": prior_day_count,
+            "skipped_open_positions_malformed": skipped_malformed,
         }
 
     except Exception as exc:
@@ -234,8 +272,13 @@ async def restore_session(ny_today: str, starting_cash: float) -> dict[str, Any]
             sum(t.pnl for t in db_data["trades"]), 4
         )
         result["trades_today"] = int(db_data["daily_trade_count"])
-        result["warning"] = "cash_estimated_from_db"
-        result["restore_warnings"] = db_data.get("restore_warnings", [])
+        db_warnings = db_data.get("restore_warnings", [])
+        result["restore_warnings"] = db_warnings
+        # restore_warning: cash estimate note, plus any skip warnings surfaced together
+        if db_warnings:
+            result["warning"] = "cash_estimated_from_db; " + "; ".join(db_warnings)
+        else:
+            result["warning"] = "cash_estimated_from_db"
         logger.info(
             "session_restore: DB fallback — closed=%d open=%d pnl=%.4f warnings=%d",
             result["closed_trades_count"],

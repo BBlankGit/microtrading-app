@@ -13,7 +13,9 @@ class PaperAccount:
     All positions and trades are purely simulated.
     """
 
-    def __init__(self, starting_cash: float) -> None:
+    def __init__(self, starting_cash: float, _clock=None) -> None:
+        # _clock: optional callable(tzinfo) -> datetime for testing; None = datetime.now
+        self._clock = _clock
         self.starting_cash = starting_cash
         self.cash = starting_cash
         self.positions: dict[str, Position] = {}
@@ -35,13 +37,12 @@ class PaperAccount:
 
     def today_str(self) -> str:
         """Return today's date in America/New_York timezone (YYYY-MM-DD).
+        Uses self._clock(tz) when injected (for testing); otherwise datetime.now(tz).
         Must match _ny_trading_date() in simulator for restore/baseline consistency."""
-        try:
-            from zoneinfo import ZoneInfo
-            return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-        except Exception:
-            from datetime import timedelta
-            return datetime.now(timezone(timedelta(hours=-4))).strftime("%Y-%m-%d")
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo("America/New_York")
+        now = self._clock(tz) if self._clock is not None else datetime.now(tz)
+        return now.strftime("%Y-%m-%d")
 
     def daily_trade_count(self) -> int:
         if self._daily_date != self.today_str():
