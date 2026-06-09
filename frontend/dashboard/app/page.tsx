@@ -2397,7 +2397,14 @@ export default function Home() {
             <StatBox label="Stop Loss" value={`-${s.stop_loss_percent}%`} />
             <StatBox label="Max Hold" value={`${s.max_hold_minutes}m`} />
             <StatBox label="Snapshot Storage" value={s.snapshot_storage ?? "memory"} />
-            <StatBox label="Restart Persistent" value={s.restart_persistent ? "true" : "false"} cls={s.restart_persistent ? "text-green-400" : "text-red-400"} />
+            {(() => {
+              const restartPersistentKnown = typeof s.restart_persistent === "boolean";
+              const restartPersistentLabel = restartPersistentKnown ? String(s.restart_persistent) : "unknown";
+              const restartPersistentClass = restartPersistentKnown
+                ? (s.restart_persistent ? "text-green-400" : "text-red-400")
+                : "text-slate-400";
+              return <StatBox label="Restart Persistent" value={restartPersistentLabel} cls={restartPersistentClass} />;
+            })()}
           </div>
           {s.daily_loss_guard && (
             <div className={`mt-2 flex flex-wrap gap-3 text-xs font-mono px-1 py-1 rounded border ${
