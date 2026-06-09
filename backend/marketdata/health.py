@@ -43,6 +43,8 @@ async def get_health() -> dict[str, Any]:
     return {
         "enabled": settings.MARKETDATA_COLLECTOR_ENABLED,
         "running": svc.get("running", False),
+        "started_at": svc.get("started_at"),
+        "auto_started": svc.get("auto_started", False),
         "source": "polygon",
         # Universe composition (Phase D4)
         "configured_base_symbols_count": len(settings.marketdata_base_symbols_list()),
