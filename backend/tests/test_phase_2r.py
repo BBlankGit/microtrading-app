@@ -116,9 +116,9 @@ def test_no_catalyst_entry_disabled_via_effective_value():
 def test_no_catalyst_conservative_defaults():
     from core.config import settings
     assert settings.PAPER_NO_CATALYST_BLOCK_IF_ANY_BEARISH is True
-    # 2R-H1: stricter defaults
+    # 2R-H1: stricter defaults; 2R-H2: momentum score aligned with schema max
     assert settings.PAPER_NO_CATALYST_MIN_SCORE == 80
-    assert settings.PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE == 25
+    assert settings.PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE == 20
     assert settings.PAPER_NO_CATALYST_MIN_CHANGE_PERCENT == pytest.approx(2.0)
     assert settings.PAPER_NO_CATALYST_MIN_VOLUME_RATIO == pytest.approx(1.5)
     assert settings.PAPER_NO_CATALYST_MAX_SPREAD_PERCENT == pytest.approx(0.20)
@@ -700,12 +700,12 @@ def test_no_catalyst_h1_min_volume_ratio_default_is_1_5():
         "2R-H1: MIN_VOLUME_RATIO must default to 1.5"
 
 
-# ── 23. Phase 2R-H1: Default MIN_MOMENTUM_SCORE == 25 (always blocks) ────────
+# ── 23. Phase 2R-H2: Default MIN_MOMENTUM_SCORE == 20 (aligns with schema max) ─
 
-def test_no_catalyst_h1_min_momentum_score_default_is_25():
+def test_no_catalyst_h2_min_momentum_score_default_is_20():
     from core.config import settings
-    assert settings.PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE == 25, \
-        "2R-H1: MIN_MOMENTUM_SCORE must default to 25 (component max is 20 — blocks by default)"
+    assert settings.PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE == 20, \
+        "2R-H2: MIN_MOMENTUM_SCORE must default to 20 (= scoring component ceiling, = schema max)"
 
 
 # ── 24. Phase 2R-H1: score 79 blocked at default threshold ───────────────────
@@ -752,28 +752,23 @@ def test_no_catalyst_h1_volume_1_4_blocked_at_default():
     assert "volume" in result["rejection_reason"]
 
 
-# ── 26. Phase 2R-H1: momentum_score 25 always blocks without override ─────────
+# ── 26. Phase 2R-H2: runtime schema accepts 20, rejects 21 ───────────────────
 
-def test_no_catalyst_h1_momentum_25_always_blocked_by_default():
-    """momentum component max is 20; default MIN_MOMENTUM_SCORE=25 always blocks."""
-    from paper.no_catalyst_momentum import evaluate_no_catalyst_entry
-    from paper import runtime_config as rc
-    old = dict(rc._runtime_overrides)
-    try:
-        rc._runtime_overrides["PAPER_NO_CATALYST_ENTRY_ENABLED"] = True
-        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_SCORE", None)
-        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_VOLUME_RATIO", None)
-        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE", None)
-        # score=82 and vol=2.0 would pass gates 3+6 if momentum gate weren't blocking
-        rc._runtime_overrides["PAPER_NO_CATALYST_MIN_SCORE"] = 70
-        rc._runtime_overrides["PAPER_NO_CATALYST_MIN_VOLUME_RATIO"] = 1.0
-        scoring = dict(_scoring_passing(), total_score=80)  # momentum_score component=20 (max)
-        q = dict(_quality_passing(), volume_ratio=2.0)
-        result = evaluate_no_catalyst_entry("AAPL", q, scoring, _regime_passing())
-    finally:
-        rc._runtime_overrides = old
-    assert result["eligible"] is False
-    assert "momentum" in result["rejection_reason"]
+def test_no_catalyst_h2_runtime_override_20_accepted():
+    """Runtime API must accept PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE=20 (schema max)."""
+    from paper.runtime_config import validate_runtime_config
+    ok, errors = validate_runtime_config({"PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE": 20})
+    assert ok, f"Override of 20 must be accepted; errors: {errors}"
+    assert not errors
+
+
+def test_no_catalyst_h2_runtime_override_21_rejected():
+    """Runtime API must reject PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE=21 (exceeds schema max of 20)."""
+    from paper.runtime_config import validate_runtime_config
+    ok, errors = validate_runtime_config({"PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE": 21})
+    assert not ok, "Override of 21 must be rejected (exceeds component ceiling)"
+    assert any("exceed" in e.lower() or "maximum" in e.lower() for e in errors), \
+        f"Expected a max-exceeded error; got: {errors}"
 
 
 # ── 27. Phase 2R-H1: stale marketdata blocks Path C ──────────────────────────
