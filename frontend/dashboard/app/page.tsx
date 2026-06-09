@@ -2397,7 +2397,7 @@ export default function Home() {
             <StatBox label="Stop Loss" value={`-${s.stop_loss_percent}%`} />
             <StatBox label="Max Hold" value={`${s.max_hold_minutes}m`} />
             <StatBox label="Snapshot Storage" value={s.snapshot_storage ?? "memory"} />
-            <StatBox label="Restart Persistent" value="false" cls="text-red-400" />
+            <StatBox label="Restart Persistent" value={s.restart_persistent ? "true" : "false"} cls={s.restart_persistent ? "text-green-400" : "text-red-400"} />
           </div>
           {s.daily_loss_guard && (
             <div className={`mt-2 flex flex-wrap gap-3 text-xs font-mono px-1 py-1 rounded border ${
