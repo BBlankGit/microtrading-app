@@ -145,13 +145,19 @@ async def persist_tick_result(
                             momentum_score_threshold, momentum_rejection_reason,
                             momentum_gate_results_json,
                             marketdata_source, marketdata_age_seconds, marketdata_stale,
-                            marketdata_fallback_used, marketdata_error
+                            marketdata_fallback_used, marketdata_error,
+                            catalyst_required,
+                            no_catalyst_momentum_eligible,
+                            no_catalyst_momentum_reasons_json,
+                            no_catalyst_momentum_blockers_json,
+                            no_catalyst_config_snapshot_json
                         ) VALUES (
                             $1,$2,$3,$4,$5,$6,$7,$8,
                             $9,$10,$11,$12,$13,$14,
                             $15,$16,$17,$18,$19,$20,$21,
                             $22,$23,$24,$25,$26,$27,
-                            $28,$29,$30,$31,$32
+                            $28,$29,$30,$31,$32,
+                            $33,$34,$35,$36,$37
                         )
                         """,
                         [
@@ -188,6 +194,11 @@ async def persist_tick_result(
                                 _bool(c.get("marketdata_stale")) if c.get("marketdata_stale") is not None else None,
                                 _bool(c.get("marketdata_fallback_used")) if c.get("marketdata_fallback_used") is not None else None,
                                 c.get("marketdata_error"),
+                                _bool(c.get("catalyst_required")) if c.get("catalyst_required") is not None else None,
+                                _bool(c.get("no_catalyst_momentum_eligible")) if c.get("no_catalyst_momentum_eligible") is not None else None,
+                                json.dumps(c["no_catalyst_momentum_reasons"]) if c.get("no_catalyst_momentum_reasons") else None,
+                                json.dumps(c["no_catalyst_momentum_blockers"]) if c.get("no_catalyst_momentum_blockers") else None,
+                                json.dumps(c["no_catalyst_config_snapshot"]) if c.get("no_catalyst_config_snapshot") else None,
                             )
                             for c in candidates
                         ],

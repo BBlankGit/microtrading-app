@@ -584,13 +584,14 @@ async def run_tick() -> dict[str, Any]:
                 hard_rejection = "only generic_news catalysts"
                 is_no_catalyst_rejection = True
 
-            # Block new entries when data is stale and fresh cache is required for entries
+            # Block new entries when data is stale and fresh cache is required for entries.
+            # Stale data overrides is_no_catalyst_rejection so Path C never fires on stale data.
             if (
-                hard_rejection is None
-                and _cfg("PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY")
+                _cfg("PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY")
                 and _sym_meta.get("marketdata_stale")
             ):
                 hard_rejection = "stale_marketdata_entry_blocked"
+                is_no_catalyst_rejection = False
 
             cat_type = cats[0].get("classified_event_type") if cats else None
 

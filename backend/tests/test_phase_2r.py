@@ -116,10 +116,11 @@ def test_no_catalyst_entry_disabled_via_effective_value():
 def test_no_catalyst_conservative_defaults():
     from core.config import settings
     assert settings.PAPER_NO_CATALYST_BLOCK_IF_ANY_BEARISH is True
-    assert settings.PAPER_NO_CATALYST_MIN_SCORE == 60
-    assert settings.PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE == 15
+    # 2R-H1: stricter defaults
+    assert settings.PAPER_NO_CATALYST_MIN_SCORE == 80
+    assert settings.PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE == 25
     assert settings.PAPER_NO_CATALYST_MIN_CHANGE_PERCENT == pytest.approx(2.0)
-    assert settings.PAPER_NO_CATALYST_MIN_VOLUME_RATIO == pytest.approx(0.5)
+    assert settings.PAPER_NO_CATALYST_MIN_VOLUME_RATIO == pytest.approx(1.5)
     assert settings.PAPER_NO_CATALYST_MAX_SPREAD_PERCENT == pytest.approx(0.20)
     assert settings.PAPER_NO_CATALYST_REQUIRE_RISK_ON is True
     assert settings.PAPER_NO_CATALYST_MIN_RISK_SCORE == 60
@@ -681,3 +682,289 @@ def test_monitoring_no_catalyst_enabled_adds_warning():
     assert data["no_catalyst_mode"]["enabled"] is True
     warnings = data.get("warnings", [])
     assert any("no-catalyst" in w.lower() or "no_catalyst" in w.lower() for w in warnings)
+
+
+# ── 21. Phase 2R-H1: Default MIN_SCORE == 80 ─────────────────────────────────
+
+def test_no_catalyst_h1_min_score_default_is_80():
+    from core.config import settings
+    assert settings.PAPER_NO_CATALYST_MIN_SCORE == 80, \
+        "2R-H1: MIN_SCORE must default to 80"
+
+
+# ── 22. Phase 2R-H1: Default MIN_VOLUME_RATIO == 1.5 ─────────────────────────
+
+def test_no_catalyst_h1_min_volume_ratio_default_is_1_5():
+    from core.config import settings
+    assert settings.PAPER_NO_CATALYST_MIN_VOLUME_RATIO == pytest.approx(1.5), \
+        "2R-H1: MIN_VOLUME_RATIO must default to 1.5"
+
+
+# ── 23. Phase 2R-H1: Default MIN_MOMENTUM_SCORE == 25 (always blocks) ────────
+
+def test_no_catalyst_h1_min_momentum_score_default_is_25():
+    from core.config import settings
+    assert settings.PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE == 25, \
+        "2R-H1: MIN_MOMENTUM_SCORE must default to 25 (component max is 20 — blocks by default)"
+
+
+# ── 24. Phase 2R-H1: score 79 blocked at default threshold ───────────────────
+
+def test_no_catalyst_h1_score_79_blocked_at_default():
+    """score=79 < default MIN_SCORE=80 → gate 3 rejects without override."""
+    from paper.no_catalyst_momentum import evaluate_no_catalyst_entry
+    from paper import runtime_config as rc
+    old = dict(rc._runtime_overrides)
+    try:
+        rc._runtime_overrides["PAPER_NO_CATALYST_ENTRY_ENABLED"] = True
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_SCORE", None)
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_VOLUME_RATIO", None)
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE", None)
+        scoring = dict(_scoring_passing(), total_score=79)
+        result = evaluate_no_catalyst_entry("AAPL", _quality_passing(), scoring, _regime_passing())
+    finally:
+        rc._runtime_overrides = old
+    assert result["eligible"] is False
+    assert "score" in result["rejection_reason"]
+
+
+# ── 25. Phase 2R-H1: volume 1.4 blocked at default threshold ─────────────────
+
+def test_no_catalyst_h1_volume_1_4_blocked_at_default():
+    """vol=1.4 < default MIN_VOLUME_RATIO=1.5 → gate 6 rejects without override."""
+    from paper.no_catalyst_momentum import evaluate_no_catalyst_entry
+    from paper import runtime_config as rc
+    old = dict(rc._runtime_overrides)
+    try:
+        rc._runtime_overrides["PAPER_NO_CATALYST_ENTRY_ENABLED"] = True
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_SCORE", None)
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_VOLUME_RATIO", None)
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE", None)
+        # total_score=82 clears gate 3 (if momentum gate wasn't also blocking)
+        # but momentum gate (default 25) blocks first — so use explicit momentum override
+        rc._runtime_overrides["PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE"] = 15
+        scoring = dict(_scoring_passing(), total_score=82)
+        q = dict(_quality_passing(), volume_ratio=1.4)
+        result = evaluate_no_catalyst_entry("AAPL", q, scoring, _regime_passing())
+    finally:
+        rc._runtime_overrides = old
+    assert result["eligible"] is False
+    assert "volume" in result["rejection_reason"]
+
+
+# ── 26. Phase 2R-H1: momentum_score 25 always blocks without override ─────────
+
+def test_no_catalyst_h1_momentum_25_always_blocked_by_default():
+    """momentum component max is 20; default MIN_MOMENTUM_SCORE=25 always blocks."""
+    from paper.no_catalyst_momentum import evaluate_no_catalyst_entry
+    from paper import runtime_config as rc
+    old = dict(rc._runtime_overrides)
+    try:
+        rc._runtime_overrides["PAPER_NO_CATALYST_ENTRY_ENABLED"] = True
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_SCORE", None)
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_VOLUME_RATIO", None)
+        rc._runtime_overrides.pop("PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE", None)
+        # score=82 and vol=2.0 would pass gates 3+6 if momentum gate weren't blocking
+        rc._runtime_overrides["PAPER_NO_CATALYST_MIN_SCORE"] = 70
+        rc._runtime_overrides["PAPER_NO_CATALYST_MIN_VOLUME_RATIO"] = 1.0
+        scoring = dict(_scoring_passing(), total_score=80)  # momentum_score component=20 (max)
+        q = dict(_quality_passing(), volume_ratio=2.0)
+        result = evaluate_no_catalyst_entry("AAPL", q, scoring, _regime_passing())
+    finally:
+        rc._runtime_overrides = old
+    assert result["eligible"] is False
+    assert "momentum" in result["rejection_reason"]
+
+
+# ── 27. Phase 2R-H1: stale marketdata blocks Path C ──────────────────────────
+
+def test_no_catalyst_h1_stale_blocks_path_c():
+    """Stale cache data must block Path C — stale guard overrides is_no_catalyst_rejection."""
+    import asyncio
+    from paper import runtime_config as rc
+    import paper.simulator as sim
+    from paper.account import PaperAccount
+
+    quality = {
+        "tradable": True, "bid": 100.0, "ask": 100.10, "last_trade_price": 100.05,
+        "spread_percent": 0.10, "change_percent": 2.5, "volume_ratio": 2.0,
+        "has_valid_quote": True, "has_valid_trade": True,
+        "has_sufficient_volume": True, "has_acceptable_spread": True,
+        "rejection_reasons": [],
+    }
+
+    old_overrides = dict(rc._runtime_overrides)
+    old_account = sim._account
+    sim._account = PaperAccount(1000.0)
+
+    rc._runtime_overrides.update({
+        **_base_nc_overrides(),
+        "PAPER_NO_CATALYST_REQUIRE_RISK_ON": False,
+        "PAPER_USE_MARKETDATA_CACHE": True,
+        "PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY": True,
+        "PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED": True,
+        "PAPER_MOMENTUM_MODE_ENABLED": False,
+        "PAPER_ENTRY_SCORE_THRESHOLD": 70,
+        "PAPER_TAKE_PROFIT_PERCENT": 0.60,
+        "PAPER_STOP_LOSS_PERCENT": 0.35,
+        "PAPER_MAX_HOLD_MINUTES": 15,
+        "PAPER_MAX_OPEN_POSITIONS": 2,
+        "PAPER_MAX_TRADES_PER_DAY": 20,
+        "PAPER_POSITION_SIZE_PERCENT": 25.0,
+        "PAPER_REJECT_STRONG_BEARISH_CATALYST": True,
+        "PAPER_BEARISH_CATALYST_REJECT_MATERIALITY": 0.8,
+        "PAPER_MIN_VOLUME_RATIO": 0.0,
+        "MARKET_REGIME_ENABLED": False,
+        "PAPER_DAILY_MAX_LOSS_ENABLED": False,
+    })
+
+    try:
+        with (
+            patch("paper.simulator.get_active_paper_universe", new_callable=AsyncMock,
+                  return_value={
+                      "active_symbols": ["AAPL"],
+                      "active_count": 1,
+                      "last_refreshed_at": None,
+                      "refresh_reason": "test",
+                      "discovery": {"enabled": False, "discovered_count": 0, "errors": []},
+                  }),
+            patch("paper.marketdata_adapter.try_cache_for_quality",
+                  new_callable=AsyncMock,
+                  return_value=(None, {"marketdata_source": "stale", "marketdata_age_seconds": 90})),
+            patch("paper.simulator.polygon_client.get_ticker_snapshot",
+                  new_callable=AsyncMock, return_value=quality),
+            patch("paper.simulator.polygon_client.get_previous_close",
+                  new_callable=AsyncMock, return_value={}),
+            patch("paper.simulator.evaluate_market_quality", return_value=quality),
+            patch("paper.simulator.collect_news_for_symbols", new_callable=AsyncMock,
+                  return_value={"filter": {"accepted": []}}),
+            patch("paper.simulator._persist_journal_tick", new_callable=AsyncMock,
+                  return_value={"ok": True}),
+            patch("paper.simulator.get_cached_universe", return_value=None),
+            patch("paper.simulator._save_state", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(sim.run_tick())
+    finally:
+        sim._account = old_account
+        rc._runtime_overrides = old_overrides
+
+    entries = result.get("entries", [])
+    assert len(entries) == 0, f"Stale data must block all entries, got: {entries}"
+    candidates = result.get("candidates", [])
+    assert len(candidates) == 1
+    c = candidates[0]
+    assert c["rejection_reason"] == "stale_marketdata_entry_blocked", \
+        f"Expected stale rejection, got: {c['rejection_reason']!r}"
+    assert c.get("no_catalyst_momentum_eligible") is False
+
+
+# ── 28. Phase 2R-H1: catalyst Path A unchanged when no-catalyst enabled ───────
+
+def test_no_catalyst_h1_catalyst_path_a_unchanged():
+    """Enabling no-catalyst mode must not affect Path A (catalyst entry)."""
+    import asyncio
+    from paper import runtime_config as rc
+    import paper.simulator as sim
+    from paper.account import PaperAccount
+
+    quality = {
+        "tradable": True, "bid": 50.0, "ask": 50.10, "last_trade_price": 50.05,
+        "spread_percent": 0.20, "change_percent": 3.0, "volume_ratio": 2.5,
+        "has_valid_quote": True, "has_valid_trade": True,
+        "has_sufficient_volume": True, "has_acceptable_spread": True,
+        "rejection_reasons": [],
+    }
+    catalyst = {"classified_event_type": "earnings", "title": "Beat Q4", "sentiment": "bullish"}
+
+    old_overrides = dict(rc._runtime_overrides)
+    old_account = sim._account
+    sim._account = PaperAccount(1000.0)
+
+    rc._runtime_overrides.update({
+        **_base_nc_overrides(),
+        "PAPER_USE_MARKETDATA_CACHE": False,
+        "PAPER_MOMENTUM_MODE_ENABLED": False,
+        "PAPER_ENTRY_SCORE_THRESHOLD": 70,
+        "PAPER_TAKE_PROFIT_PERCENT": 0.60,
+        "PAPER_STOP_LOSS_PERCENT": 0.35,
+        "PAPER_MAX_HOLD_MINUTES": 15,
+        "PAPER_MAX_OPEN_POSITIONS": 2,
+        "PAPER_MAX_TRADES_PER_DAY": 20,
+        "PAPER_POSITION_SIZE_PERCENT": 25.0,
+        "PAPER_REJECT_STRONG_BEARISH_CATALYST": True,
+        "PAPER_BEARISH_CATALYST_REJECT_MATERIALITY": 0.8,
+        "PAPER_MIN_VOLUME_RATIO": 0.0,
+        "MARKET_REGIME_ENABLED": False,
+        "PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY": False,
+        "PAPER_DAILY_MAX_LOSS_ENABLED": False,
+    })
+
+    try:
+        with (
+            patch("paper.simulator.get_active_paper_universe", new_callable=AsyncMock,
+                  return_value={
+                      "active_symbols": ["MSFT"],
+                      "active_count": 1,
+                      "last_refreshed_at": None,
+                      "refresh_reason": "test",
+                      "discovery": {"enabled": False, "discovered_count": 0, "errors": []},
+                  }),
+            patch("paper.simulator.polygon_client.get_ticker_snapshot",
+                  new_callable=AsyncMock, return_value=quality),
+            patch("paper.simulator.polygon_client.get_previous_close",
+                  new_callable=AsyncMock, return_value={}),
+            patch("paper.simulator.evaluate_market_quality", return_value=quality),
+            patch("paper.simulator.collect_news_for_symbols", new_callable=AsyncMock,
+                  return_value={"filter": {"accepted": [catalyst]}}),
+            patch("paper.simulator._persist_journal_tick", new_callable=AsyncMock,
+                  return_value={"ok": True}),
+            patch("paper.simulator.get_cached_universe", return_value=None),
+            patch("paper.simulator._save_state", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(sim.run_tick())
+    finally:
+        sim._account = old_account
+        rc._runtime_overrides = old_overrides
+
+    for entry in result.get("entries", []):
+        assert entry["entry_mode"] != "momentum_no_catalyst", \
+            "catalyst-path candidate must not produce a no-catalyst entry"
+    candidates = result.get("candidates", [])
+    for c in candidates:
+        assert c.get("entry_mode") != "momentum_no_catalyst", \
+            "catalyst-path candidate must not be labelled momentum_no_catalyst"
+
+
+# ── 29. Phase 2R-H1: journal INSERT contains no-catalyst audit columns ────────
+
+def test_no_catalyst_h1_journal_insert_contains_nc_columns():
+    """journal.py executemany INSERT must include all five no-catalyst audit columns."""
+    journal_path = BACKEND_ROOT / "paper" / "journal.py"
+    source = journal_path.read_text()
+    required = [
+        "catalyst_required",
+        "no_catalyst_momentum_eligible",
+        "no_catalyst_momentum_reasons_json",
+        "no_catalyst_momentum_blockers_json",
+        "no_catalyst_config_snapshot_json",
+    ]
+    for col in required:
+        assert col in source, f"journal.py INSERT missing audit column: {col!r}"
+
+
+# ── 30. Phase 2R-H1: marketdata cache-first default unchanged ─────────────────
+
+def test_no_catalyst_h1_cache_first_default_unchanged():
+    """PAPER_USE_MARKETDATA_CACHE must remain True by default (cache-first architecture)."""
+    from core.config import settings
+    assert settings.PAPER_USE_MARKETDATA_CACHE is True
+
+
+# ── 31. Phase 2R-H1: stale guard resets is_no_catalyst_rejection ─────────────
+
+def test_no_catalyst_h1_stale_guard_resets_no_catalyst_flag():
+    """simulator.py stale guard must set is_no_catalyst_rejection=False (2R-H1 fix)."""
+    sim_path = BACKEND_ROOT / "paper" / "simulator.py"
+    source = sim_path.read_text()
+    assert "is_no_catalyst_rejection = False" in source, \
+        "2R-H1 fix not found: stale guard must set is_no_catalyst_rejection=False"

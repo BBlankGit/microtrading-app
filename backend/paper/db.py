@@ -135,6 +135,11 @@ ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS marketdata_age_seconds DOU
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS marketdata_stale BOOLEAN;
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS marketdata_fallback_used BOOLEAN;
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS marketdata_error TEXT;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS catalyst_required BOOLEAN;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_momentum_eligible BOOLEAN;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_momentum_reasons_json JSONB;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_momentum_blockers_json JSONB;
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_config_snapshot_json JSONB;
 """
 
 

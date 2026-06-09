@@ -168,10 +168,10 @@ class Settings(BaseSettings):
     # No-catalyst momentum entry mode (Phase 2R — disabled by default, no broker, no real orders)
     PAPER_NO_CATALYST_ENTRY_ENABLED: bool = False
     PAPER_NO_CATALYST_BLOCK_IF_ANY_BEARISH: bool = True
-    PAPER_NO_CATALYST_MIN_SCORE: int = 60
-    PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE: int = 15
+    PAPER_NO_CATALYST_MIN_SCORE: int = 80
+    PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE: int = 25
     PAPER_NO_CATALYST_MIN_CHANGE_PERCENT: float = 2.0
-    PAPER_NO_CATALYST_MIN_VOLUME_RATIO: float = 0.5
+    PAPER_NO_CATALYST_MIN_VOLUME_RATIO: float = 1.5
     PAPER_NO_CATALYST_MAX_SPREAD_PERCENT: float = 0.20
     PAPER_NO_CATALYST_REQUIRE_RISK_ON: bool = True
     PAPER_NO_CATALYST_MIN_RISK_SCORE: int = 60

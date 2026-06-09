@@ -158,7 +158,13 @@ async def journal_candidates(
                        volume_ratio, catalyst_count, catalyst_type,
                        total_score, score_threshold, score_pass,
                        score_components_json, positive_reasons_json,
-                       negative_reasons_json, decision_reason, created_at
+                       negative_reasons_json, decision_reason,
+                       entry_mode, catalyst_required,
+                       no_catalyst_momentum_eligible,
+                       no_catalyst_momentum_reasons_json,
+                       no_catalyst_momentum_blockers_json,
+                       no_catalyst_config_snapshot_json,
+                       created_at
                 FROM paper_candidates
                 {where}
                 ORDER BY created_at DESC
