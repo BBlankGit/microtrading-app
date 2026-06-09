@@ -2,100 +2,117 @@
 
 Review date: 2026-06-09
 Requested repository: `BBlankGit/stock-breakout-v5-dashboard`
-Local checkout reviewed: `/workspace/microtrading-app`
+Local checkout provided: `/workspace/microtrading-app`
 Requested implementation commit: `0dbb8ea — Route V5 market data through shared cache first`
-Scope: latest Phase D3 V5 cache patch only
+Scope requested: latest Phase D3 V5 patch only
 
 ## Critical issues
 
-1. **Blocking: the requested Phase D3 V5 implementation commit is not available in this checkout.**
-   - `git cat-file -t 0dbb8ea` reports that `0dbb8ea` is not a valid object in the local repository.
-   - The local history currently ends at a prior review merge (`d6fab47`) and earlier D2/D2-H1 cache work; it does not contain the requested `0dbb8ea` implementation commit.
-   - Because the actual V5 patch is absent, this review cannot certify the requested D3 outcomes against V5 code.
+1. **Blocking: the requested implementation commit is not present in the provided checkout.**
+   - `git cat-file -t 0dbb8ea` returns `fatal: Not a valid object name 0dbb8ea`.
+   - `git show --stat --oneline 0dbb8ea` also fails because the object is unknown locally.
+   - The local branch is `work`, and the visible history contains prior microtrading review/implementation work rather than the requested V5 implementation commit.
+   - Because the Phase D3 implementation object is unavailable, this review cannot certify the actual latest V5 patch.
 
-2. **Blocking: no V5 scanner/alert code path is present in the local tree.**
-   - `rg --files | rg -i 'v5|v6|scanner|alert|insider|earnings|premarket'` found no V5 implementation files; the only V5-named review file is this document.
-   - The existing backend is a paper-simulator/microtrading codebase, so its cache-first behavior is relevant background only, not proof that V5 was integrated.
+2. **Blocking: the provided checkout is the microtrading app, not the requested V5 dashboard repository.**
+   - The repository root is `/workspace/microtrading-app`.
+   - The tree contains `backend/marketdata`, `backend/paper`, `backend/api`, and other microtrading modules.
+   - I did not find V5 scanner/alert implementation files for the requested `stock-breakout-v5-dashboard` scope.
 
-3. **Blocking before V6: Phase D3 V5 must be reviewed on the branch that actually contains `0dbb8ea`.**
-   - Proceeding to V6 cache integration from this checkout would skip validation of the V5 cache-first contract, stale-data alert guards, telemetry, and threshold-preservation requirements.
+3. **Blocking: network access to the requested GitHub repository is unavailable from this environment.**
+   - `git ls-remote https://github.com/BBlankGit/stock-breakout-v5-dashboard.git` fails with `CONNECT tunnel failed, response 403`.
+   - I therefore could not fetch `0dbb8ea` or compare it against its parent commit.
+
+4. **Blocking before V6: D3 cannot be accepted as reviewed until the real V5 patch is available.**
+   - The D3 requirements are specifically about V5 alert/scanner behavior, threshold preservation, intelligence preservation, and dashboard telemetry.
+   - Those properties must be reviewed in the branch containing `0dbb8ea`, not inferred from the microtrading cache implementation.
 
 ## Non-blocking issues
 
-1. **Paper-simulator fallback telemetry counts fallback attempts, not confirmed fallback success.**
-   - The simulator increments its fallback counter before calling Polygon after stale/missing cache data. If Polygon then fails, `polygon_fallbacks_last_tick` still reflects an attempted fallback. That is acceptable if interpreted as “fallback attempted,” but future telemetry would be clearer with separate attempted/succeeded/failed counters.
+1. **The available microtrading paper-simulator fallback counter is named as if fallback succeeded, but it is incremented before the Polygon call.**
+   - In the local background implementation, `fallbacks` is incremented when stale/missing cache data falls through to Polygon.
+   - If Polygon later fails, the counter still records a fallback attempt.
+   - This is acceptable if documented as “fallback attempted,” but future telemetry would be clearer with separate attempted/succeeded/failed counters.
 
-2. **Monitoring exposes backend cache counters, but the frontend dashboard does not appear to render them in this checkout.**
-   - `/api/monitoring/status` returns `marketdata_cache.last_tick_stats`, but I did not find corresponding frontend rendering for those specific cache counters.
+2. **The local microtrading backend exposes cache counters, but V5 dashboard rendering is not available to inspect.**
+   - The provided checkout can show backend-style cache stats for the microtrading paper simulator.
+   - It cannot prove that V5 displays source labels per ticker or per scan.
 
-3. **Timeout telemetry requested for D3/V5 is not present in the reviewed paper-simulator counters.**
-   - The available counters cover hit/miss/stale/fallback/direct/missing outcomes, but there is no distinct timeout counter in the paper-simulator telemetry. Since the V5 patch is absent, V5 timeout telemetry is unverified.
+3. **Timeout telemetry is not proven for V5.**
+   - The local paper-simulator counters cover hits, misses, stale entries, Polygon fallbacks, Polygon direct calls, and missing market data.
+   - I did not find V5 timeout telemetry because V5 files are absent.
 
 ## Cache-first V5 assessment
 
-**Verdict: not verifiable / fail for D3 scope.**
+**Verdict: not verifiable / not accepted for D3.**
 
-The requested V5 integration cannot be evaluated because the V5 implementation commit and V5 files are absent from the local checkout.
+The requested V5 cache-first integration cannot be assessed from the provided checkout because `0dbb8ea` and the V5 implementation files are absent.
 
-What is present as background:
+Background evidence from the local microtrading implementation only:
 
-- `paper.marketdata_adapter.try_cache_for_quality()` reads the shared `marketdata.cache.read_symbol()` path, classifies fresh/stale/missing/error cache outcomes, and documents that it never calls Polygon.
-- On a fresh cache hit, the adapter returns a quality dict with `marketdata_source == "cache"` and `marketdata_stale == False`.
-- The paper simulator calls the adapter before the Polygon snapshot/previous-close path when `PAPER_USE_MARKETDATA_CACHE` is enabled.
-- Existing tests assert that a fresh paper-simulator cache hit avoids Polygon snapshot and previous-close calls.
+- The local paper market-data adapter reads `marketdata.cache.read_symbol(sym)` and documents that it is cache-only and never calls Polygon.
+- It classifies fresh cache hits as `marketdata_source == "cache"` and stale/missing/error cache outcomes as fallback-eligible or no-fallback outcomes.
+- The local paper simulator checks the cache path before direct Polygon calls when its cache setting is enabled.
+- Fresh local cache hits return before the Polygon snapshot/previous-close path.
 
-What remains unproved for D3/V5:
+Unverified for the requested V5 D3 patch:
 
-- V5 normal ticker market-data fetches reading the shared microtrading market-data cache/local API first.
-- Fresh V5 cache hits avoiding direct Polygon calls.
-- V5 per-ticker or per-scan source labels.
-- V5 dashboard visibility of cache source and counters.
+- Whether normal V5 ticker market-data fetches read the shared microtrading marketdata cache/local API first.
+- Whether fresh V5 cache hits avoid all direct Polygon calls for normal ticker market data.
+- Whether V5 uses the local API, direct Redis access, or another shared-cache adapter.
+- Whether V5 source labels are visible per ticker or per scan.
 
 ## Fallback/stale-data assessment
 
-**Verdict: paper-simulator background mostly passes; V5 not verifiable.**
+**Verdict: not verifiable for V5; local microtrading background mostly matches the intended behavior.**
 
-Observed in the available paper-simulator path:
+Observed in the local microtrading paper path:
 
-- Cache fallback is controlled by `PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED`.
-- Fresh cache hit: returns cached quality and skips Polygon.
-- Stale/missing/error with fallback enabled: falls through to the old Polygon path and labels the source as `polygon_fallback`.
-- Stale/missing/error with fallback disabled: records missing/stale market-data errors, does not call Polygon, and does not add quality for the symbol.
-- When `PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY` is enabled, stale market-data metadata can block new entries via `stale_marketdata_entry_blocked`.
+- Fallback is controlled by configuration.
+- A fresh cache hit skips Polygon.
+- A stale/missing/error cache result with fallback enabled falls through to the previous Polygon path.
+- A stale/missing/error cache result with fallback disabled rejects the symbol for that tick and does not call Polygon.
+- A fresh-data-for-entry gate exists in the local paper simulator and can block entry creation when market data is stale.
 
-D3/V5 gaps:
+Unverified for V5:
 
-- No V5 fallback configuration was available to inspect.
-- No V5 alert loop was available to prove stale/missing data cannot generate alerts when fresh data is required and fallback fails or is disabled.
-- No V5 test was available to assert direct Polygon is used only under the configured fallback condition.
+- Whether V5 fallback is gated by an explicit configuration flag.
+- Whether V5 calls the old Polygon path only for missing/stale/unusable cache when fallback is enabled.
+- Whether V5 blocks alerts when fresh data is required and cache is stale/missing/unusable while fallback fails or is disabled.
+- Whether V5 distinguishes stale data from missing or cache-error data in telemetry and source labels.
 
 ## Alert/rule-regression assessment
 
-**Verdict: V5 not verifiable.**
+**Verdict: not verifiable.**
 
-- The available paper-simulator path preserves its existing hard gates and deterministic scoring flow, but that is not the V5 alert engine.
-- No V5 alert/scoring/rule-threshold files are present in the local tree, so I cannot confirm that D3 left V5 thresholds unchanged.
-- A review on the actual `0dbb8ea` branch must diff V5 scoring/rules against the parent commit and confirm that only market-data routing/source-label/telemetry behavior changed.
+I cannot confirm whether V5 alert, scoring, and rule thresholds were unchanged because the requested V5 patch and parent commit are unavailable locally.
+
+Required review once `0dbb8ea` is available:
+
+- Diff V5 alert/scoring/rules/config files against the parent commit.
+- Confirm all threshold constants and defaults are unchanged unless the patch only adds market-data source/freshness metadata.
+- Confirm cache source/freshness checks do not loosen entry/alert gates.
+- Confirm stale/missing data cannot produce an alert when the system requires fresh market data.
 
 ## V5 intelligence preservation assessment
 
-**Verdict: not verifiable because V5 is absent.**
+**Verdict: not verifiable.**
 
-Requested V5 features:
+The following V5-specific features cannot be certified from this checkout:
 
-- **Insiders:** no V5 insider pipeline found in this checkout.
-- **News:** backend paper-simulator news/catalyst collection exists, but no V5-specific news integration was available.
-- **Earnings:** paper-simulator scoring recognizes earnings catalysts, but V5 earnings preservation cannot be evaluated.
-- **Premarket discovery:** paper-simulator market-wide discovery exists, but no V5 premarket discovery code path was available.
-- **Catalyst/ranking logic:** paper-simulator scoring/ranking exists, but V5 catalyst/ranking preservation cannot be certified.
+- **Insiders:** no requested V5 insider implementation was available to diff.
+- **News:** local microtrading catalyst/news modules exist, but they do not prove V5 news preservation.
+- **Earnings:** local scoring mentions earnings-style catalyst data, but no V5 earnings path was available.
+- **Premarket discovery:** local paper discovery exists, but no V5 premarket discovery path was available.
+- **Catalyst/ranking logic:** local deterministic scoring/ranking exists, but no V5 ranking patch could be inspected.
 
-The absence of V5 files means there is no evidence these features were removed in the local checkout, but also no evidence that the D3 V5 cache integration preserved them.
+There is no evidence in the provided checkout that these V5 features were removed, but there is also no evidence that `0dbb8ea` preserved them.
 
 ## Telemetry/dashboard assessment
 
-**Verdict: paper-simulator backend telemetry partially passes; V5 telemetry/dashboard not verifiable.**
+**Verdict: not verifiable for V5; local background telemetry is partial.**
 
-Available paper-simulator telemetry:
+Local microtrading background telemetry includes:
 
 - `cache_hits_last_tick`
 - `cache_misses_last_tick`
@@ -103,81 +120,99 @@ Available paper-simulator telemetry:
 - `polygon_fallbacks_last_tick`
 - `polygon_direct_last_tick`
 - `missing_marketdata_last_tick`
-- Candidate-level source metadata: `marketdata_source`, `marketdata_age_seconds`, `marketdata_fetched_at`, `marketdata_stale`, `marketdata_fallback_used`, and `marketdata_error`
-- Monitoring status includes `marketdata_cache.last_tick_stats`.
+- Candidate metadata such as `marketdata_source`, `marketdata_age_seconds`, `marketdata_fetched_at`, `marketdata_stale`, `marketdata_fallback_used`, and `marketdata_error`
 
-Limitations relative to D3:
+Unverified for V5:
 
-- No distinct timeout counter was found in the available paper-simulator telemetry.
-- No V5 telemetry fields were available.
-- No V5 dashboard/source-label rendering was available.
+- Hit, miss, stale, fallback, timeout, and fallback-failure counters.
+- Per-ticker source labels.
+- Per-scan aggregate source labels.
+- Dashboard/UI rendering of cache status.
+- Alert payload inclusion of data source/freshness metadata.
 
 ## Test coverage assessment
 
-**Verdict: paper-simulator tests are good; V5 D3 tests are absent.**
+**Verdict: not verifiable for V5.**
 
-Available paper-simulator test coverage:
+Local microtrading background tests show the desired pattern for the paper simulator:
 
-- Tests mock shared cache reads with `AsyncMock`.
-- Tests mock Polygon snapshot/previous-close calls rather than using real network calls.
+- Cache reads are mocked.
+- Polygon snapshot and previous-close calls are mocked.
 - Fresh cache-hit tests assert Polygon is not called.
-- Cache-miss and stale-cache tests assert fallback counters and source labels.
-- No-fallback tests assert Polygon is not called and quality is not produced.
-- Candidate metadata and monitoring-status tests cover source/error/fallback fields and last-tick stats.
+- No-fallback tests assert Polygon is not called when cache data is missing/stale and fallback is disabled.
+- Candidate metadata and cache counters are asserted.
 
 Missing for D3/V5:
 
-- No V5 cache-first tests.
-- No V5 stale/missing/fallback-disabled alert-blocking tests.
-- No V5 source-label or dashboard telemetry tests.
-- No V5 intelligence-regression tests for insiders/news/earnings/premarket discovery/catalyst ranking.
-- No test evidence for V5 timeout counters.
+- Tests proving V5 shared-cache/local-API reads happen before Polygon.
+- Tests proving fresh V5 cache hits avoid Polygon for normal ticker market data.
+- Tests proving stale/missing/unusable cache falls back only when configured.
+- Tests proving alerts are not emitted when fresh data is required and fallback fails or is disabled.
+- Tests proving insiders/news/earnings/premarket discovery/catalyst ranking were preserved.
+- Tests proving V5 telemetry and dashboard/source labels.
+- Tests proving all network paths are mocked and no real Polygon/shared-cache network calls occur in unit tests.
 
 ## Safety assessment
 
-**Verdict: the local paper-simulator cache path appears safe for research/fake-money monitoring; D3/V5 safety cannot be certified from this checkout.**
+**Verdict: local checkout remains research/fake-money only; V5 D3 safety is not certified.**
 
-- The available market-data adapter explicitly states that it has no broker, live trading, real orders, or real-money execution behavior.
-- The paper-simulator tests include safety checks for forbidden broker/live/AI/Ollama/OpenAI/Anthropic/LangChain-style imports in the cache path.
-- Searches did not reveal new broker integration, live trading, real orders, AI/LLM, Ollama, OpenAI, Anthropic, LangChain, or real-money execution additions in this local checkout.
-- However, because the requested V5 patch is not available, the D3 V5 implementation itself remains unreviewed.
+Local microtrading safety background:
+
+- The reviewed local cache and paper-simulator modules describe no broker, no live trading, no real orders, and no real-money execution.
+- Searches did not show a new broker/live-order/real-money execution implementation added by this review activity.
+- Existing local modules are framed as research/fake-money simulation.
+
+Unverified for V5:
+
+- Whether `0dbb8ea` added any broker integration, live trading, real orders, real-money execution, AI/LLM, Ollama, OpenAI, Anthropic, or LangChain usage.
+- Whether V5 remains safe to run as research/fake-money monitoring after the Phase D3 patch.
 
 ## Whether D3 is safe for research monitoring
 
-**No — not yet as a D3 V5 integration.**
+**No decision / not accepted yet.**
 
-The available paper-simulator cache-first implementation appears safe for fake-money research monitoring, but D3 cannot be accepted as safe/complete for V5 until the actual `0dbb8ea` branch is available and passes the requested V5-specific checks.
+The local microtrading implementation appears consistent with research/fake-money monitoring, but the requested D3 V5 implementation is absent. D3 should not be treated as reviewed or accepted for research monitoring until the actual V5 patch at `0dbb8ea` is available and passes the cache-first, stale-data, threshold-regression, intelligence-preservation, telemetry, and safety checks.
 
 ## Whether any patch is required before V6 integration
 
-**Yes. A patch or branch correction is required before V6 cache integration.**
+**Yes: a branch/review correction is required before V6 integration.**
 
-Required before V6:
+Before V6 cache integration, one of the following must happen:
 
-1. Provide the branch/checkout containing `0dbb8ea — Route V5 market data through shared cache first`, or re-apply that patch here.
-2. Verify V5 reads the shared microtrading market-data cache/local API before Polygon for normal ticker market data.
-3. Add/verify tests proving fresh V5 cache hits avoid direct Polygon calls.
-4. Gate V5 Polygon fallback behind explicit configuration.
-5. Prove stale/missing/unusable data cannot generate V5 alerts when fresh data is required and fallback fails or is disabled.
-6. Confirm V5 alert/scoring/rule thresholds are unchanged from the parent commit.
-7. Confirm V5 insiders/news/earnings/premarket discovery/catalyst-ranking features remain intact.
-8. Expose V5 cache hits/misses/stale/fallback/timeout telemetry and per-ticker or per-scan source labels.
-9. Ensure tests mock both the shared cache/local API and Polygon and avoid real network calls.
-10. Keep the microtrading repo, V6 code, broker/live trading, real orders, AI/LLM, and real-money execution untouched.
+1. Provide a checkout containing `0dbb8ea — Route V5 market data through shared cache first`, then re-run this D3 V5 review against that commit; or
+2. Re-apply the D3 V5 implementation patch to the available repository/branch, then re-run the review.
+
+The minimum acceptance checks before V6 are:
+
+- V5 normal ticker market-data fetches read the shared microtrading marketdata cache/local API first.
+- Fresh V5 cache hits skip Polygon.
+- Stale/missing/unusable cache falls back to Polygon only when explicitly configured.
+- Stale/missing/unusable data cannot generate alerts when fresh data is required and fallback fails or is disabled.
+- V5 alert/scoring/rule thresholds are unchanged.
+- V5 insiders, news, earnings, premarket discovery, and catalyst/ranking logic are preserved.
+- V5 telemetry exposes hit/miss/stale/fallback/timeout/failure counts.
+- V5 source labels are visible per ticker or per scan.
+- V5 tests mock shared cache/local API and Polygon and avoid real network calls.
+- Microtrading implementation code is not modified by the V5 phase except for any explicitly intended shared API contract changes.
+- V6 remains untouched.
+- No broker integration, live trading, real orders, AI/LLM, Ollama, OpenAI, Anthropic, LangChain, or real-money execution is added.
 
 ## Commands used for this review
 
+- `pwd`
+- `find .. -name AGENTS.md -print`
 - `git status --short`
-- `git log --oneline --all --decorate --max-count=20`
+- `git branch --show-current`
+- `git log --oneline --all --decorate --max-count=30`
+- `git show --stat --oneline --decorate 0dbb8ea`
 - `git cat-file -t 0dbb8ea`
-- `git ls-remote https://github.com/BBlankGit/stock-breakout-v5-dashboard.git | head -20` (network blocked by 403 in this environment)
-- `rg --files | rg -i 'v5|v6|scanner|alert|insider|earnings|premarket'`
-- `rg -n "insider|earnings|premarket|v5|v6|scanner|alert" backend frontend docs README.md -S --glob '!frontend/dashboard/node_modules/**'`
-- `nl -ba backend/paper/marketdata_adapter.py | sed -n '1,240p'`
-- `nl -ba backend/paper/simulator.py | sed -n '220,340p'`
-- `nl -ba backend/paper/simulator.py | sed -n '584,700p'`
-- `nl -ba backend/api/monitoring.py | sed -n '180,260p'`
-- `nl -ba backend/core/config.py | sed -n '125,145p'`
-- `nl -ba backend/tests/test_phase_d2.py | sed -n '1,130p'`
-- `nl -ba backend/tests/test_phase_d2.py | sed -n '220,420p'`
-- `nl -ba backend/tests/test_phase_d2_h1.py | sed -n '110,245p'`
+- `git ls-remote https://github.com/BBlankGit/stock-breakout-v5-dashboard.git | head -20`
+- `rg --files | rg -i '(^|/)(v5|v6)|scanner|alert|insider|earnings|premarket'`
+- `rg -n "shared|marketdata|cache|V5|v5|Polygon|polygon|fallback|stale|telemetry" -S . -g '!node_modules' -g '!vendor' -g '!dist' -g '!build' -g '!*.png' -g '!*.jpg'`
+- `rg -n "Ollama|OpenAI|Anthropic|LangChain|broker|real orders|live trading|real-money|order" backend frontend docs README.md -S -g '!frontend/dashboard/node_modules/**'`
+- `nl -ba backend/paper/marketdata_adapter.py | sed -n '1,260p'`
+- `nl -ba backend/paper/simulator.py | sed -n '250,345p'`
+- `nl -ba backend/paper/simulator.py | sed -n '610,690p'`
+- `nl -ba backend/api/monitoring.py | sed -n '210,245p'`
+- `nl -ba backend/tests/test_phase_d2.py | sed -n '250,365p'`
+- `nl -ba backend/tests/test_phase_d2.py | sed -n '430,560p'`
