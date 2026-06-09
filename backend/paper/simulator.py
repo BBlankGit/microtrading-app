@@ -23,6 +23,7 @@ from paper.account import PaperAccount
 from paper.exits import evaluate_virtual_bracket_exit, get_intrabar_data
 from paper.journal import persist_tick_result as _persist_journal_tick
 from paper.momentum import evaluate_momentum_entry
+from paper.no_catalyst_momentum import evaluate_no_catalyst_entry
 from paper.risk import daily_loss_guard_triggered as _daily_loss_guard
 from paper.scoring import score_candidate
 from paper.universe import get_active_paper_universe, get_cached_universe
@@ -234,6 +235,8 @@ async def run_tick() -> dict[str, Any]:
         "max_hold_minutes": None,
         "momentum_mode_enabled": False,
         "today_momentum_entry_count": 0,
+        "no_catalyst_entry_enabled": False,
+        "today_no_catalyst_entry_count": 0,
         "daily_loss_guard": {"triggered": False, "reason": None, "enabled": False},
         "intrabar_tp_exits_today": 0,
         "intrabar_sl_exits_today": 0,
@@ -269,6 +272,7 @@ async def run_tick() -> dict[str, Any]:
     result["stop_loss_percent"] = _cfg("PAPER_STOP_LOSS_PERCENT")
     result["max_hold_minutes"] = _cfg("PAPER_MAX_HOLD_MINUTES")
     result["momentum_mode_enabled"] = bool(_cfg("PAPER_MOMENTUM_MODE_ENABLED"))
+    result["no_catalyst_entry_enabled"] = bool(_cfg("PAPER_NO_CATALYST_ENTRY_ENABLED"))
 
     # ── 1. Fetch market quality for all symbols concurrently ──────────────────
     quality_map: dict[str, dict] = {}
@@ -518,6 +522,15 @@ async def run_tick() -> dict[str, Any]:
         )
         result["today_momentum_entry_count"] = today_momentum_count
 
+        today_no_catalyst_count = sum(
+            1 for p in _account.positions.values()
+            if p.entry_mode == "momentum_no_catalyst" and p.entry_time.startswith(_today_str)
+        ) + sum(
+            1 for t in _account.trades
+            if t.entry_mode == "momentum_no_catalyst" and t.entry_time.startswith(_today_str)
+        )
+        result["today_no_catalyst_entry_count"] = today_no_catalyst_count
+
         # Trading-day baseline rollover — reset if NY calendar date changed
         _today_ny = _ny_trading_date()
         if _account.daily_baseline_date != _today_ny:
@@ -589,6 +602,14 @@ async def run_tick() -> dict[str, Any]:
                 except Exception:
                     momentum_eval = None
 
+            # ── No-catalyst evaluation (Phase 2R) ─────────────────────────────
+            nc_eval: dict | None = None
+            if is_no_catalyst_rejection:
+                try:
+                    nc_eval = evaluate_no_catalyst_entry(sym, q, scoring, _tick_regime)
+                except Exception:
+                    nc_eval = None
+
             candidate: dict[str, Any] = {
                 "symbol": sym,
                 "eligible": False,
@@ -624,6 +645,12 @@ async def run_tick() -> dict[str, Any]:
                 "momentum_score_threshold": momentum_eval["momentum_score_threshold"] if momentum_eval else None,
                 "momentum_rejection_reason": momentum_eval["rejection_reason"] if momentum_eval else None,
                 "momentum_gate_results": momentum_eval["gate_results"] if momentum_eval else None,
+                # No-catalyst momentum fields (Phase 2R)
+                "no_catalyst_momentum_eligible": nc_eval["eligible"] if nc_eval else False,
+                "no_catalyst_momentum_reasons": nc_eval["positive_reasons"] if nc_eval and nc_eval["eligible"] else None,
+                "no_catalyst_momentum_blockers": nc_eval["negative_reasons"] if nc_eval and not nc_eval["eligible"] else None,
+                "no_catalyst_config_snapshot": nc_eval["config_snapshot"] if nc_eval else None,
+                "catalyst_required": True,
                 # Daily loss guard (Phase 2N)
                 "daily_loss_guard_triggered": _guard["triggered"],
                 # Market-data cache metadata (Phase D2 / D2-H1)
@@ -680,6 +707,71 @@ async def run_tick() -> dict[str, Any]:
                             candidate["action"] = "no_valid_price"
                     else:
                         candidate["action"] = f"blocked: {block}"
+
+            # Path C: No-catalyst momentum entry (Phase 2R)
+            elif (
+                hard_rejection is not None
+                and is_no_catalyst_rejection
+                and nc_eval is not None
+                and nc_eval["eligible"]
+            ):
+                # No-catalyst daily limit gate
+                no_catalyst_max = _cfg("PAPER_NO_CATALYST_MAX_TRADES_PER_DAY")
+                if today_no_catalyst_count >= no_catalyst_max:
+                    candidate["action"] = f"no_catalyst_blocked: daily limit {no_catalyst_max}"
+                    candidate["rejection_reason"] = hard_rejection
+                elif _guard["triggered"]:
+                    candidate["action"] = "daily_max_loss_guard"
+                    candidate["rejection_reason"] = "daily_max_loss_guard"
+                else:
+                    candidate["eligible"] = True
+                    candidate["entry_mode"] = "momentum_no_catalyst"
+                    candidate["rejection_reason"] = None
+                    candidate["catalyst_required"] = False
+                    can, block = _account.can_enter(
+                        sym,
+                        _cfg("PAPER_MAX_OPEN_POSITIONS"),
+                        _cfg("PAPER_MAX_TRADES_PER_DAY"),
+                    )
+                    if can:
+                        entry_price = q.get("ask") or q.get("last_trade_price", 0)
+                        if entry_price and entry_price > 0:
+                            pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
+                            size_multiplier = _cfg("PAPER_NO_CATALYST_POSITION_SIZE_MULTIPLIER")
+                            normal_budget = min(
+                                _account.cash * (pos_pct / 100.0),
+                                settings.PAPER_MAX_POSITION_SIZE_USD,
+                            )
+                            position_budget = normal_budget * size_multiplier
+                            pos = _account.enter_position(
+                                sym, entry_price,
+                                position_budget,
+                                "momentum_no_catalyst",
+                                entry_score=scoring["total_score"],
+                                entry_mode="momentum_no_catalyst",
+                            )
+                            if pos:
+                                today_no_catalyst_count += 1
+                                result["today_no_catalyst_entry_count"] = today_no_catalyst_count
+                                candidate["action"] = "entered"
+                                result["entries"].append({
+                                    "symbol": sym,
+                                    "entry_price": round(entry_price, 4),
+                                    "shares": round(pos.shares, 6),
+                                    "cost_basis": round(pos.cost_basis, 4),
+                                    "catalyst_type": "momentum_no_catalyst",
+                                    "total_score": scoring["total_score"],
+                                    "entry_mode": "momentum_no_catalyst",
+                                })
+                            else:
+                                candidate["action"] = "entry_failed"
+                                candidate["eligible"] = False
+                        else:
+                            candidate["action"] = "no_valid_price"
+                            candidate["eligible"] = False
+                    else:
+                        candidate["action"] = f"blocked: {block}"
+                        candidate["eligible"] = False
 
             # Path B: Momentum fallback (only when catalyst path not taken)
             elif (

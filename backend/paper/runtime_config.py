@@ -228,6 +228,73 @@ _SCHEMA: dict[str, dict] = {
         "category": "momentum",
         "runtime_applied": True, "applies_to": "momentum", "restart_required": False,
     },
+    # No-catalyst momentum entry mode (Phase 2R — disabled by default, no broker, no real orders)
+    "PAPER_NO_CATALYST_ENTRY_ENABLED": {
+        "type": "bool", "min": None, "max": None,
+        "description": "Enable no-catalyst momentum entry path (disabled by default). No broker, no real orders.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_BLOCK_IF_ANY_BEARISH": {
+        "type": "bool", "min": None, "max": None,
+        "description": "Block no-catalyst entries when any bearish catalyst sentiment is present.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_MIN_SCORE": {
+        "type": "int", "min": 0, "max": 100,
+        "description": "Minimum overall composite score required for no-catalyst momentum entry.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE": {
+        "type": "int", "min": 0, "max": 20,
+        "description": "Minimum momentum_score component (from scoring) required for no-catalyst entry.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_MIN_CHANGE_PERCENT": {
+        "type": "float", "min": 0.0, "max": 20.0,
+        "description": "Minimum price change % required for no-catalyst momentum entry.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_MIN_VOLUME_RATIO": {
+        "type": "float", "min": 0.0, "max": 100.0,
+        "description": "Minimum volume ratio required for no-catalyst momentum entry.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_MAX_SPREAD_PERCENT": {
+        "type": "float", "min": 0.01, "max": 5.0,
+        "description": "Maximum spread % allowed for no-catalyst momentum entry.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_REQUIRE_RISK_ON": {
+        "type": "bool", "min": None, "max": None,
+        "description": "Require risk-on market regime for no-catalyst momentum entries.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_MIN_RISK_SCORE": {
+        "type": "int", "min": 0, "max": 100,
+        "description": "Minimum market risk-on score for no-catalyst momentum entry.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_POSITION_SIZE_MULTIPLIER": {
+        "type": "float", "min": 0.1, "max": 1.0,
+        "description": "Position size multiplier for no-catalyst entries (fraction of normal size).",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
+    "PAPER_NO_CATALYST_MAX_TRADES_PER_DAY": {
+        "type": "int", "min": 0, "max": 300,
+        "description": "Maximum no-catalyst momentum entries per calendar day.",
+        "category": "no_catalyst",
+        "runtime_applied": True, "applies_to": "no_catalyst", "restart_required": False,
+    },
     # Volume hard gate (Phase 2O — runtime configurable, no broker, no real orders)
     "PAPER_MIN_VOLUME_RATIO": {
         "type": "float", "min": 0.0, "max": 5.0,

@@ -178,6 +178,34 @@ async def monitoring_status():
     except Exception as exc:
         momentum_mode = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ── No-catalyst mode status (Phase 2R) ───────────────────────────────────
+    no_catalyst_mode: dict = {}
+    try:
+        from paper.runtime_config import effective_value as _cfg_nc
+        nc_enabled = bool(_cfg_nc("PAPER_NO_CATALYST_ENTRY_ENABLED"))
+        no_catalyst_mode = {
+            "enabled": nc_enabled,
+            "min_score": _cfg_nc("PAPER_NO_CATALYST_MIN_SCORE"),
+            "min_momentum_score": _cfg_nc("PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE"),
+            "min_change_percent": _cfg_nc("PAPER_NO_CATALYST_MIN_CHANGE_PERCENT"),
+            "min_volume_ratio": _cfg_nc("PAPER_NO_CATALYST_MIN_VOLUME_RATIO"),
+            "max_spread_percent": _cfg_nc("PAPER_NO_CATALYST_MAX_SPREAD_PERCENT"),
+            "require_risk_on": _cfg_nc("PAPER_NO_CATALYST_REQUIRE_RISK_ON"),
+            "position_size_multiplier": _cfg_nc("PAPER_NO_CATALYST_POSITION_SIZE_MULTIPLIER"),
+            "max_trades_per_day": _cfg_nc("PAPER_NO_CATALYST_MAX_TRADES_PER_DAY"),
+            "disclaimer": (
+                "No-catalyst momentum entry is fake-money simulation only. "
+                "No live trading. No real-money execution."
+            ),
+        }
+        if nc_enabled:
+            warnings.append(
+                "No-catalyst momentum entry is ENABLED — fake-money simulation only. "
+                "No live trading. No real-money execution."
+            )
+    except Exception as exc:
+        no_catalyst_mode = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+
     daily_loss_guard: dict = {}
     try:
         import paper.simulator as _sim_dlg
@@ -241,6 +269,7 @@ async def monitoring_status():
         "market_regime": regime_summary,
         "runtime_config": runtime_config_status,
         "momentum_mode": momentum_mode,
+        "no_catalyst_mode": no_catalyst_mode,
         "daily_loss_guard": daily_loss_guard,
         "marketdata_cache": marketdata_cache,
         "warnings": warnings,
