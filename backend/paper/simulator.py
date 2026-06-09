@@ -61,6 +61,13 @@ _state: dict[str, Any] = {
     "state_restored_from_snapshot": False,
     "restart_persistent": False,
     "last_tick_marketdata": {},  # D2-H1: per-tick cache counters, updated after each tick
+    # Phase 2S: restore metadata (populated by restore_paper_session at startup)
+    "restore_source": "none",
+    "restored_closed_trades_count": 0,
+    "restored_open_positions_count": 0,
+    "restored_daily_realized_pnl": 0.0,
+    "restored_trades_today": 0,
+    "restore_warning": None,
 }
 
 
@@ -98,8 +105,14 @@ def get_status() -> dict[str, Any]:
         "last_tick_at": _state["last_tick_at"],
         "last_error": _state["last_error"],
         "snapshot_storage": _state["snapshot_storage"],
-        "state_restored_from_snapshot": False,
-        "restart_persistent": False,
+        "state_restored_from_snapshot": _state.get("state_restored_from_snapshot", False),
+        "restart_persistent": _state.get("restart_persistent", False),
+        "restore_source": _state.get("restore_source", "none"),
+        "restored_closed_trades_count": _state.get("restored_closed_trades_count", 0),
+        "restored_open_positions_count": _state.get("restored_open_positions_count", 0),
+        "restored_daily_realized_pnl": _state.get("restored_daily_realized_pnl", 0.0),
+        "restored_trades_today": _state.get("restored_trades_today", 0),
+        "restore_warning": _state.get("restore_warning"),
         "mode": "research_paper_simulation",
         "live_trading_enabled": False,
         "broker_connected": False,
@@ -133,8 +146,9 @@ def get_trades() -> list[dict]:
 
 
 async def reset_simulator() -> None:
-    global _account, _last_prices
+    global _account, _last_prices, _restore_attempted
     await stop_simulator()
+    _restore_attempted = False
     async with _lock:
         _account.reset()
         _account.daily_baseline_date = _ny_trading_date()
@@ -144,6 +158,14 @@ async def reset_simulator() -> None:
         _state["last_error"] = None
         _state["last_candidates"] = []
         _state["snapshot_storage"] = "memory"
+        _state["state_restored_from_snapshot"] = False
+        _state["restart_persistent"] = False
+        _state["restore_source"] = "none"
+        _state["restored_closed_trades_count"] = 0
+        _state["restored_open_positions_count"] = 0
+        _state["restored_daily_realized_pnl"] = 0.0
+        _state["restored_trades_today"] = 0
+        _state["restore_warning"] = None
     await _save_state()
 
 
@@ -497,6 +519,9 @@ async def run_tick() -> dict[str, Any]:
                         "catalyst_type": trade.entry_catalyst_type,
                         "total_score": trade.entry_score,
                         "entry_mode": trade.entry_mode,
+                        "position_id": pos.position_id,
+                        "shares": round(pos.shares, 6),
+                        "cost_basis": round(pos.cost_basis, 4),
                     }
                     result["exits"].append(exit_record)
 
@@ -701,6 +726,7 @@ async def run_tick() -> dict[str, Any]:
                                     "catalyst_type": cat_type,
                                     "total_score": scoring["total_score"],
                                     "entry_mode": "catalyst",
+                                    "position_id": pos.position_id,
                                 })
                             else:
                                 candidate["action"] = "entry_failed"
@@ -763,6 +789,7 @@ async def run_tick() -> dict[str, Any]:
                                     "catalyst_type": "momentum_no_catalyst",
                                     "total_score": scoring["total_score"],
                                     "entry_mode": "momentum_no_catalyst",
+                                    "position_id": pos.position_id,
                                 })
                             else:
                                 candidate["action"] = "entry_failed"
@@ -824,6 +851,7 @@ async def run_tick() -> dict[str, Any]:
                                     "catalyst_type": "momentum",
                                     "total_score": momentum_eval["momentum_score"],
                                     "entry_mode": "momentum",
+                                    "position_id": pos.position_id,
                                 })
                             else:
                                 candidate["action"] = "entry_failed"
@@ -890,3 +918,91 @@ async def _save_state() -> None:
         _state["snapshot_storage"] = "redis_best_effort"
     except Exception:
         _state["snapshot_storage"] = "memory"
+
+
+# ── Session restore (Phase 2S) ────────────────────────────────────────────────
+
+_restore_attempted: bool = False  # one-shot guard; reset only by reset_simulator()
+
+
+async def restore_paper_session() -> dict[str, Any]:
+    """
+    Called once at startup (after init_journal). Attempts to restore today's paper
+    session from Redis snapshot, then DB journal fallback.
+    Applies restored state to _account and _state in place.
+    Non-fatal: errors degrade to a fresh session start.
+    No broker. No real orders. Research-only fake-money restore.
+    """
+    global _restore_attempted
+    if _restore_attempted:
+        return {"source": "none", "closed_trades_count": 0,
+                "open_positions_count": 0, "daily_realized_pnl": 0.0,
+                "trades_today": 0, "warning": None}
+    _restore_attempted = True
+
+    from paper.models import ClosedTrade, Position
+    from paper.session_restore import restore_session
+
+    ny_today = _ny_trading_date()
+    try:
+        result = await restore_session(ny_today, settings.PAPER_STARTING_CASH)
+    except Exception as exc:
+        logger.warning("restore_paper_session: restore_session raised: %s", exc)
+        return {
+            "source": "none", "closed_trades_count": 0,
+            "open_positions_count": 0, "daily_realized_pnl": 0.0,
+            "trades_today": 0, "warning": None,
+        }
+
+    source = result.get("source", "none")
+    if source == "none":
+        return result
+
+    try:
+        async with _lock:
+            global _last_prices
+            if source == "redis":
+                snap = result["snapshot"]
+                _account.cash = float(snap.get("cash", settings.PAPER_STARTING_CASH))
+                _account.starting_cash = float(snap.get("starting_cash", settings.PAPER_STARTING_CASH))
+                _account.positions = {
+                    s: Position(**p)
+                    for s, p in (snap.get("positions") or {}).items()
+                }
+                _account.trades = [
+                    ClosedTrade(**t) for t in (snap.get("trades") or [])
+                ]
+                _account._daily_trade_count = int(snap.get("daily_trade_count", 0))
+                _account._daily_date = snap.get("daily_date", "")
+                _account.daily_baseline_date = snap.get("daily_baseline_date", ny_today)
+                _account.daily_start_equity = float(
+                    snap.get("daily_start_equity", settings.PAPER_STARTING_CASH)
+                )
+                _last_prices = dict(snap.get("last_prices") or {})
+
+            elif source == "db":
+                db_data = result["db_data"]
+                _account.cash = float(db_data.get("cash", settings.PAPER_STARTING_CASH))
+                _account.trades = db_data.get("trades", [])
+                _account.positions = db_data.get("positions", {})
+                _account._daily_trade_count = int(db_data.get("daily_trade_count", 0))
+                _account._daily_date = ny_today
+                _account.daily_baseline_date = ny_today
+                _account.daily_start_equity = float(
+                    db_data.get("daily_start_equity", settings.PAPER_STARTING_CASH)
+                )
+
+            _state["state_restored_from_snapshot"] = True
+            _state["restart_persistent"] = True
+            _state["restore_source"] = source
+            _state["restored_closed_trades_count"] = result.get("closed_trades_count", 0)
+            _state["restored_open_positions_count"] = result.get("open_positions_count", 0)
+            _state["restored_daily_realized_pnl"] = result.get("daily_realized_pnl", 0.0)
+            _state["restored_trades_today"] = result.get("trades_today", 0)
+            _state["restore_warning"] = result.get("warning")
+
+    except Exception as exc:
+        logger.warning("restore_paper_session: failed to apply state: %s", exc)
+        result["apply_error"] = str(exc)
+
+    return result

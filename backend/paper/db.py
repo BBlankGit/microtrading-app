@@ -140,6 +140,9 @@ ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_momentum_eligi
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_momentum_reasons_json JSONB;
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_momentum_blockers_json JSONB;
 ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_config_snapshot_json JSONB;
+ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS position_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_paper_trades_position_id
+    ON paper_trades_journal (position_id);
 """
 
 

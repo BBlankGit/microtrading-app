@@ -211,8 +211,9 @@ async def persist_tick_result(
                         INSERT INTO paper_trades_journal (
                             tick_id, symbol, side, event,
                             entry_price, shares, cost_basis,
-                            catalyst_type, total_score, opened_at, entry_mode
-                        ) VALUES ($1,$2,'long','entry',$3,$4,$5,$6,$7,$8,$9)
+                            catalyst_type, total_score, opened_at, entry_mode,
+                            position_id
+                        ) VALUES ($1,$2,'long','entry',$3,$4,$5,$6,$7,$8,$9,$10)
                         """,
                         tick_id,
                         entry.get("symbol"),
@@ -223,6 +224,7 @@ async def persist_tick_result(
                         _int(entry.get("total_score")),
                         now,
                         entry.get("entry_mode"),
+                        entry.get("position_id"),
                     )
 
                 # 4. Exit events
@@ -233,8 +235,8 @@ async def persist_tick_result(
                             tick_id, symbol, side, event,
                             entry_price, exit_price, pnl, pnl_percent,
                             exit_reason, catalyst_type, total_score, closed_at,
-                            entry_mode
-                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                            entry_mode, position_id, shares, cost_basis
+                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
                         """,
                         tick_id,
                         exit_.get("symbol"),
@@ -247,6 +249,9 @@ async def persist_tick_result(
                         _int(exit_.get("total_score")),
                         now,
                         exit_.get("entry_mode"),
+                        exit_.get("position_id"),
+                        _float(exit_.get("shares")),
+                        _float(exit_.get("cost_basis")),
                     )
 
                 # 5. Universe snapshot (if available)

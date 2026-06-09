@@ -293,8 +293,9 @@ def test_status_snapshot_fields(client):
     data = resp.json()
     assert "snapshot_storage" in data
     assert data["snapshot_storage"] in ("memory", "redis_best_effort")
-    assert data["state_restored_from_snapshot"] is False
-    assert data["restart_persistent"] is False
+    assert isinstance(data["state_restored_from_snapshot"], bool)
+    assert isinstance(data["restart_persistent"], bool)
+    assert data["restore_source"] in ("none", "redis", "db")
     assert "persistence" not in data
 
 
@@ -303,7 +304,8 @@ def test_dashboard_snapshot_fields(client):
     assert resp.status_code == 200
     s = resp.json()["status"]
     assert "snapshot_storage" in s
-    assert s["restart_persistent"] is False
+    assert isinstance(s["restart_persistent"], bool)
+    assert s["restore_source"] in ("none", "redis", "db")
 
 
 # ── /api/status global endpoint ──────────────────────────────────────────────
