@@ -119,12 +119,13 @@ async def _redis_load() -> tuple[list[dict], list[dict]]:
 
 # ── Core fetch ────────────────────────────────────────────────────────────────
 
-async def fetch_and_refresh() -> dict[str, Any]:
+async def fetch_and_refresh(force: bool = False) -> dict[str, Any]:
     """
     Fetch a fresh snapshot from ApeWisdom.
 
     Rate-guard: if the last successful fetch was < _CACHE_TTL seconds ago,
     returns the cached snapshot without making a network call.
+    force=True bypasses the TTL guard (used by admin refresh endpoint).
     Lock: concurrent callers coalesce — only one upstream HTTP request runs at a time.
     On failure: logs the error, preserves the existing cache, returns snapshot
     with error field populated. Never raises.
@@ -133,7 +134,7 @@ async def fetch_and_refresh() -> dict[str, Any]:
 
     # Fast path: check TTL before acquiring lock (avoids lock contention when warm)
     now = time.time()
-    if _fetched_at and (now - _fetched_at) < _CACHE_TTL:
+    if not force and _fetched_at and (now - _fetched_at) < _CACHE_TTL:
         logger.debug(
             "Reddit intel: cache still fresh (age=%.0fs, ttl=%ds)",
             now - _fetched_at, _CACHE_TTL,
@@ -144,7 +145,7 @@ async def fetch_and_refresh() -> dict[str, Any]:
     async with _fetch_lock:
         # Re-check TTL inside lock — a concurrent caller may have refreshed while we waited
         now = time.time()
-        if _fetched_at and (now - _fetched_at) < _CACHE_TTL:
+        if not force and _fetched_at and (now - _fetched_at) < _CACHE_TTL:
             return get_snapshot()
 
         try:

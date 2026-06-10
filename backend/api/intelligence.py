@@ -25,7 +25,9 @@ async def get_reddit():
     On ApeWisdom failure, returns the last successful snapshot with error field set.
     """
     snapshot = reddit_intel.get_snapshot()
-    if not snapshot["results"] and snapshot["error"] is None:
+    ttl = snapshot.get("ttl_seconds")
+    needs_refresh = not snapshot["results"] or (ttl is not None and ttl <= 0)
+    if needs_refresh and snapshot["error"] is None:
         snapshot = await reddit_intel.fetch_and_refresh()
     return snapshot
 
@@ -39,7 +41,7 @@ async def refresh_reddit():
     the cache is returned as-is. Use this to manually warm the cache or
     test connectivity.
     """
-    result = await reddit_intel.fetch_and_refresh()
+    result = await reddit_intel.fetch_and_refresh(force=True)
     return {
         "ok": result["ok"],
         "fetched_at": result["fetched_at"],
