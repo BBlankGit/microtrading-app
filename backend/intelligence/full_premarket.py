@@ -357,21 +357,26 @@ def _elapsed_ratio_for_enrichment() -> float:
 
 def _enrich_mover_volumes(m: dict, elapsed_ratio: float, min_floor: float = 0.05) -> dict:
     """Add volume-multiple fields to a mover dict (non-mutating)."""
+    import math as _math
     dv = m.get("day_volume")
     pdv = m.get("previous_day_volume")
     enriched = dict(m)
+    enriched["session_elapsed_ratio"] = round(elapsed_ratio, 4)
     if dv is not None and pdv is not None and pdv > 0:
-        enriched["volume_vs_prev_day"] = round(dv / pdv, 4)
+        enriched["volume_vs_previous_day_ratio"] = round(dv / pdv, 4)
         eff = max(elapsed_ratio, min_floor)
         ta = dv / (pdv * eff)
-        import math as _math
-        enriched["time_adj_volume_ratio"] = round(ta, 4) if _math.isfinite(ta) else None
+        enriched["time_adjusted_volume_ratio"] = round(ta, 4) if _math.isfinite(ta) else None
         exp = pdv * eff
         enriched["expected_volume_now"] = int(exp) if _math.isfinite(exp) else None
     else:
-        enriched["volume_vs_prev_day"] = None
-        enriched["time_adj_volume_ratio"] = None
+        enriched["volume_vs_previous_day_ratio"] = None
+        enriched["time_adjusted_volume_ratio"] = None
         enriched["expected_volume_now"] = None
+    enriched["avg_daily_volume_30d"] = None
+    enriched["volume_vs_30d_avg_ratio"] = None
+    enriched["avg_daily_volume_60d"] = None
+    enriched["volume_vs_60d_avg_ratio"] = None
     return enriched
 
 

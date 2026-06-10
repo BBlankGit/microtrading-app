@@ -439,7 +439,8 @@ def test_concurrent_fetch_coalesces():
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client.get = fake_get
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("httpx.AsyncClient", return_value=mock_client), \
+             patch("intelligence.reddit._redis_save", new=AsyncMock(return_value=None)):
             results = await asyncio.gather(*[r.fetch_and_refresh() for _ in range(5)])
 
         return results
@@ -477,7 +478,8 @@ def test_ttl_guard_prevents_redundant_refresh(client):
         mock_client.__aexit__ = AsyncMock(return_value=None)
         mock_client.get = fake_get
 
-        with patch("httpx.AsyncClient", return_value=mock_client):
+        with patch("httpx.AsyncClient", return_value=mock_client), \
+             patch("intelligence.reddit._redis_save", new=AsyncMock(return_value=None)):
             await r.fetch_and_refresh()   # first: should hit HTTP
             await r.fetch_and_refresh()   # second: TTL guard should return cached
 

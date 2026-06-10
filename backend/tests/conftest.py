@@ -7,6 +7,13 @@ from main import app
 
 
 @pytest.fixture(autouse=True)
+def _mock_reddit_redis_save():
+    """Prevent test-generated ApeWisdom data from being written to real Redis."""
+    with patch("intelligence.reddit._redis_save", new=AsyncMock(return_value=None)):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _reset_full_premarket_snapshot():
     """
     Clear the full_premarket in-memory snapshot cache before each test so that

@@ -253,7 +253,7 @@ def test_entry_to_mover_handles_missing_prev_day_volume():
 
 
 def test_enrich_mover_volumes_computes_ratios():
-    """_enrich_mover_volumes adds volume_vs_prev_day and time_adj_volume_ratio."""
+    """_enrich_mover_volumes adds volume_vs_previous_day_ratio and time_adjusted_volume_ratio."""
     from intelligence.full_premarket import _enrich_mover_volumes
 
     mover = {
@@ -262,11 +262,11 @@ def test_enrich_mover_volumes_computes_ratios():
         "previous_day_volume": 4_000_000,
     }
     # elapsed=0.5, floor=0.05 → effective=0.5
-    # volume_vs_prev_day = 1_000_000 / 4_000_000 = 0.25
-    # time_adj_volume_ratio = 1_000_000 / (4_000_000 * 0.5) = 0.5
+    # volume_vs_previous_day_ratio = 1_000_000 / 4_000_000 = 0.25
+    # time_adjusted_volume_ratio = 1_000_000 / (4_000_000 * 0.5) = 0.5
     result = _enrich_mover_volumes(mover, elapsed_ratio=0.5, min_floor=0.05)
-    assert result["volume_vs_prev_day"] == 0.25
-    assert result["time_adj_volume_ratio"] == 0.5
+    assert result["volume_vs_previous_day_ratio"] == 0.25
+    assert result["time_adjusted_volume_ratio"] == 0.5
     assert result["expected_volume_now"] == 2_000_000
 
 
@@ -276,8 +276,8 @@ def test_enrich_mover_volumes_missing_prev_day():
 
     mover = {"symbol": "AAPL", "day_volume": 1_000_000, "previous_day_volume": None}
     result = _enrich_mover_volumes(mover, elapsed_ratio=0.5)
-    assert result["volume_vs_prev_day"] is None
-    assert result["time_adj_volume_ratio"] is None
+    assert result["volume_vs_previous_day_ratio"] is None
+    assert result["time_adjusted_volume_ratio"] is None
     assert result["expected_volume_now"] is None
 
 
@@ -288,8 +288,21 @@ def test_enrich_mover_volumes_is_non_mutating():
     original = {"symbol": "AAPL", "day_volume": 500_000, "previous_day_volume": 1_000_000}
     result = _enrich_mover_volumes(original, elapsed_ratio=0.5)
     # original must be unchanged
-    assert "volume_vs_prev_day" not in original
+    assert "volume_vs_previous_day_ratio" not in original
     assert result is not original
+
+
+def test_enrich_mover_volumes_includes_new_fields():
+    """_enrich_mover_volumes includes session_elapsed_ratio and null 30d/60d fields."""
+    from intelligence.full_premarket import _enrich_mover_volumes
+
+    mover = {"symbol": "TSLA", "day_volume": 2_000_000, "previous_day_volume": 4_000_000}
+    result = _enrich_mover_volumes(mover, elapsed_ratio=0.75, min_floor=0.05)
+    assert result["session_elapsed_ratio"] == 0.75
+    assert result["avg_daily_volume_30d"] is None
+    assert result["volume_vs_30d_avg_ratio"] is None
+    assert result["avg_daily_volume_60d"] is None
+    assert result["volume_vs_60d_avg_ratio"] is None
 
 
 def test_get_snapshot_enriches_top_gainers():
@@ -316,10 +329,13 @@ def test_get_snapshot_enriches_top_gainers():
         gainers = snap["top_gainers"]
         assert len(gainers) == 1
         g = gainers[0]
-        assert "volume_vs_prev_day" in g
-        assert "time_adj_volume_ratio" in g
+        assert "volume_vs_previous_day_ratio" in g
+        assert "time_adjusted_volume_ratio" in g
         assert "expected_volume_now" in g
-        assert g["volume_vs_prev_day"] is not None
+        assert "session_elapsed_ratio" in g
+        assert "avg_daily_volume_30d" in g
+        assert g["volume_vs_previous_day_ratio"] is not None
+        assert g["avg_daily_volume_30d"] is None
     finally:
         fp._snapshot.clear()
         fp._snapshot.update(orig_snapshot)
@@ -347,8 +363,119 @@ def test_get_snapshot_does_not_mutate_in_memory_snapshot():
         # Call get_snapshot once
         fp.get_snapshot()
         # In-memory snapshot's top_gainers must NOT have been enriched
-        assert "volume_vs_prev_day" not in fp._snapshot["top_gainers"][0]
+        assert "volume_vs_previous_day_ratio" not in fp._snapshot["top_gainers"][0]
     finally:
         fp._snapshot.clear()
         fp._snapshot.update(orig_snapshot)
         fp._fetched_at = orig_fetched
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Phase S1-V1-H1 — Hardening tests (auto-resume, candidate fields,
+#                   field renames, Redis isolation guard)
+# ══════════════════════════════════════════════════════════════════════
+
+def test_auto_resume_attempted_set_on_start():
+    """auto_resume_if_desired sets auto_resume_attempted=True when desired=True."""
+    import paper.simulator as sim
+
+    orig_state = {k: sim._state[k] for k in ("desired_running", "auto_resumed", "running", "auto_resume_attempted")}
+    try:
+        with patch("paper.simulator.load_desired_running", new=AsyncMock(return_value=True)), \
+             patch("paper.simulator.start_simulator", new=AsyncMock()):
+            result = asyncio.run(sim.auto_resume_if_desired())
+        assert result["auto_resume_attempted"] is True
+        assert sim._state["auto_resume_attempted"] is True
+    finally:
+        for k, v in orig_state.items():
+            sim._state[k] = v
+
+
+def test_auto_resume_attempted_not_set_when_not_desired():
+    """auto_resume_if_desired returns auto_resume_attempted=False when desired=False."""
+    import paper.simulator as sim
+
+    orig_state = {k: sim._state[k] for k in ("desired_running", "auto_resumed")}
+    try:
+        with patch("paper.simulator.load_desired_running", new=AsyncMock(return_value=False)), \
+             patch("paper.simulator.start_simulator", new=AsyncMock()) as mock_start:
+            result = asyncio.run(sim.auto_resume_if_desired())
+        assert result["auto_resume_attempted"] is False
+        mock_start.assert_not_awaited()
+    finally:
+        for k, v in orig_state.items():
+            sim._state[k] = v
+
+
+def test_auto_resume_blocked_when_live_trading_enabled():
+    """auto_resume_if_desired must not start the simulator when LIVE_TRADING_ENABLED=True."""
+    import paper.simulator as sim
+
+    orig_state = {k: sim._state[k] for k in ("desired_running", "auto_resumed", "auto_resume_warning")}
+    try:
+        with patch("paper.simulator.settings") as mock_settings, \
+             patch("paper.simulator.start_simulator", new=AsyncMock()) as mock_start:
+            mock_settings.LIVE_TRADING_ENABLED = True
+            result = asyncio.run(sim.auto_resume_if_desired())
+        mock_start.assert_not_awaited()
+        assert result["auto_resumed"] is False
+        assert result["warning"] is not None
+        assert "LIVE_TRADING_ENABLED" in result["warning"]
+    finally:
+        for k, v in orig_state.items():
+            sim._state[k] = v
+
+
+def test_auto_resume_attempted_in_get_status():
+    """get_status must expose auto_resume_attempted field."""
+    import paper.simulator as sim
+
+    status = sim.get_status()
+    assert "auto_resume_attempted" in status
+    assert isinstance(status["auto_resume_attempted"], bool)
+
+
+def test_candidate_includes_volume_gate_fields():
+    """Candidate dict must include session_elapsed_ratio, volume_gate_type, volume_gate_ratio_used, volume_gate_threshold_used."""
+    import paper.simulator as sim
+    from paper.runtime_config import effective_value
+
+    # Verify module-level: config keys resolve and state is accessible
+    assert isinstance(effective_value("PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO"), bool)
+    # Verify the new gate fields are mentioned in module source (structural check)
+    import inspect
+    src = inspect.getsource(sim.run_tick)
+    assert "volume_gate_type" in src
+    assert "session_elapsed_ratio" in src
+    assert "volume_gate_ratio_used" in src
+    assert "volume_gate_threshold_used" in src
+
+
+def test_reddit_redis_isolation_in_conftest():
+    """Confirm that _redis_save is patched by conftest so tests cannot write to Redis."""
+    import intelligence.reddit as r
+
+    # The conftest autouse fixture patches intelligence.reddit._redis_save.
+    # Calling it should NOT reach the real Redis — it should be the mock.
+    from unittest.mock import AsyncMock as _AM
+    # Verify the current module-level _redis_save is an AsyncMock (conftest applies it)
+    assert isinstance(r._redis_save, _AM)
+
+
+def test_enrich_mover_volumes_old_field_names_absent():
+    """Renamed fields must NOT appear in enriched output — guards against accidental revert."""
+    from intelligence.full_premarket import _enrich_mover_volumes
+
+    mover = {"symbol": "AAPL", "day_volume": 1_000_000, "previous_day_volume": 2_000_000}
+    result = _enrich_mover_volumes(mover, elapsed_ratio=0.5)
+    assert "volume_vs_prev_day" not in result, "Old field name must not appear after rename"
+    assert "time_adj_volume_ratio" not in result, "Old field name must not appear after rename"
+
+
+def test_status_live_trading_always_false():
+    """get_status must always report live_trading_enabled=False — fake-money guard."""
+    import paper.simulator as sim
+
+    status = sim.get_status()
+    assert status["live_trading_enabled"] is False
+    assert status["broker_connected"] is False

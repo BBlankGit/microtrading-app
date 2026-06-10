@@ -323,8 +323,13 @@ interface PremarketMover {
   day_volume: number | null;
   dollar_volume: number | null;
   previous_day_volume: number | null;
-  volume_vs_prev_day: number | null;
-  time_adj_volume_ratio: number | null;
+  volume_vs_previous_day_ratio: number | null;
+  time_adjusted_volume_ratio: number | null;
+  session_elapsed_ratio?: number | null;
+  avg_daily_volume_30d: number | null;
+  volume_vs_30d_avg_ratio: number | null;
+  avg_daily_volume_60d: number | null;
+  volume_vs_60d_avg_ratio: number | null;
   expected_volume_now: number | null;
   source: string;
 }
@@ -1533,6 +1538,13 @@ const MOMENTUM_NUMERIC_FIELDS: Array<{
   { key: "PAPER_MOMENTUM_MAX_TRADES_PER_DAY",       label: "Momentum Max Trades/Day",   type: "int",   min: 0,   max: 100 },
 ];
 
+// Time-Adjusted Volume Gate fields (Phase S1-V1 — read-only display)
+const TA_VOLUME_FIELDS: Array<{ key: string; label: string; type: "bool" | "float" }> = [
+  { key: "PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO", label: "Use Time-Adjusted Volume Ratio", type: "bool" },
+  { key: "PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN", label: "TA Volume Ratio Min",            type: "float" },
+  { key: "PAPER_TIME_ADJUSTED_VOLUME_MIN_FLOOR", label: "Volume Min Floor",               type: "float" },
+];
+
 // No-Catalyst Momentum Entry fields (Phase 2N/2O — read-only display, currently active path)
 const NO_CATALYST_FIELDS: Array<{ key: string; label: string; type: "bool" | "int" | "float" }> = [
   { key: "PAPER_NO_CATALYST_ENTRY_ENABLED",            label: "Entry Enabled",            type: "bool" },
@@ -1978,6 +1990,56 @@ function StrategySettingsPanel({
                     <div className={`text-sm font-mono font-semibold ${
                       f.type === "bool"
                         ? (effective ? "text-green-400" : "text-gray-500")
+                        : hasOverride ? "text-orange-300" : "text-white"
+                    }`}>
+                      {effective !== null && effective !== undefined ? String(effective) : "—"}
+                    </div>
+                    <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
+                      <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
+                      {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Time-Adjusted Volume Gate section (Phase S1-V1) */}
+      {config && (() => {
+        const taEnabled = config.effective_config["PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO"];
+        return (
+          <div className="border border-indigo-800 rounded p-3 bg-gray-950">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <span className="text-sm font-semibold text-indigo-300">Time-Adjusted Volume Gate</span>
+              <span className={`text-xs px-2 py-0.5 rounded border font-semibold ${
+                taEnabled
+                  ? "bg-indigo-900 text-indigo-300 border-indigo-700"
+                  : "bg-gray-800 text-gray-500 border-gray-600"
+              }`}>
+                {taEnabled ? "time_adjusted" : "raw_full_day"}
+              </span>
+              <span className="text-xs text-gray-500">volume_gate_mode</span>
+            </div>
+            <p className="text-xs text-gray-500 italic mb-3">
+              When enabled and in regular session (9:30–16:00 ET), the volume gate uses time-adjusted
+              relative volume instead of raw full-day volume ratio. Fake-money simulation only. No broker. No real orders.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {TA_VOLUME_FIELDS.map((f) => {
+                const base = config.base_config[f.key];
+                const override = config.runtime_overrides[f.key];
+                const effective = config.effective_config[f.key];
+                const hasOverride = f.key in config.runtime_overrides;
+                return (
+                  <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+                    hasOverride ? "border-orange-700" : "border-gray-700"
+                  }`}>
+                    <div className="text-xs text-gray-400 mb-1">{f.label}</div>
+                    <div className={`text-sm font-mono font-semibold ${
+                      f.type === "bool"
+                        ? (effective ? "text-indigo-400" : "text-gray-500")
                         : hasOverride ? "text-orange-300" : "text-white"
                     }`}>
                       {effective !== null && effective !== undefined ? String(effective) : "—"}
@@ -2616,11 +2678,14 @@ function IntelligenceSection({
       const dvol = m.dollar_volume != null
         ? `$${(m.dollar_volume / 1_000_000).toFixed(1)}M`
         : null;
-      const volVsPrev = m.volume_vs_prev_day != null
-        ? `${m.volume_vs_prev_day.toFixed(2)}x`
+      const volVsPrev = m.volume_vs_previous_day_ratio != null
+        ? `${m.volume_vs_previous_day_ratio.toFixed(2)}x`
         : "—";
-      const taVol = m.time_adj_volume_ratio != null
-        ? `${m.time_adj_volume_ratio.toFixed(2)}x`
+      const taVol = m.time_adjusted_volume_ratio != null
+        ? `${m.time_adjusted_volume_ratio.toFixed(2)}x`
+        : "—";
+      const avgVolMult = m.volume_vs_30d_avg_ratio != null
+        ? `${m.volume_vs_30d_avg_ratio.toFixed(2)}x`
         : "—";
       return (
         <div className="flex items-center justify-between px-3 py-2 rounded bg-gray-900 border border-gray-800 text-sm">
@@ -2635,11 +2700,14 @@ function IntelligenceSection({
           <span className="text-gray-500 w-24 text-right text-xs">
             {dvol ?? vol}
           </span>
-          <span className="text-gray-500 w-16 text-right text-xs" title="Vol / Prev-Day Vol">
+          <span className="text-gray-500 w-20 text-right text-xs" title="Vol vs Previous Day">
             {volVsPrev}
           </span>
           <span className="text-indigo-400 w-16 text-right text-xs" title="Time-Adjusted Vol Ratio">
             {taVol}
+          </span>
+          <span className="text-gray-600 w-16 text-right text-xs" title="Avg Vol Multiple (30d — null until available)">
+            {avgVolMult}
           </span>
         </div>
       );
@@ -2707,9 +2775,10 @@ function IntelligenceSection({
                 <span className="w-20 text-right">Last</span>
                 <span className="w-20 text-right">Gap%</span>
                 <span className="w-20 text-right">Prev Close</span>
-                <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Volume"}</span>
-                <span className="w-16 text-right">Vol/Prev</span>
-                <span className="w-16 text-right">TA Vol</span>
+                <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Vol"}</span>
+                <span className="w-20 text-right">Vol vs Prev Day</span>
+                <span className="w-16 text-right">Time-Adj Vol</span>
+                <span className="w-16 text-right">Avg Vol Multiple</span>
               </div>
               <div className="space-y-1">
                 {gainers.map((m) => <MoverRow key={m.symbol} m={m} />)}
@@ -2725,9 +2794,10 @@ function IntelligenceSection({
                 <span className="w-20 text-right">Last</span>
                 <span className="w-20 text-right">Gap%</span>
                 <span className="w-20 text-right">Prev Close</span>
-                <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Volume"}</span>
-                <span className="w-16 text-right">Vol/Prev</span>
-                <span className="w-16 text-right">TA Vol</span>
+                <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Vol"}</span>
+                <span className="w-20 text-right">Vol vs Prev Day</span>
+                <span className="w-16 text-right">Time-Adj Vol</span>
+                <span className="w-16 text-right">Avg Vol Multiple</span>
               </div>
               <div className="space-y-1">
                 {losers.map((m) => <MoverRow key={m.symbol} m={m} />)}

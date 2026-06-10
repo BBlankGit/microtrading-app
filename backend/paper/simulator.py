@@ -78,6 +78,7 @@ _state: dict[str, Any] = {
     "desired_running": False,
     "auto_resumed": False,
     "auto_resumed_at": None,
+    "auto_resume_attempted": False,
     "auto_resume_source": None,
     "auto_resume_warning": None,
 }
@@ -130,6 +131,7 @@ def get_status() -> dict[str, Any]:
         "desired_running": _state.get("desired_running", False),
         "auto_resumed": _state.get("auto_resumed", False),
         "auto_resumed_at": _state.get("auto_resumed_at"),
+        "auto_resume_attempted": _state.get("auto_resume_attempted", False),
         "auto_resume_source": _state.get("auto_resume_source"),
         "auto_resume_warning": _state.get("auto_resume_warning"),
         "mode": "research_paper_simulation",
@@ -257,7 +259,13 @@ async def auto_resume_if_desired() -> dict:
     Non-fatal: errors are recorded in _state but do not prevent startup.
     No broker. No real orders. Fake-money only.
     """
-    result: dict = {"auto_resumed": False, "source": None, "warning": None}
+    result: dict = {"auto_resumed": False, "auto_resume_attempted": False, "source": None, "warning": None}
+    if settings.LIVE_TRADING_ENABLED:
+        warn = "auto_resume blocked: LIVE_TRADING_ENABLED is True — fake-money simulator will not auto-start"
+        _state["auto_resume_warning"] = warn
+        result["warning"] = warn
+        logger.warning(warn)
+        return result
     try:
         desired = await load_desired_running()
         if desired is None:
@@ -266,6 +274,8 @@ async def auto_resume_if_desired() -> dict:
             return result
         _state["desired_running"] = desired
         if desired:
+            _state["auto_resume_attempted"] = True
+            result["auto_resume_attempted"] = True
             await start_simulator()
             _state["auto_resumed"] = True
             _state["auto_resumed_at"] = datetime.now(timezone.utc).isoformat()
@@ -960,6 +970,10 @@ async def run_tick() -> dict[str, Any]:
                 "time_adjusted_volume_ratio": _ta_ratio,
                 "expected_volume_now": _expected_volume_now,
                 "prev_day_volume": q.get("previous_day_volume"),
+                "session_elapsed_ratio": _tick_session_elapsed_ratio,
+                "volume_gate_type": "time_adjusted" if _use_ta_vol else "raw",
+                "volume_gate_ratio_used": _ta_ratio if _use_ta_vol else q.get("volume_ratio"),
+                "volume_gate_threshold_used": float(_cfg("PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN")) if _use_ta_vol else float(_cfg("PAPER_MIN_VOLUME_RATIO")),
                 "catalyst_count": len(cats),
                 "catalyst_type": cat_type,
                 "catalyst_type_blocked": _blocked_cat_type is not None,
