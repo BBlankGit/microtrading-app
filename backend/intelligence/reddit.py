@@ -32,6 +32,9 @@ _previous: list[dict] = []      # results from the snapshot before current
 _fetched_at: float = 0.0        # epoch seconds of last successful fetch
 _fetch_error: str | None = None # last error message; cleared on success
 
+# Async lock: coalesces concurrent cold-start fetches so only one HTTP call goes out
+_fetch_lock = asyncio.Lock()
+
 # Background loop handle (started at app lifespan if enabled)
 _bg_task: asyncio.Task | None = None
 
@@ -122,11 +125,13 @@ async def fetch_and_refresh() -> dict[str, Any]:
 
     Rate-guard: if the last successful fetch was < _CACHE_TTL seconds ago,
     returns the cached snapshot without making a network call.
+    Lock: concurrent callers coalesce — only one upstream HTTP request runs at a time.
     On failure: logs the error, preserves the existing cache, returns snapshot
     with error field populated. Never raises.
     """
     global _current, _previous, _fetched_at, _fetch_error
 
+    # Fast path: check TTL before acquiring lock (avoids lock contention when warm)
     now = time.time()
     if _fetched_at and (now - _fetched_at) < _CACHE_TTL:
         logger.debug(
@@ -135,29 +140,36 @@ async def fetch_and_refresh() -> dict[str, Any]:
         )
         return get_snapshot()
 
-    try:
-        async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
-            resp = await client.get(_APEWISDOM_URL)
-            resp.raise_for_status()
-            data = resp.json()
-    except Exception as exc:
-        _fetch_error = str(exc)
-        logger.warning("Reddit intel: ApeWisdom fetch failed — %s", exc)
-        return get_snapshot(error=str(exc))
+    # Slow path: acquire lock so concurrent cold-start callers coalesce
+    async with _fetch_lock:
+        # Re-check TTL inside lock — a concurrent caller may have refreshed while we waited
+        now = time.time()
+        if _fetched_at and (now - _fetched_at) < _CACHE_TTL:
+            return get_snapshot()
 
-    raw = (data.get("results") or [])[:_MAX_RESULTS]
-    new_results = _normalize_rows(raw)
+        try:
+            async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
+                resp = await client.get(_APEWISDOM_URL)
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as exc:
+            _fetch_error = str(exc)
+            logger.warning("Reddit intel: ApeWisdom fetch failed — %s", exc)
+            return get_snapshot(error=str(exc))
 
-    # Rotate snapshots: current becomes previous
-    _previous = list(_current)
-    _current = new_results
-    _fetched_at = time.time()
-    _fetch_error = None
+        raw = (data.get("results") or [])[:_MAX_RESULTS]
+        new_results = _normalize_rows(raw)
 
-    await _redis_save(_current, _previous)
-    logger.info("Reddit intel: refreshed — %d tickers, %d spikes",
-                len(_current), len(_detect_spikes(_current, _previous)))
-    return get_snapshot()
+        # Rotate snapshots: current becomes previous
+        _previous = list(_current)
+        _current = new_results
+        _fetched_at = time.time()
+        _fetch_error = None
+
+        await _redis_save(_current, _previous)
+        logger.info("Reddit intel: refreshed — %d tickers, %d spikes",
+                    len(_current), len(_detect_spikes(_current, _previous)))
+        return get_snapshot()
 
 
 # ── Snapshot read ─────────────────────────────────────────────────────────────

@@ -1,9 +1,10 @@
 """
-Phase I2: Intelligence tabs — Reddit ranking via ApeWisdom.
+Phase I2 / I2-H1: Intelligence tabs — Reddit ranking via ApeWisdom.
 Read-only integration. No Polygon calls, no broker, no live trading, no real orders.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -40,6 +41,7 @@ def _reset_module_state():
     r._previous = []
     r._fetched_at = 0.0
     r._fetch_error = None
+    r._fetch_lock = asyncio.Lock()  # fresh lock so tests don't share lock state
 
 
 # ── Test 1: ApeWisdom response parsing ────────────────────────────────────────
@@ -350,3 +352,137 @@ def test_intelligence_module_importable():
     assert hasattr(intelligence.reddit, "start_background_loop")
     assert hasattr(intelligence.reddit, "_detect_spikes")
     assert hasattr(intelligence.reddit, "_normalize_rows")
+
+
+# ── Phase I2-H1: Resilience hardening ────────────────────────────────────────
+
+def test_fetch_lock_exists():
+    """_fetch_lock is an asyncio.Lock — confirms the module exposes it for coalescing."""
+    import intelligence.reddit
+    assert hasattr(intelligence.reddit, "_fetch_lock")
+    assert isinstance(intelligence.reddit._fetch_lock, asyncio.Lock)
+
+
+def test_api_returns_cached_results_with_error(client):
+    """
+    When ApeWisdom fails but the cache has data, the API returns both results AND error.
+    The frontend should show a warning banner and the results table — not a blank panel.
+    """
+    _reset_module_state()
+    import intelligence.reddit as r
+    r._current = [{"rank": 1, "ticker": "NVDA", "mentions": 500, "upvotes": 200,
+                   "name": "NVIDIA", "rank_24h_ago": 2, "mentions_24h_ago": 300}]
+    r._fetched_at = time.time() - 60   # fresh TTL, so GET won't trigger a re-fetch
+    r._fetch_error = "Connection refused"
+
+    resp = client.get("/api/intelligence/reddit")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error"] == "Connection refused"    # error present
+    assert body["result_count"] == 1                # cached results also present
+    assert len(body["results"]) == 1
+    assert body["results"][0]["ticker"] == "NVDA"
+
+
+def test_frontend_source_shows_cached_results_on_error():
+    """
+    The frontend page.tsx must NOT early-return the error panel when results exist.
+    Verify by AST/source inspection that the error-only branch is gated on results.length === 0.
+    Skipped when frontend is not co-located with the backend (e.g. inside Docker backend image).
+    """
+    from pathlib import Path
+
+    # Try repo-relative path; also try common monorepo layouts
+    candidates = [
+        Path(__file__).parent.parent.parent / "frontend" / "dashboard" / "app" / "page.tsx",
+        Path("/opt/microtrading-app/frontend/dashboard/app/page.tsx"),
+    ]
+    page_path = next((p for p in candidates if p.exists()), None)
+    if page_path is None:
+        pytest.skip("frontend/dashboard/app/page.tsx not accessible from backend container")
+
+    source = page_path.read_text()
+    # The old all-blocking early return must be gone
+    assert "reddit.error && reddit.results.length === 0" in source, (
+        "page.tsx must only show full error panel when results are empty"
+    )
+    # The cached-data warning banner must be present
+    assert "ApeWisdom refresh failed" in source, (
+        "page.tsx must show inline warning banner when error + cached results exist"
+    )
+
+
+def test_concurrent_fetch_coalesces():
+    """
+    Multiple concurrent fetch_and_refresh() calls result in exactly one ApeWisdom HTTP request.
+    Concurrent waiters return the cached snapshot after the first caller completes.
+    """
+    _reset_module_state()
+    import intelligence.reddit as r
+
+    http_call_count = 0
+
+    async def run_test():
+        nonlocal http_call_count
+
+        async def fake_get(*args, **kwargs):
+            nonlocal http_call_count
+            http_call_count += 1
+            await asyncio.sleep(0.05)   # simulate network latency so all 5 callers pile up
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status = MagicMock()
+            mock_resp.json.return_value = _make_apewisdom_response(3)
+            return mock_resp
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = fake_get
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            results = await asyncio.gather(*[r.fetch_and_refresh() for _ in range(5)])
+
+        return results
+
+    results = asyncio.run(run_test())
+
+    assert http_call_count == 1, (
+        f"Expected exactly 1 upstream HTTP call; got {http_call_count}. "
+        "Concurrent fetches must coalesce via the async lock."
+    )
+    for result in results:
+        assert result["result_count"] > 0, "All callers should receive a populated snapshot"
+
+
+def test_ttl_guard_prevents_redundant_refresh(client):
+    """TTL rate-guard: a second fetch_and_refresh within _CACHE_TTL makes no HTTP call."""
+    _reset_module_state()
+    import intelligence.reddit as r
+
+    call_count = 0
+
+    async def run_test():
+        nonlocal call_count
+
+        async def fake_get(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            mock_resp = MagicMock()
+            mock_resp.raise_for_status = MagicMock()
+            mock_resp.json.return_value = _make_apewisdom_response(2)
+            return mock_resp
+
+        mock_client = MagicMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client.get = fake_get
+
+        with patch("httpx.AsyncClient", return_value=mock_client):
+            await r.fetch_and_refresh()   # first: should hit HTTP
+            await r.fetch_and_refresh()   # second: TTL guard should return cached
+
+    asyncio.run(run_test())
+
+    assert call_count == 1, (
+        f"Expected 1 HTTP call (TTL guard should prevent second); got {call_count}"
+    )
