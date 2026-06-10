@@ -260,6 +260,37 @@ interface Dashboard {
   disclaimer: string;
 }
 
+// ── Intelligence types ────────────────────────────────────────────────────────
+
+interface RedditRow {
+  rank: number;
+  ticker: string;
+  name: string;
+  mentions: number;
+  upvotes: number;
+  rank_24h_ago: number | null;
+  mentions_24h_ago: number | null;
+}
+
+interface RedditSpike {
+  ticker: string;
+  mentions: number;
+  prev_mentions: number;
+  spike_ratio: number;
+}
+
+interface RedditSnapshot {
+  ok: boolean;
+  source: string;
+  fetched_at: number | null;
+  age_seconds: number | null;
+  ttl_seconds: number | null;
+  result_count: number;
+  results: RedditRow[];
+  spikes: RedditSpike[];
+  error: string | null;
+}
+
 // ── Journal types ─────────────────────────────────────────────────────────────
 
 interface JournalStatus {
@@ -539,6 +570,16 @@ async function fetchJournal(): Promise<JournalData | null> {
 async function fetchMonitoringStatus(): Promise<MonitoringStatus | null> {
   try {
     const r = await fetch("/api/monitoring/status");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchReddit(): Promise<RedditSnapshot | null> {
+  try {
+    const r = await fetch("/api/intelligence/reddit");
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -2275,6 +2316,254 @@ function TodayReportPanel({ report }: { report: TodayReport | null }) {
   );
 }
 
+// ── Intelligence section ──────────────────────────────────────────────────────
+
+const INTEL_TABS = [
+  { key: "reddit",   label: "🚀 Reddit"    },
+  { key: "prepost",  label: "🌗 PRE/POST"  },
+  { key: "earnings", label: "📅 Earnings"  },
+  { key: "insiders", label: "👔 Insiders"  },
+  { key: "news",     label: "📰 News"      },
+  { key: "heatmap",  label: "🗺 Heatmap"   },
+  { key: "llm",      label: "🤖 LLM Shadow"},
+] as const;
+
+type IntelTab = typeof INTEL_TABS[number]["key"];
+
+function IntelligenceSection({
+  reddit,
+  token,
+  onRefresh,
+}: {
+  reddit: RedditSnapshot | null;
+  token: string;
+  onRefresh: () => void;
+}) {
+  const [activeTab, setActiveTab] = useState<IntelTab>("reddit");
+  const [refreshMsg, setRefreshMsg] = useState("");
+
+  async function handleRedditRefresh() {
+    if (!token) { setRefreshMsg("Enter ADMIN_API_TOKEN first."); return; }
+    setRefreshMsg("Refreshing…");
+    try {
+      const r = await fetch("/api/intelligence/reddit/refresh", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await r.json();
+      if (r.ok) {
+        setRefreshMsg(`Refreshed — ${body.result_count ?? 0} tickers`);
+        onRefresh();
+      } else {
+        setRefreshMsg(`Failed: ${body.detail ?? JSON.stringify(body)}`);
+      }
+    } catch (e) {
+      setRefreshMsg(`Error: ${String(e)}`);
+    }
+  }
+
+  function ComingSoon({ name }: { name: string }) {
+    return (
+      <div className="text-center py-12 text-gray-500">
+        <div className="text-4xl mb-3">🚧</div>
+        <p className="text-lg font-semibold text-gray-400">{name}</p>
+        <p className="text-sm mt-2">Planned for a future phase.</p>
+        <p className="text-xs mt-1 text-gray-600">Read-only · no trading integration</p>
+      </div>
+    );
+  }
+
+  function RedditTab() {
+    if (!reddit) {
+      return (
+        <div className="text-center py-8 text-gray-500 text-sm animate-pulse">
+          Loading Reddit data…
+        </div>
+      );
+    }
+    if (!reddit.ok && reddit.error) {
+      return (
+        <div className="rounded border border-red-800 bg-red-950 text-red-300 px-4 py-3 text-sm">
+          <span className="font-semibold">ApeWisdom unavailable:</span> {reddit.error}
+          <div className="text-xs mt-1 text-red-500">Showing cached data if available.</div>
+        </div>
+      );
+    }
+
+    const age = reddit.age_seconds;
+    const ageLabel = age == null ? "—"
+      : age < 60 ? `${age}s ago`
+      : age < 3600 ? `${Math.round(age / 60)}m ago`
+      : `${Math.round(age / 3600)}h ago`;
+
+    const fetchedAt = reddit.fetched_at
+      ? new Date(reddit.fetched_at * 1000).toUTCString().replace(" GMT", " UTC")
+      : "never";
+
+    return (
+      <div>
+        {/* Header row */}
+        <div className="flex flex-wrap items-center gap-3 mb-4 text-xs text-gray-400">
+          <span className="bg-gray-700 px-2 py-0.5 rounded font-mono">
+            source: {reddit.source}
+          </span>
+          <span>Fetched: {fetchedAt}</span>
+          <span>Age: {ageLabel}</span>
+          {reddit.ttl_seconds != null && (
+            <span>TTL: {reddit.ttl_seconds}s</span>
+          )}
+          <span>{reddit.result_count} tickers</span>
+          <button
+            onClick={handleRedditRefresh}
+            className="ml-auto px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs font-semibold transition-colors"
+          >
+            ↺ Refresh
+          </button>
+        </div>
+        {refreshMsg && (
+          <p className="text-xs text-yellow-300 font-mono mb-3">{refreshMsg}</p>
+        )}
+
+        {/* Spike alerts */}
+        {reddit.spikes && reddit.spikes.length > 0 && (
+          <div className="mb-4 rounded border border-orange-700 bg-orange-950 px-3 py-2">
+            <p className="text-orange-300 font-semibold text-xs mb-1">
+              🚨 {reddit.spikes.length} mention spike{reddit.spikes.length > 1 ? "s" : ""} detected (≥3× previous)
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {reddit.spikes.map((sp) => (
+                <span key={sp.ticker} className="bg-orange-900 text-orange-200 text-xs px-2 py-0.5 rounded font-mono">
+                  {sp.ticker} ×{sp.spike_ratio} ({sp.prev_mentions}→{sp.mentions})
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {reddit.results.length === 0 && (
+          <p className="text-gray-500 text-sm py-4 text-center">
+            No Reddit data available. Click Refresh to fetch.
+          </p>
+        )}
+
+        {/* Results table */}
+        {reddit.results.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-400 border-b border-gray-700">
+                  <th className="pb-2 text-left w-10">#</th>
+                  <th className="pb-2 text-left w-20">Ticker</th>
+                  <th className="pb-2 text-left max-w-[140px]">Name</th>
+                  <th className="pb-2 text-right">Mentions</th>
+                  <th className="pb-2 text-right">Upvotes</th>
+                  <th className="pb-2 text-right">Rank Δ24h</th>
+                  <th className="pb-2 text-right">Mentions Δ24h</th>
+                  <th className="pb-2 text-center w-16">Spike</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reddit.results.map((row) => {
+                  const isSpike = reddit.spikes.some((s) => s.ticker === row.ticker);
+                  const spikeObj = reddit.spikes.find((s) => s.ticker === row.ticker);
+                  const rankDelta = row.rank_24h_ago != null
+                    ? row.rank_24h_ago - row.rank
+                    : null;
+                  const mentionDelta = row.mentions_24h_ago != null
+                    ? row.mentions - row.mentions_24h_ago
+                    : null;
+                  return (
+                    <tr
+                      key={row.ticker}
+                      className={`border-b border-gray-800 ${isSpike ? "bg-orange-950/40" : "hover:bg-gray-800/40"}`}
+                    >
+                      <td className="py-1.5 pr-2 text-gray-500 font-mono text-xs">{row.rank}</td>
+                      <td className="py-1.5 pr-3 font-mono font-semibold text-white">
+                        {row.ticker}
+                      </td>
+                      <td className="py-1.5 pr-3 text-gray-400 text-xs truncate max-w-[140px]">
+                        {row.name || "—"}
+                      </td>
+                      <td className="py-1.5 text-right font-mono">{row.mentions.toLocaleString()}</td>
+                      <td className="py-1.5 text-right font-mono text-gray-400">{row.upvotes.toLocaleString()}</td>
+                      <td className={`py-1.5 text-right font-mono text-xs ${
+                        rankDelta == null ? "text-gray-600"
+                        : rankDelta > 0 ? "text-green-400"
+                        : rankDelta < 0 ? "text-red-400"
+                        : "text-gray-400"
+                      }`}>
+                        {rankDelta == null ? "—"
+                          : rankDelta > 0 ? `▲${rankDelta}`
+                          : rankDelta < 0 ? `▼${Math.abs(rankDelta)}`
+                          : "—"}
+                      </td>
+                      <td className={`py-1.5 text-right font-mono text-xs ${
+                        mentionDelta == null ? "text-gray-600"
+                        : mentionDelta > 0 ? "text-green-400"
+                        : mentionDelta < 0 ? "text-red-400"
+                        : "text-gray-400"
+                      }`}>
+                        {mentionDelta == null ? "—"
+                          : mentionDelta > 0 ? `+${mentionDelta.toLocaleString()}`
+                          : mentionDelta < 0 ? mentionDelta.toLocaleString()
+                          : "0"}
+                      </td>
+                      <td className="py-1.5 text-center">
+                        {isSpike && spikeObj && (
+                          <span className="bg-orange-700 text-orange-200 text-xs px-1.5 py-0.5 rounded font-semibold">
+                            ×{spikeObj.spike_ratio}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Disclaimer */}
+      <div className="mb-4 text-xs text-gray-500 border border-gray-700 rounded px-3 py-2 bg-gray-900">
+        Read-only intelligence layer · Not integrated into trading decisions ·
+        No broker · No live trading · No real orders
+      </div>
+
+      {/* Tab bar */}
+      <div className="flex flex-wrap gap-1 mb-5 border-b border-gray-700 pb-2">
+        {INTEL_TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`px-3 py-1.5 rounded-t text-sm font-medium transition-colors ${
+              activeTab === t.key
+                ? "bg-gray-700 text-white border border-b-transparent border-gray-600"
+                : "text-gray-400 hover:text-gray-200 hover:bg-gray-800"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Tab content */}
+      {activeTab === "reddit"   && <RedditTab />}
+      {activeTab === "prepost"  && <ComingSoon name="PRE/POST Gap Scanner" />}
+      {activeTab === "earnings" && <ComingSoon name="Earnings Calendar" />}
+      {activeTab === "insiders" && <ComingSoon name="Insider Transactions" />}
+      {activeTab === "news"     && <ComingSoon name="News Intelligence" />}
+      {activeTab === "heatmap"  && <ComingSoon name="Sector Heatmap" />}
+      {activeTab === "llm"      && <ComingSoon name="LLM Shadow Analysis" />}
+    </div>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -2287,16 +2576,19 @@ export default function Home() {
   const [token, setToken] = useState("");
   const [actionMsg, setActionMsg] = useState("");
   const [lastRefresh, setLastRefresh] = useState("");
+  const [reddit, setReddit] = useState<RedditSnapshot | null>(null);
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
+      fetchReddit(),
     ]);
     setDashboard(data);
     setJournal(jdata);
     setMonitoring(mdata);
     setTodayReport(tdata);
     setReadiness(rdata);
+    setReddit(rddata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -2585,6 +2877,17 @@ export default function Home() {
           </span>
         </h2>
         <JournalPanel journal={journal} />
+      </section>
+
+      {/* Intelligence */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-1">
+          Intelligence
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            read-only · no trading integration · Phase I2
+          </span>
+        </h2>
+        <IntelligenceSection reddit={reddit} token={token} onRefresh={refresh} />
       </section>
 
       <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4 space-y-1">

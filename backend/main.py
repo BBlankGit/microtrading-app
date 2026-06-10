@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from api.catalysts import router as catalysts_router
+from api.intelligence import router as intelligence_router
 from api.readiness import router as readiness_router
 from api.data_status import router as data_status_router
 from api.journal import router as journal_router
@@ -38,6 +39,12 @@ async def lifespan(app: FastAPI):
         from marketdata import service as md_service
         await md_service.start_collector(auto_started=True)
 
+    # Intelligence layer — Reddit snapshot warm-up + background refresh (Phase I2)
+    # Read-only. No broker, no live trading, no real orders. ApeWisdom only.
+    from intelligence import reddit as reddit_intel
+    await reddit_intel.ensure_loaded()
+    reddit_intel.start_background_loop()
+
     yield
 
     # Graceful shutdown of collector
@@ -65,6 +72,7 @@ app.add_middleware(
 )
 
 app.include_router(catalysts_router)
+app.include_router(intelligence_router)
 app.include_router(data_status_router)
 app.include_router(journal_router)
 app.include_router(market_router)
