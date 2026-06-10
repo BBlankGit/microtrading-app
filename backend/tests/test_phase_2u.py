@@ -571,3 +571,257 @@ def test_simulator_contains_no_broker_or_ai_imports():
         for imported in imported_names:
             assert f not in imported, \
                 f"simulator.py imports forbidden module: {f!r} (found in {imported!r})"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Phase 2U-H1 regression tests
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ── H1-1: missing / empty position_id is skipped ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_try_redis_restore_skips_empty_position_id():
+    """
+    A position with a valid entry_mode but empty/missing position_id must be
+    dropped regardless of valid_pids, because journal checks are gated on pid.
+    Warning must be missing_position_id_skipped:<symbol>.
+    """
+    from paper.session_restore import try_redis_restore
+
+    today = "2026-06-10"
+    # Position has valid entry_mode but no position_id
+    pos_no_pid = {
+        "position_id": "",  # empty — the bug case
+        "symbol": "TSLA",
+        "entry_price": 300.0,
+        "shares": 0.8,
+        "cost_basis": 240.0,
+        "entry_time": "2026-06-10T14:00:00+00:00",
+        "entry_catalyst_type": "earnings",
+        "entry_score": 75,
+        "entry_mode": "catalyst",
+    }
+    snapshot = _make_v2_snapshot(today, positions={"TSLA": pos_no_pid})
+
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.session_restore.make_redis", return_value=mock_redis), \
+         patch("paper.session_restore._get_valid_journal_position_ids",
+               new=AsyncMock(return_value=set())), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
+               new=AsyncMock(return_value=set())):
+        result = await try_redis_restore(today)
+
+    assert result is not None
+    assert "TSLA" not in result["positions"]
+    assert any("missing_position_id_skipped:TSLA" in w
+               for w in result["restore_warnings"])
+
+
+@pytest.mark.asyncio
+async def test_try_redis_restore_skips_null_position_id():
+    """position_id=None (not in dict at all) must also be skipped."""
+    from paper.session_restore import try_redis_restore
+
+    today = "2026-06-10"
+    pos = {
+        # "position_id" key absent entirely
+        "symbol": "NVDA",
+        "entry_price": 900.0,
+        "shares": 0.25,
+        "cost_basis": 225.0,
+        "entry_time": "2026-06-10T13:00:00+00:00",
+        "entry_catalyst_type": "earnings",
+        "entry_score": 80,
+        "entry_mode": "catalyst",
+    }
+    snapshot = _make_v2_snapshot(today, positions={"NVDA": pos})
+
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.session_restore.make_redis", return_value=mock_redis), \
+         patch("paper.session_restore._get_valid_journal_position_ids",
+               new=AsyncMock(return_value=set())), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
+               new=AsyncMock(return_value=set())):
+        result = await try_redis_restore(today)
+
+    assert result is not None
+    assert "NVDA" not in result["positions"]
+    assert any("missing_position_id_skipped:NVDA" in w
+               for w in result["restore_warnings"])
+
+
+# ── H1-2: Redis restore warnings propagate through restore_session ────────────
+
+@pytest.mark.asyncio
+async def test_restore_session_propagates_redis_restore_warnings():
+    """
+    restore_session() Redis branch must copy snapshot restore_warnings into
+    result["restore_warnings"] and set result["warning"] when warnings exist.
+    """
+    from paper.session_restore import restore_session
+
+    today = "2026-06-10"
+    # Build a snapshot that already has a warning (as try_redis_restore would produce)
+    snapshot = _make_v2_snapshot(today)
+    snapshot["restore_warnings"] = ["orphaned_redis_position_skipped:TSLA:bad00001"]
+
+    with patch("paper.session_restore.try_redis_restore",
+               new=AsyncMock(return_value=snapshot)):
+        result = await restore_session(today, 1000.0)
+
+    assert result["source"] == "redis"
+    assert "orphaned_redis_position_skipped:TSLA:bad00001" in result["restore_warnings"]
+    assert result["warning"] is not None
+    assert "redis_restore_warnings" in result["warning"]
+
+
+@pytest.mark.asyncio
+async def test_restore_session_no_warning_when_redis_restore_warnings_empty():
+    """restore_session() must not set result["warning"] when there are no Redis warnings."""
+    from paper.session_restore import restore_session
+
+    today = "2026-06-10"
+    snapshot = _make_v2_snapshot(today)
+    snapshot["restore_warnings"] = []
+
+    with patch("paper.session_restore.try_redis_restore",
+               new=AsyncMock(return_value=snapshot)):
+        result = await restore_session(today, 1000.0)
+
+    assert result["source"] == "redis"
+    assert result["restore_warnings"] == []
+    assert result["warning"] is None
+
+
+# ── H1-3: _save_state only called after journal ok:true ──────────────────────
+
+@pytest.mark.asyncio
+async def test_save_state_not_called_when_journal_raises(reset_simulator_state):
+    """_persist_journal_tick raises → _save_state must NOT be called."""
+    import paper.simulator as sim
+
+    save_called = []
+
+    async def fake_save(tick_id=None):
+        save_called.append(True)
+
+    sym = "AAPL"
+    sim._last_prices[sym] = 190.0
+
+    with (
+        patch("paper.simulator._persist_journal_tick",
+              side_effect=RuntimeError("journal exploded")),
+        patch("paper.simulator._save_state", side_effect=fake_save),
+        patch("paper.simulator.get_active_paper_universe", return_value=[sym]),
+        patch("paper.simulator.get_cached_universe", return_value=[sym]),
+        patch("paper.simulator.collect_news_for_symbols",
+              new=AsyncMock(return_value={"filter": {"accepted": []}})),
+        patch("paper.simulator.evaluate_market_quality",
+              return_value={"eligible": False, "reason": "test_skip", "ask": 190.0,
+                            "bid": 189.9, "spread_pct": 0.05, "volume_ratio": 1.0,
+                            "day_volume": 1_000_000, "price": 190.0}),
+        patch("paper.simulator.evaluate_virtual_bracket_exit", return_value=None),
+        patch("paper.simulator._daily_loss_guard",
+              return_value={"triggered": False, "reason": None, "enabled": False}),
+        patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=[])),
+        patch.object(sim.polygon_client, "get_ticker_snapshot",
+                     new=AsyncMock(return_value={})),
+        patch.object(sim.polygon_client, "get_previous_close",
+                     new=AsyncMock(return_value={})),
+        patch("paper.marketdata_adapter.try_cache_for_quality",
+              new=AsyncMock(return_value=(None, {}))),
+    ):
+        result = await sim.run_tick()
+
+    assert not save_called, "_save_state must not be called when journal raises"
+    assert result["journal"].get("ok") is not True
+
+
+@pytest.mark.asyncio
+async def test_save_state_not_called_when_journal_returns_ok_false(reset_simulator_state):
+    """_persist_journal_tick returns {"ok": False} → _save_state must NOT be called."""
+    import paper.simulator as sim
+
+    save_called = []
+
+    async def fake_save(tick_id=None):
+        save_called.append(True)
+
+    sym = "AAPL"
+    sim._last_prices[sym] = 190.0
+
+    with (
+        patch("paper.simulator._persist_journal_tick",
+              new=AsyncMock(return_value={"ok": False, "error": "db unavailable"})),
+        patch("paper.simulator._save_state", side_effect=fake_save),
+        patch("paper.simulator.get_active_paper_universe", return_value=[sym]),
+        patch("paper.simulator.get_cached_universe", return_value=[sym]),
+        patch("paper.simulator.collect_news_for_symbols",
+              new=AsyncMock(return_value={"filter": {"accepted": []}})),
+        patch("paper.simulator.evaluate_market_quality",
+              return_value={"eligible": False, "reason": "test_skip", "ask": 190.0,
+                            "bid": 189.9, "spread_pct": 0.05, "volume_ratio": 1.0,
+                            "day_volume": 1_000_000, "price": 190.0}),
+        patch("paper.simulator.evaluate_virtual_bracket_exit", return_value=None),
+        patch("paper.simulator._daily_loss_guard",
+              return_value={"triggered": False, "reason": None, "enabled": False}),
+        patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=[])),
+        patch.object(sim.polygon_client, "get_ticker_snapshot",
+                     new=AsyncMock(return_value={})),
+        patch.object(sim.polygon_client, "get_previous_close",
+                     new=AsyncMock(return_value={})),
+        patch("paper.marketdata_adapter.try_cache_for_quality",
+              new=AsyncMock(return_value=(None, {}))),
+    ):
+        result = await sim.run_tick()
+
+    assert not save_called, "_save_state must not be called when journal returns ok:false"
+    assert result["journal"].get("ok") is False
+
+
+@pytest.mark.asyncio
+async def test_save_state_called_when_journal_returns_ok_true(reset_simulator_state):
+    """_persist_journal_tick returns {"ok": True} → _save_state MUST be called."""
+    import paper.simulator as sim
+
+    save_called = []
+
+    async def fake_save(tick_id=None):
+        save_called.append(tick_id)
+
+    sym = "AAPL"
+    sim._last_prices[sym] = 190.0
+
+    with (
+        patch("paper.simulator._persist_journal_tick",
+              new=AsyncMock(return_value={"ok": True, "tick_id": "t-ok-001"})),
+        patch("paper.simulator._save_state", side_effect=fake_save),
+        patch("paper.simulator.get_active_paper_universe", return_value=[sym]),
+        patch("paper.simulator.get_cached_universe", return_value=[sym]),
+        patch("paper.simulator.collect_news_for_symbols",
+              new=AsyncMock(return_value={"filter": {"accepted": []}})),
+        patch("paper.simulator.evaluate_market_quality",
+              return_value={"eligible": False, "reason": "test_skip", "ask": 190.0,
+                            "bid": 189.9, "spread_pct": 0.05, "volume_ratio": 1.0,
+                            "day_volume": 1_000_000, "price": 190.0}),
+        patch("paper.simulator.evaluate_virtual_bracket_exit", return_value=None),
+        patch("paper.simulator._daily_loss_guard",
+              return_value={"triggered": False, "reason": None, "enabled": False}),
+        patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=[])),
+        patch.object(sim.polygon_client, "get_ticker_snapshot",
+                     new=AsyncMock(return_value={})),
+        patch.object(sim.polygon_client, "get_previous_close",
+                     new=AsyncMock(return_value={})),
+        patch("paper.marketdata_adapter.try_cache_for_quality",
+              new=AsyncMock(return_value=(None, {}))),
+    ):
+        result = await sim.run_tick()
+
+    assert len(save_called) == 1, "_save_state must be called exactly once"
+    assert save_called[0] == "t-ok-001", "_save_state must receive tick_id from journal"

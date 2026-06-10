@@ -910,8 +910,13 @@ async def run_tick() -> dict[str, Any]:
     except Exception as exc:
         result["journal"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    # ── 7. Persist Redis snapshot AFTER journal ───────────────────────────────
-    await _save_state(tick_id=_journal_tick_id)
+    # ── 7. Persist Redis snapshot AFTER confirmed journal success ─────────────
+    # _save_state is skipped when journal persistence fails or raises so that
+    # saved_after_journal:true is only stamped on snapshots whose positions are
+    # guaranteed to have a matching journal entry row (Phase 2U-H1).
+    _journal_ok = isinstance(result["journal"], dict) and result["journal"].get("ok") is True
+    if _journal_ok:
+        await _save_state(tick_id=_journal_tick_id)
 
     # ── 8. Market regime already fetched in step 2b (observational only) ────────
     # result["market_regime"] is already set from step 2b.

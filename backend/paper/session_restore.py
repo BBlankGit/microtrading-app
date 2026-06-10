@@ -125,6 +125,17 @@ async def try_redis_restore(ny_today: str) -> dict[str, Any] | None:
             pid: str = pos_data.get("position_id") or ""
             entry_mode = pos_data.get("entry_mode")
 
+            # ── Check 0: position_id must be non-empty ─────────────────────
+            if not pid:
+                restore_warnings.append(
+                    f"missing_position_id_skipped:{symbol}"
+                )
+                logger.warning(
+                    "session_restore: dropped %s: position_id is missing or empty",
+                    symbol,
+                )
+                continue
+
             # ── Check 1: entry_mode must be in allowed set ─────────────────
             if entry_mode not in _ALLOWED_ENTRY_MODES:
                 restore_warnings.append(
@@ -384,11 +395,16 @@ async def restore_session(ny_today: str, starting_cash: float) -> dict[str, Any]
             sum(t.get("pnl", 0) for t in trades_list), 4
         )
         result["trades_today"] = int(snapshot.get("daily_trade_count", 0))
+        redis_warnings: list[str] = list(snapshot.get("restore_warnings") or [])
+        result["restore_warnings"] = redis_warnings
+        if redis_warnings:
+            result["warning"] = "redis_restore_warnings; " + "; ".join(redis_warnings)
         logger.info(
-            "session_restore: Redis OK — closed=%d open=%d pnl=%.4f",
+            "session_restore: Redis OK — closed=%d open=%d pnl=%.4f warnings=%d",
             result["closed_trades_count"],
             result["open_positions_count"],
             result["daily_realized_pnl"],
+            len(redis_warnings),
         )
         return result
 
