@@ -105,6 +105,12 @@ _SCHEMA: dict[str, dict] = {
         "category": "catalyst",
         "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
     },
+    "PAPER_POLL_INTERVAL_SECONDS": {
+        "type": "int", "min": 5, "max": 300,
+        "description": "Seconds between automatic simulator ticks.",
+        "category": "timing",
+        "runtime_applied": True, "applies_to": "simulator_loop", "restart_required": False,
+    },
     "PAPER_MAX_UNIVERSE_SIZE": {
         "type": "int", "min": 10, "max": 1000,
         "description": "Maximum symbols in the universe candidate pool.",

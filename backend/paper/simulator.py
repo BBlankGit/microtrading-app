@@ -99,7 +99,7 @@ def get_status() -> dict[str, Any]:
             "take_profit_percent": _cfg("PAPER_TAKE_PROFIT_PERCENT"),
             "stop_loss_percent": _cfg("PAPER_STOP_LOSS_PERCENT"),
             "max_hold_minutes": _cfg("PAPER_MAX_HOLD_MINUTES"),
-            "poll_interval_seconds": settings.PAPER_POLL_INTERVAL_SECONDS,
+            "poll_interval_seconds": _cfg("PAPER_POLL_INTERVAL_SECONDS"),
         },
     )
     status.update({
@@ -223,7 +223,7 @@ async def _loop() -> None:
         try:
             await asyncio.wait_for(
                 _stop_event.wait(),
-                timeout=float(settings.PAPER_POLL_INTERVAL_SECONDS),
+                timeout=float(_cfg("PAPER_POLL_INTERVAL_SECONDS")),
             )
         except asyncio.TimeoutError:
             pass
