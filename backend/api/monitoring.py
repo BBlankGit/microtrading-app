@@ -285,6 +285,13 @@ async def monitoring_status():
     except Exception as exc:
         marketdata_cache = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ── Enhanced shadow scoring stats (Phase I4-A — diagnostic only) ─────────
+    shadow_stats: dict = {}
+    try:
+        shadow_stats = sim_status.get("last_shadow_stats") or {}
+    except Exception:
+        pass
+
     return {
         "backend_ok": True,
         "paper_running": paper_running,
@@ -304,6 +311,7 @@ async def monitoring_status():
         "catalyst_type_guard": catalyst_type_guard,
         "daily_loss_guard": daily_loss_guard,
         "marketdata_cache": marketdata_cache,
+        "enhanced_shadow_stats": shadow_stats,
         "warnings": warnings,
     }
 

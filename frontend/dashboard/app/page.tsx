@@ -106,6 +106,22 @@ interface Candidate {
   momentum_score: number | null;
   momentum_score_threshold: number | null;
   momentum_rejection_reason: string | null;
+  // Phase I4-A: enhanced shadow scoring (diagnostic only, not used for trading)
+  enhanced_shadow_score: number | null;
+  enhanced_shadow_decision: string | null;
+  enhanced_shadow_reason: string | null;
+  enhanced_shadow_components: Record<string, number> | null;
+  enhanced_shadow_blockers: string[] | null;
+  enhanced_shadow_confidence: string | null;
+  premarket_rank: number | null;
+  premarket_gap_percent: number | null;
+  premarket_dollar_volume: number | null;
+  premarket_volume: number | null;
+  premarket_boost: number | null;
+  reddit_rank: number | null;
+  reddit_mentions: number | null;
+  reddit_spike_ratio: number | null;
+  reddit_boost: number | null;
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -801,25 +817,60 @@ function fmtComponents(c: ScoreComponents | null): string {
   return `Qual:${c.market_quality_score} Sprd:${c.spread_score} Mom:${c.momentum_score} Vol:${c.volume_score} Cat:${c.catalyst_score} Risk:${c.risk_penalty}`;
 }
 
+function shadowDecisionBadge(decision: string | null | undefined) {
+  if (!decision) return <span className="text-gray-600 text-xs">—</span>;
+  if (decision === "WOULD_ENTER")
+    return <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-emerald-900 text-emerald-300 border border-emerald-700">WOULD_ENTER</span>;
+  if (decision === "WATCH")
+    return <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-900 text-yellow-300 border border-yellow-700">WATCH</span>;
+  return <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-gray-800 text-gray-500 border border-gray-700">REJECT</span>;
+}
+
 function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
   if (candidates.length === 0)
     return <p className="text-gray-500 text-sm">No tick data yet. Run ⚡ Tick to see candidates.</p>;
+
+  const missedOpps = candidates.filter(
+    (c) => c.enhanced_shadow_decision === "WOULD_ENTER" && !c.eligible
+  );
+
   return (
     <div className="overflow-x-auto">
       <p className="text-xs text-gray-600 mb-2">
         Components: Qual=Quality(max 25) · Sprd=Spread(15) · Mom=Momentum(20) · Vol=Volume(15) · Cat=Catalyst(20) · Risk=penalty(−20 max)
       </p>
+
+      {missedOpps.length > 0 && (
+        <div className="mb-3 rounded border border-emerald-800 bg-emerald-950 px-3 py-2 text-xs text-emerald-300">
+          <span className="font-semibold">Shadow only — not used for trading decisions.</span>
+          {" "}Enhanced shadow scores {missedOpps.length} missed opportunit{missedOpps.length === 1 ? "y" : "ies"} as{" "}
+          <span className="font-bold">WOULD_ENTER</span> (engine rejected):{" "}
+          {missedOpps.slice(0, 8).map((c) => (
+            <span key={c.symbol} className="mr-1.5 font-mono font-semibold text-yellow-300">
+              {c.symbol}({c.enhanced_shadow_score})
+            </span>
+          ))}
+        </div>
+      )}
+
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
-            {["Symbol","✓","Mode","Action","Score","Components","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection"].map((h) => (
-              <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+            {["Symbol","✓","Mode","Action","Score","Components","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
+              "Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].map((h) => (
+              <th key={h} className={`pb-2 pr-4 font-medium whitespace-nowrap ${
+                ["Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
+                  ? "text-emerald-600"
+                  : ""
+              }`}>{h}</th>
             ))}
           </tr>
         </thead>
         <tbody>
           {candidates.map((c) => (
-            <tr key={c.symbol} className="border-b border-gray-800 hover:bg-gray-800">
+            <tr key={c.symbol} className={`border-b border-gray-800 hover:bg-gray-800 ${
+              c.enhanced_shadow_decision === "WOULD_ENTER" && !c.eligible ? "bg-emerald-950/30" : ""
+            }`}>
               <td className="py-2 pr-4 font-semibold text-yellow-300">{c.symbol}</td>
               <td className="py-2 pr-4">
                 {c.eligible
@@ -866,10 +917,36 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                   {c.rejection_reason || c.decision_reason || "—"}
                 </span>
               </td>
+              {/* Shadow columns — diagnostic only, not used for trading */}
+              <td className="py-2 pr-4 font-mono font-semibold text-emerald-400 whitespace-nowrap">
+                {c.enhanced_shadow_score != null ? c.enhanced_shadow_score : "—"}
+                {c.enhanced_shadow_confidence && (
+                  <span className="ml-1 text-gray-600 text-xs">{c.enhanced_shadow_confidence[0]}</span>
+                )}
+              </td>
+              <td className="py-2 pr-4 whitespace-nowrap">
+                {shadowDecisionBadge(c.enhanced_shadow_decision)}
+              </td>
+              <td className="py-2 pr-4 text-xs text-gray-500 max-w-[180px] truncate" title={c.enhanced_shadow_reason ?? undefined}>
+                {c.enhanced_shadow_reason || "—"}
+              </td>
+              <td className="py-2 pr-4 text-xs whitespace-nowrap">
+                {c.premarket_rank != null
+                  ? <span className="text-indigo-300">#{c.premarket_rank} {c.premarket_gap_percent != null ? `${c.premarket_gap_percent > 0 ? "+" : ""}${c.premarket_gap_percent.toFixed(1)}%` : ""}</span>
+                  : <span className="text-gray-600">—</span>}
+              </td>
+              <td className="py-2 pr-4 text-xs whitespace-nowrap">
+                {c.reddit_rank != null
+                  ? <span className="text-pink-300">#{c.reddit_rank}{c.reddit_spike_ratio != null ? ` ×${c.reddit_spike_ratio.toFixed(1)}` : ""}</span>
+                  : <span className="text-gray-600">—</span>}
+              </td>
             </tr>
           ))}
         </tbody>
       </table>
+      <p className="text-xs text-gray-700 mt-2 italic">
+        Shadow only — not used for trading decisions. Enhanced score is independent of engine eligible/action/entry_mode.
+      </p>
     </div>
   );
 }

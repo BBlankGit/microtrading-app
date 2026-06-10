@@ -61,6 +61,7 @@ _state: dict[str, Any] = {
     "state_restored_from_snapshot": False,
     "restart_persistent": False,
     "last_tick_marketdata": {},  # D2-H1: per-tick cache counters, updated after each tick
+    "last_shadow_stats": {},    # I4-A: shadow aggregate stats, updated after each tick
     # Phase 2S: restore metadata (populated by restore_paper_session at startup)
     "restore_source": "none",
     "restored_closed_trades_count": 0,
@@ -126,6 +127,8 @@ def get_status() -> dict[str, Any]:
         status["daily_loss_guard"] = {"triggered": False, "reason": None, "enabled": False}
     # D2-H1: per-tick cache counters (empty until first tick completes)
     status["last_tick_marketdata"] = _state.get("last_tick_marketdata", {})
+    # I4-A: shadow aggregate stats (empty until first tick completes)
+    status["last_shadow_stats"] = _state.get("last_shadow_stats", {})
     return status
 
 
@@ -443,6 +446,28 @@ async def run_tick() -> dict[str, Any]:
     except Exception:
         pass
     result["market_regime"] = _tick_regime
+
+    # ── 2d. Shadow scoring: snapshot premarket + reddit caches once per tick ──
+    # Read-only from already-fetched in-memory caches. No new Polygon/ApeWisdom calls.
+    # Phase I4-A: shadow/diagnostic only. Does not affect entries, exits, or decisions.
+    _shadow_premarket_snap: dict | None = None
+    _shadow_reddit_snap: dict | None = None
+    _shadow_pm_lookup: dict = {}
+    _shadow_rd_lookup: dict = {}
+    try:
+        from intelligence import full_premarket as _fp
+        from intelligence.shadow_scoring import _build_premarket_lookup, _build_reddit_lookup
+        _shadow_premarket_snap = _fp.get_snapshot() or None
+        _shadow_pm_lookup = _build_premarket_lookup(_shadow_premarket_snap)
+    except Exception:
+        pass
+    try:
+        from intelligence import reddit as _reddit_intel
+        from intelligence.shadow_scoring import _build_reddit_lookup as _brl
+        _shadow_reddit_snap = _reddit_intel.get_snapshot()
+        _shadow_rd_lookup = _brl(_shadow_reddit_snap)
+    except Exception:
+        pass
 
     # ── 2c. Fetch intrabar data for open positions only (Phase 2Q-Lite) ─────────
     # Fetches recent 1-minute bars to detect TP/SL touches between polling cycles.
@@ -897,7 +922,82 @@ async def run_tick() -> dict[str, Any]:
                 candidate["action"] = "score_rejected"
                 candidate["rejection_reason"] = scoring["decision_reason"]
 
+            # ── Phase I4-A: Enhanced shadow scoring (diagnostic only) ────────
+            # Shadow fields are appended after all real decisions are finalized.
+            # They do not affect eligible, action, entry_mode, or any account state.
+            try:
+                from intelligence.shadow_scoring import compute_shadow_score
+                _shadow = compute_shadow_score(
+                    symbol=sym,
+                    quality=q,
+                    scoring=scoring,
+                    tick_regime=_tick_regime,
+                    premarket_snap=_shadow_premarket_snap,
+                    reddit_snap=_shadow_reddit_snap,
+                    blocked_cat_types=_blocked_cat_types,
+                    premarket_lookup=_shadow_pm_lookup,
+                    reddit_lookup=_shadow_rd_lookup,
+                )
+                candidate.update(_shadow)
+            except Exception:
+                candidate["enhanced_shadow_score"] = None
+                candidate["enhanced_shadow_decision"] = None
+                candidate["enhanced_shadow_reason"] = "shadow_scoring_error"
+                candidate["enhanced_shadow_components"] = {}
+                candidate["enhanced_shadow_blockers"] = []
+                candidate["enhanced_shadow_confidence"] = "low"
+                candidate["premarket_rank"] = None
+                candidate["premarket_gap_percent"] = None
+                candidate["premarket_dollar_volume"] = None
+                candidate["premarket_volume"] = None
+                candidate["premarket_source"] = None
+                candidate["premarket_mode"] = None
+                candidate["premarket_boost"] = 0
+                candidate["reddit_rank"] = None
+                candidate["reddit_mentions"] = None
+                candidate["reddit_spike_ratio"] = None
+                candidate["reddit_boost"] = 0
+
             result["candidates"].append(candidate)
+
+    # ── 4b. Shadow aggregate stats (diagnostic only, Phase I4-A) ─────────────
+    _shadow_would_enter = [
+        c for c in result["candidates"] if c.get("enhanced_shadow_decision") == "WOULD_ENTER"
+    ]
+    _shadow_watch = [
+        c for c in result["candidates"] if c.get("enhanced_shadow_decision") == "WATCH"
+    ]
+    _shadow_reject = [
+        c for c in result["candidates"] if c.get("enhanced_shadow_decision") == "WOULD_REJECT"
+    ]
+    _missed = [
+        c for c in _shadow_would_enter if not c.get("eligible")
+    ]
+    _top_shadow = sorted(
+        _shadow_would_enter,
+        key=lambda c: c.get("enhanced_shadow_score") or 0,
+        reverse=True,
+    )[:10]
+    result["enhanced_shadow_stats"] = {
+        "enhanced_shadow_would_enter_count": len(_shadow_would_enter),
+        "enhanced_shadow_watch_count":       len(_shadow_watch),
+        "enhanced_shadow_reject_count":      len(_shadow_reject),
+        "missed_opportunity_count":          len(_missed),
+        "enhanced_shadow_top_symbols": [
+            {
+                "symbol":                  c["symbol"],
+                "enhanced_shadow_score":   c.get("enhanced_shadow_score"),
+                "enhanced_shadow_decision": c.get("enhanced_shadow_decision"),
+                "eligible":                c.get("eligible"),
+                "premarket_rank":          c.get("premarket_rank"),
+                "premarket_gap_percent":   c.get("premarket_gap_percent"),
+                "reddit_rank":             c.get("reddit_rank"),
+            }
+            for c in _top_shadow
+        ],
+        "disclaimer": "Shadow only — not used for trading decisions.",
+    }
+    _state["last_shadow_stats"] = result["enhanced_shadow_stats"]
 
     # ── 5. Update in-memory state ─────────────────────────────────────────────
     result["exits_made"] = len(result["exits"])
