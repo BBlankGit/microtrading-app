@@ -21,8 +21,15 @@ STARTING_CASH = 1000.0
 
 
 def _redis_snapshot(ny_today: str = TODAY, cash: float = 950.0, trades=None, positions=None) -> str:
-    """Return a serialised Redis snapshot for the given date."""
+    """Return a serialised Redis snapshot for the given date (Phase-2U v2 format)."""
     return json.dumps({
+        # Phase-2U integrity metadata
+        "schema_version": 2,
+        "namespace": "paper:prod",
+        "saved_after_journal": True,
+        "saved_at": "2026-06-10T14:00:00+00:00",
+        "tick_id": None,
+        # Account state
         "cash": cash,
         "starting_cash": STARTING_CASH,
         "positions": positions or {},

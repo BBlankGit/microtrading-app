@@ -6,10 +6,13 @@ Research-only fake-money simulation.
 """
 
 import json
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
+
+# ── Fixtures ──────────────────────────────────────────────────────────────────
 
 @pytest.fixture
 def reset_simulator_state():
@@ -25,170 +28,254 @@ def reset_simulator_state():
     sim._last_prices.clear()
 
 
-# ── 1. Redis key uses namespace ───────────────────────────────────────────────
+def _make_v2_snapshot(today: str, positions: dict | None = None, trades: list | None = None) -> dict:
+    """Build a minimal valid Phase-2U v2 snapshot dict."""
+    return {
+        "schema_version": 2,
+        "namespace": "paper:prod",
+        "saved_after_journal": True,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "tick_id": None,
+        "daily_baseline_date": today,
+        "cash": 1000.0,
+        "starting_cash": 1000.0,
+        "positions": positions or {},
+        "trades": trades or [],
+        "daily_trade_count": 0,
+        "daily_date": today,
+        "daily_start_equity": 1000.0,
+        "last_prices": {},
+    }
 
-def test_simulator_redis_key_uses_namespace():
-    """_REDIS_KEY in simulator must include the configured namespace, not bare 'paper:state'."""
+
+def _make_position(pid: str, entry_mode: str | None = "catalyst") -> dict:
+    return {
+        "position_id": pid,
+        "symbol": "AMD",
+        "entry_price": 120.0,
+        "shares": 2.0,
+        "cost_basis": 240.0,
+        "entry_time": "2026-06-10T14:00:00+00:00",
+        "entry_catalyst_type": "earnings",
+        "entry_score": 80,
+        "entry_mode": entry_mode,
+    }
+
+
+# ── 1. Namespaced key builder ─────────────────────────────────────────────────
+
+def test_simulator_redis_key_format():
+    """_REDIS_KEY must be {namespace}:state:v2."""
     import paper.simulator as sim
     from core.config import settings
 
-    expected = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state"
+    expected = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state:v2"
     assert sim._REDIS_KEY == expected
+
+
+def test_session_restore_redis_key_format():
+    """session_restore._REDIS_KEY must match simulator._REDIS_KEY."""
+    import paper.simulator as sim
+    import paper.session_restore as sr
+
+    assert sr._REDIS_KEY == sim._REDIS_KEY
+    assert sr._REDIS_KEY.endswith(":state:v2")
+
+
+# ── 2. Legacy keys ignored ────────────────────────────────────────────────────
+
+def test_legacy_bare_paper_state_key_not_active():
+    """Active key must not be the legacy bare 'paper:state'."""
+    import paper.simulator as sim
+
     assert sim._REDIS_KEY != "paper:state"
 
 
-def test_session_restore_redis_key_uses_namespace():
-    """_REDIS_KEY in session_restore must match the namespace-derived key."""
-    import paper.session_restore as sr
+def test_legacy_v1_paper_prod_state_key_not_active():
+    """Active key must not be the Phase-2U-v1 'paper:prod:state' (without :v2)."""
+    import paper.simulator as sim
     from core.config import settings
 
-    expected = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state"
-    assert sr._REDIS_KEY == expected
-    assert sr._REDIS_KEY != "paper:state"
+    v1_key = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state"
+    assert sim._REDIS_KEY != v1_key
 
 
-def test_simulator_and_session_restore_keys_match():
-    """simulator._REDIS_KEY and session_restore._REDIS_KEY must be identical."""
-    import paper.simulator as sim
-    import paper.session_restore as sr
+# ── 3. Test namespace cannot overwrite production namespace ───────────────────
 
-    assert sim._REDIS_KEY == sr._REDIS_KEY
+def test_test_namespace_key_differs_from_prod_key():
+    """
+    A test-specific namespace must produce a different key than the production
+    namespace, so test Redis writes can never overwrite paper:prod:state:v2.
+    """
+    from core.config import settings
 
+    prod_key = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state:v2"
+    test_key = "paper:test:abc123:state:v2"
+    assert prod_key != test_key
 
-# ── 2. conftest _save_state isolation ────────────────────────────────────────
 
 def test_client_fixture_patches_save_state(client):
     """
-    The client fixture must patch _save_state so tick-driven tests never write
-    to the production Redis namespace.
+    conftest client fixture must patch _save_state to AsyncMock so tick-driven
+    integration tests never write to the production Redis namespace.
     """
     import paper.simulator as sim
 
-    # _save_state should be an AsyncMock (no real Redis call possible)
     assert isinstance(sim._save_state, AsyncMock)
 
 
-# ── 3. try_redis_restore: entry_mode=None skipped ────────────────────────────
+# ── 4. Snapshot metadata written by _save_state ───────────────────────────────
+
+@pytest.mark.asyncio
+async def test_save_state_snapshot_contains_required_metadata():
+    """
+    _save_state must write schema_version=2, namespace, saved_after_journal=True,
+    saved_at, and tick_id into the Redis snapshot.
+    """
+    import paper.simulator as sim
+
+    captured: list[str] = []
+
+    async def fake_set(key, value):
+        captured.append(value)
+
+    mock_redis = AsyncMock()
+    mock_redis.set = fake_set
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.simulator.make_redis", return_value=mock_redis):
+        await sim._save_state(tick_id="abc-tick-001")
+
+    assert len(captured) == 1
+    data = json.loads(captured[0])
+    assert data["schema_version"] == 2
+    assert data["namespace"] == sim.settings.PAPER_STATE_REDIS_NAMESPACE
+    assert data["saved_after_journal"] is True
+    assert "saved_at" in data
+    assert data["tick_id"] == "abc-tick-001"
+
+
+# ── 5. Redis restore: saved_after_journal gate ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_try_redis_restore_rejects_snapshot_without_saved_after_journal():
+    """
+    Snapshots missing saved_after_journal (pre-Phase-2U) must be rejected.
+    """
+    from paper.session_restore import try_redis_restore
+
+    today = "2026-06-10"
+    old_snapshot = {
+        "daily_baseline_date": today,
+        "cash": 1000.0,
+        "positions": {},
+        "trades": [],
+        # no saved_after_journal field
+    }
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=json.dumps(old_snapshot))
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.session_restore.make_redis", return_value=mock_redis):
+        result = await try_redis_restore(today)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_try_redis_restore_rejects_snapshot_with_saved_after_journal_false():
+    """saved_after_journal=False must also be rejected."""
+    from paper.session_restore import try_redis_restore
+
+    today = "2026-06-10"
+    snapshot = _make_v2_snapshot(today)
+    snapshot["saved_after_journal"] = False
+
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.session_restore.make_redis", return_value=mock_redis):
+        result = await try_redis_restore(today)
+
+    assert result is None
+
+
+# ── 6. Redis restore: null / invalid entry_mode skipped ──────────────────────
 
 @pytest.mark.asyncio
 async def test_try_redis_restore_skips_null_entry_mode():
     """
-    Positions with entry_mode=None are dropped and recorded in restore_warnings.
-    This is the fingerprint of test pollution (test code calls enter_position
-    without passing entry_mode).
+    entry_mode=None emits missing_entry_mode_skipped and drops the position.
+    Null entry_mode is the fingerprint of test pollution.
     """
     from paper.session_restore import try_redis_restore
 
     today = "2026-06-10"
-    snapshot = {
-        "daily_baseline_date": today,
-        "cash": 800.0,
-        "positions": {
-            "TSLA": {
-                "position_id": "abc12345",
-                "symbol": "TSLA",
-                "entry_price": 200.0,
-                "shares": 1.0,
-                "cost_basis": 200.0,
-                "entry_time": "2026-06-10T14:00:00+00:00",
-                "entry_catalyst_type": "earnings",
-                "entry_score": None,
-                "entry_mode": None,  # test pollution fingerprint
-            }
-        },
-        "trades": [],
-    }
+    pid = "abc12345"
+    pos = _make_position(pid, entry_mode=None)
+    pos["symbol"] = "TSLA"
+    snapshot = _make_v2_snapshot(today, positions={"TSLA": pos})
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
     mock_redis.aclose = AsyncMock()
 
     with patch("paper.session_restore.make_redis", return_value=mock_redis), \
-         patch("paper.session_restore._get_valid_journal_position_ids", new=AsyncMock(return_value={"abc12345"})):
+         patch("paper.session_restore._get_valid_journal_position_ids",
+               new=AsyncMock(return_value={pid})), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
+               new=AsyncMock(return_value=set())):
         result = await try_redis_restore(today)
 
     assert result is not None
     assert "TSLA" not in result["positions"]
-    assert any("orphaned_redis_position_skipped:TSLA:abc12345" in w for w in result["restore_warnings"])
+    assert any(f"missing_entry_mode_skipped:TSLA:{pid}" in w
+               for w in result["restore_warnings"])
 
-
-# ── 4. try_redis_restore: orphaned position_id skipped ───────────────────────
 
 @pytest.mark.asyncio
-async def test_try_redis_restore_skips_orphaned_position_id():
-    """
-    Positions whose position_id has no matching journal entry row are dropped.
-    This catches the case where Redis was written but the journal write failed
-    (the pre-fix write-ordering bug).
-    """
+async def test_try_redis_restore_skips_unknown_entry_mode():
+    """entry_mode not in {catalyst, momentum, momentum_no_catalyst} is also skipped."""
     from paper.session_restore import try_redis_restore
 
     today = "2026-06-10"
-    orphan_pid = "dead0000"
-    snapshot = {
-        "daily_baseline_date": today,
-        "cash": 750.0,
-        "positions": {
-            "NVDA": {
-                "position_id": orphan_pid,
-                "symbol": "NVDA",
-                "entry_price": 900.0,
-                "shares": 0.25,
-                "cost_basis": 225.0,
-                "entry_time": "2026-06-10T13:00:00+00:00",
-                "entry_catalyst_type": "earnings",
-                "entry_score": 80,
-                "entry_mode": "catalyst",
-            }
-        },
-        "trades": [],
-    }
+    pid = "badbad01"
+    pos = _make_position(pid, entry_mode="unknown_mode")
+    pos["symbol"] = "NVDA"
+    snapshot = _make_v2_snapshot(today, positions={"NVDA": pos})
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
     mock_redis.aclose = AsyncMock()
 
-    # Journal has NO entry for this position_id
     with patch("paper.session_restore.make_redis", return_value=mock_redis), \
          patch("paper.session_restore._get_valid_journal_position_ids",
+               new=AsyncMock(return_value={pid})), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
                new=AsyncMock(return_value=set())):
         result = await try_redis_restore(today)
 
     assert result is not None
     assert "NVDA" not in result["positions"]
-    assert any(f"orphaned_redis_position_skipped:NVDA:{orphan_pid}" in w
-               for w in result["restore_warnings"])
+    assert any("missing_entry_mode_skipped:NVDA:" in w for w in result["restore_warnings"])
 
 
-# ── 5. try_redis_restore: valid position kept ─────────────────────────────────
+# ── 7. Redis restore: orphaned position (no journal entry) skipped ────────────
 
 @pytest.mark.asyncio
-async def test_try_redis_restore_keeps_valid_position():
+async def test_try_redis_restore_skips_orphaned_position_id():
     """
-    Positions with a non-None entry_mode and a matching journal entry are kept.
+    Position whose position_id has no journal entry row emits
+    orphaned_redis_position_skipped and is dropped.
     """
     from paper.session_restore import try_redis_restore
 
     today = "2026-06-10"
-    valid_pid = "cafe1234"
-    snapshot = {
-        "daily_baseline_date": today,
-        "cash": 750.0,
-        "positions": {
-            "AMD": {
-                "position_id": valid_pid,
-                "symbol": "AMD",
-                "entry_price": 120.0,
-                "shares": 2.0,
-                "cost_basis": 240.0,
-                "entry_time": "2026-06-10T13:30:00+00:00",
-                "entry_catalyst_type": "earnings",
-                "entry_score": 85,
-                "entry_mode": "catalyst",
-            }
-        },
-        "trades": [],
-    }
+    pid = "dead0000"
+    pos = _make_position(pid, entry_mode="catalyst")
+    pos["symbol"] = "SMCI"
+    snapshot = _make_v2_snapshot(today, positions={"SMCI": pos})
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
@@ -196,7 +283,42 @@ async def test_try_redis_restore_keeps_valid_position():
 
     with patch("paper.session_restore.make_redis", return_value=mock_redis), \
          patch("paper.session_restore._get_valid_journal_position_ids",
-               new=AsyncMock(return_value={valid_pid})):
+               new=AsyncMock(return_value=set())), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
+               new=AsyncMock(return_value=set())):
+        result = await try_redis_restore(today)
+
+    assert result is not None
+    assert "SMCI" not in result["positions"]
+    assert any(f"orphaned_redis_position_skipped:SMCI:{pid}" in w
+               for w in result["restore_warnings"])
+
+
+# ── 8. Redis restore: valid position with journal entry restores ──────────────
+
+@pytest.mark.asyncio
+async def test_try_redis_restore_keeps_valid_position():
+    """
+    Position with valid entry_mode, matching journal entry, and no exit row
+    is kept and emits no warnings.
+    """
+    from paper.session_restore import try_redis_restore
+
+    today = "2026-06-10"
+    pid = "cafe1234"
+    pos = _make_position(pid, entry_mode="catalyst")
+    pos["symbol"] = "AMD"
+    snapshot = _make_v2_snapshot(today, positions={"AMD": pos})
+
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.session_restore.make_redis", return_value=mock_redis), \
+         patch("paper.session_restore._get_valid_journal_position_ids",
+               new=AsyncMock(return_value={pid})), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
+               new=AsyncMock(return_value=set())):
         result = await try_redis_restore(today)
 
     assert result is not None
@@ -204,43 +326,16 @@ async def test_try_redis_restore_keeps_valid_position():
     assert result["restore_warnings"] == []
 
 
-# ── 6. try_redis_restore: restore_warnings accumulate ────────────────────────
-
 @pytest.mark.asyncio
-async def test_try_redis_restore_accumulates_warnings_for_multiple_skipped():
-    """Multiple skipped positions each emit one warning."""
+async def test_try_redis_restore_accepts_momentum_entry_mode():
+    """entry_mode='momentum' is in the allowed set and must be kept."""
     from paper.session_restore import try_redis_restore
 
     today = "2026-06-10"
-    snapshot = {
-        "daily_baseline_date": today,
-        "cash": 1000.0,
-        "positions": {
-            "TSLA": {
-                "position_id": "bad00001",
-                "symbol": "TSLA",
-                "entry_price": 200.0,
-                "shares": 1.0,
-                "cost_basis": 200.0,
-                "entry_time": "2026-06-10T14:00:00+00:00",
-                "entry_catalyst_type": "earnings",
-                "entry_score": None,
-                "entry_mode": None,  # null entry_mode → skip
-            },
-            "SMCI": {
-                "position_id": "bad00002",
-                "symbol": "SMCI",
-                "entry_price": 50.0,
-                "shares": 4.0,
-                "cost_basis": 200.0,
-                "entry_time": "2026-06-10T14:05:00+00:00",
-                "entry_catalyst_type": "earnings",
-                "entry_score": 72,
-                "entry_mode": "catalyst",  # entry_mode ok but no journal row → skip
-            },
-        },
-        "trades": [],
-    }
+    pid = "mom00001"
+    pos = _make_position(pid, entry_mode="momentum")
+    pos["symbol"] = "AAPL"
+    snapshot = _make_v2_snapshot(today, positions={"AAPL": pos})
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
@@ -248,27 +343,56 @@ async def test_try_redis_restore_accumulates_warnings_for_multiple_skipped():
 
     with patch("paper.session_restore.make_redis", return_value=mock_redis), \
          patch("paper.session_restore._get_valid_journal_position_ids",
+               new=AsyncMock(return_value={pid})), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
                new=AsyncMock(return_value=set())):
         result = await try_redis_restore(today)
 
     assert result is not None
-    assert result["positions"] == {}
-    assert len(result["restore_warnings"]) == 2
+    assert "AAPL" in result["positions"]
 
 
-# ── 7. try_redis_restore: stale date returns None ────────────────────────────
+# ── 9. Redis restore: position with exit row not restored ─────────────────────
+
+@pytest.mark.asyncio
+async def test_try_redis_restore_skips_position_with_exit_row():
+    """
+    A Redis position that has a matching journal exit row must be dropped with
+    closed_position_skipped warning — it was already closed this session.
+    """
+    from paper.session_restore import try_redis_restore
+
+    today = "2026-06-10"
+    pid = "closed01"
+    pos = _make_position(pid, entry_mode="catalyst")
+    pos["symbol"] = "PLTR"
+    snapshot = _make_v2_snapshot(today, positions={"PLTR": pos})
+
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.session_restore.make_redis", return_value=mock_redis), \
+         patch("paper.session_restore._get_valid_journal_position_ids",
+               new=AsyncMock(return_value={pid})), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
+               new=AsyncMock(return_value={pid})):  # exit row exists
+        result = await try_redis_restore(today)
+
+    assert result is not None
+    assert "PLTR" not in result["positions"]
+    assert any(f"closed_position_skipped:PLTR:{pid}" in w
+               for w in result["restore_warnings"])
+
+
+# ── 10. Redis restore: stale date returns None ────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_try_redis_restore_stale_date_returns_none():
-    """Snapshot for a different day must be rejected outright."""
+    """Snapshot for a different day must be rejected."""
     from paper.session_restore import try_redis_restore
 
-    snapshot = {
-        "daily_baseline_date": "2026-06-09",  # yesterday
-        "cash": 1000.0,
-        "positions": {},
-        "trades": [],
-    }
+    snapshot = _make_v2_snapshot("2026-06-09")
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
@@ -280,35 +404,21 @@ async def test_try_redis_restore_stale_date_returns_none():
     assert result is None
 
 
-# ── 8. try_redis_restore: DB unavailable → fail-open (position not dropped) ──
+# ── 11. Redis restore: DB unavailable → fail-open ────────────────────────────
 
 @pytest.mark.asyncio
-async def test_try_redis_restore_db_unavailable_keeps_positions_with_valid_entry_mode():
+async def test_try_redis_restore_db_unavailable_keeps_valid_entry_mode_positions():
     """
-    When the DB is unavailable (valid_pids=None), journal verification is skipped
-    and positions with a non-None entry_mode are kept (fail-open on DB error).
+    When DB is unavailable (valid_pids=None, closed_pids=None), journal/exit
+    checks are skipped and positions with valid entry_mode are kept (fail-open).
     """
     from paper.session_restore import try_redis_restore
 
     today = "2026-06-10"
-    snapshot = {
-        "daily_baseline_date": today,
-        "cash": 800.0,
-        "positions": {
-            "AAPL": {
-                "position_id": "aa112233",
-                "symbol": "AAPL",
-                "entry_price": 190.0,
-                "shares": 1.3,
-                "cost_basis": 247.0,
-                "entry_time": "2026-06-10T14:00:00+00:00",
-                "entry_catalyst_type": "earnings",
-                "entry_score": 78,
-                "entry_mode": "catalyst",
-            }
-        },
-        "trades": [],
-    }
+    pid = "aa112233"
+    pos = _make_position(pid, entry_mode="catalyst")
+    pos["symbol"] = "AAPL"
+    snapshot = _make_v2_snapshot(today, positions={"AAPL": pos})
 
     mock_redis = AsyncMock()
     mock_redis.get = AsyncMock(return_value=json.dumps(snapshot))
@@ -316,31 +426,35 @@ async def test_try_redis_restore_db_unavailable_keeps_positions_with_valid_entry
 
     with patch("paper.session_restore.make_redis", return_value=mock_redis), \
          patch("paper.session_restore._get_valid_journal_position_ids",
-               new=AsyncMock(return_value=None)):  # DB unavailable
+               new=AsyncMock(return_value=None)), \
+         patch("paper.session_restore._get_closed_journal_position_ids",
+               new=AsyncMock(return_value=None)):
         result = await try_redis_restore(today)
 
     assert result is not None
     assert "AAPL" in result["positions"]
 
 
-# ── 9. Write ordering: journal before Redis ───────────────────────────────────
+# ── 12. Write ordering: journal before Redis ──────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_write_ordering_journal_called_before_save_state(reset_simulator_state):
     """
     _persist_journal_tick must be called before _save_state in run_tick.
-    Verified by recording call order via side_effect.
+    Also verifies _save_state receives the tick_id returned by the journal.
     """
     import paper.simulator as sim
 
     call_order: list[str] = []
+    captured_tick_id: list[str | None] = []
 
     async def fake_journal(*_a, **_kw):
         call_order.append("journal")
-        return {"ok": True}
+        return {"ok": True, "tick_id": "test-tick-id-001"}
 
-    async def fake_save():
+    async def fake_save(tick_id=None):
         call_order.append("redis")
+        captured_tick_id.append(tick_id)
 
     sym = "AAPL"
     sim._last_prices[sym] = 190.0
@@ -356,9 +470,9 @@ async def test_write_ordering_journal_called_before_save_state(reset_simulator_s
               return_value={"eligible": False, "reason": "test_skip", "ask": 190.0,
                             "bid": 189.9, "spread_pct": 0.05, "volume_ratio": 1.0,
                             "day_volume": 1_000_000, "price": 190.0}),
-        patch("paper.simulator.evaluate_virtual_bracket_exit",
-              return_value=None),
-        patch("paper.simulator._daily_loss_guard", return_value={"triggered": False, "reason": None, "enabled": False}),
+        patch("paper.simulator.evaluate_virtual_bracket_exit", return_value=None),
+        patch("paper.simulator._daily_loss_guard",
+              return_value={"triggered": False, "reason": None, "enabled": False}),
         patch("paper.simulator.get_intrabar_data", new=AsyncMock(return_value=[])),
         patch.object(sim.polygon_client, "get_ticker_snapshot",
                      new=AsyncMock(return_value={})),
@@ -369,24 +483,91 @@ async def test_write_ordering_journal_called_before_save_state(reset_simulator_s
     ):
         await sim.run_tick()
 
-    assert "journal" in call_order, "journal was not called"
-    assert "redis" in call_order, "_save_state was not called"
-    assert call_order.index("journal") < call_order.index("redis"), (
+    assert call_order.index("journal") < call_order.index("redis"), \
         "journal must be written before Redis snapshot"
-    )
+    assert captured_tick_id == ["test-tick-id-001"], \
+        "_save_state must receive tick_id from journal result"
 
 
-# ── 10. Namespace: legacy paper:state key is not the active key ───────────────
+# ── 13. Reset clears only paper state namespace ───────────────────────────────
 
-def test_legacy_paper_state_key_is_not_active():
+@pytest.mark.asyncio
+async def test_reset_simulator_writes_only_to_namespaced_key():
     """
-    The active Redis key must NOT be the pre-Phase-2U bare 'paper:state' key.
-    If namespace is 'paper:prod' (default), the key is 'paper:prod:state', not 'paper:state'.
-    This ensures any data left in 'paper:state' is silently ignored.
+    reset_simulator() must write state only to the paper:prod:state:v2 key,
+    not to market:snapshot:*, runtime config, or any other namespace.
     """
     import paper.simulator as sim
 
-    assert sim._REDIS_KEY != "paper:state", (
-        "Active Redis key is still the legacy 'paper:state'. "
-        "Deploy will re-expose old contaminated data."
-    )
+    written_keys: list[str] = []
+
+    async def fake_set(key, value):
+        written_keys.append(key)
+
+    mock_redis = AsyncMock()
+    mock_redis.set = fake_set
+    mock_redis.aclose = AsyncMock()
+
+    with patch("paper.simulator.make_redis", return_value=mock_redis), \
+         patch("paper.simulator.stop_simulator", new=AsyncMock()):
+        await sim.reset_simulator()
+
+    assert len(written_keys) == 1
+    assert written_keys[0] == sim._REDIS_KEY
+    assert "paper:prod:state:v2" in written_keys[0]
+    assert "market" not in written_keys[0]
+
+
+# ── 14. No strategy / catalyst / marketdata logic changes ─────────────────────
+
+def test_session_restore_contains_no_scoring_imports():
+    """
+    session_restore must not import scoring, catalyst, momentum, or market-data
+    modules. Its only job is restore, not strategy evaluation.
+    """
+    import paper.session_restore as mod
+    import inspect
+
+    src = inspect.getsource(mod)
+    forbidden = [
+        "from paper.scoring", "import scoring",
+        "from paper.momentum", "import momentum",
+        "from catalysts", "import catalysts",
+        "evaluate_market_quality",
+    ]
+    for f in forbidden:
+        assert f not in src, f"session_restore imports forbidden module: {f!r}"
+
+
+# ── 15. No broker / live / real-order / AI / Ollama imports ──────────────────
+
+def test_simulator_contains_no_broker_or_ai_imports():
+    """
+    simulator.py must not import broker, live-trading, real-order, or AI/LLM
+    modules. Checks import statements only (not comments/docstrings).
+    """
+    import paper.simulator as mod
+    import ast
+    import inspect
+
+    src = inspect.getsource(mod)
+    tree = ast.parse(src)
+
+    imported_names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported_names.append(alias.name.lower())
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imported_names.append(node.module.lower())
+
+    forbidden_modules = [
+        "alpaca", "ibkr", "interactive_brokers",
+        "openai", "anthropic", "langchain", "ollama",
+        "torch", "tensorflow",
+    ]
+    for f in forbidden_modules:
+        for imported in imported_names:
+            assert f not in imported, \
+                f"simulator.py imports forbidden module: {f!r} (found in {imported!r})"

@@ -17,14 +17,17 @@ from paper.models import ClosedTrade, Position
 
 logger = logging.getLogger(__name__)
 
-_REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state"
+_REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state:v2"
+
+_ALLOWED_ENTRY_MODES: frozenset[str] = frozenset(
+    {"catalyst", "momentum", "momentum_no_catalyst"}
+)
 
 
 async def _get_valid_journal_position_ids(ny_today: str) -> set[str] | None:
     """
-    Return the set of position_ids that have a matching entry event in the journal
-    for ny_today. Returns None if the DB is unavailable; callers must handle None
-    by skipping the journal check (fail-open on DB error).
+    Return position_ids that have a matching entry event in the journal for ny_today.
+    Returns None on DB error (callers fail-open: skip the journal check).
     """
     try:
         pool = await _db.get_pool()
@@ -47,15 +50,45 @@ async def _get_valid_journal_position_ids(ny_today: str) -> set[str] | None:
         return None
 
 
+async def _get_closed_journal_position_ids() -> set[str] | None:
+    """
+    Return position_ids that have a matching exit event in the journal (any date).
+    A position with an exit row is closed and must not be re-opened on restore.
+    Returns None on DB error (callers fail-open: skip the closed check).
+    """
+    try:
+        pool = await _db.get_pool()
+        if pool is None:
+            return None
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT position_id FROM paper_trades_journal
+                WHERE event = 'exit'
+                  AND position_id IS NOT NULL
+                """
+            )
+        return {row["position_id"] for row in rows}
+    except Exception as exc:
+        logger.warning("session_restore: failed to fetch closed position_ids: %s", exc)
+        return None
+
+
 async def try_redis_restore(ny_today: str) -> dict[str, Any] | None:
     """
-    Read paper:state from Redis. Return snapshot dict if it's for today's NY date.
-    Returns None if unavailable, stale, or any error. Never raises.
+    Read the namespaced :v2 Redis key. Return snapshot if it's for today's NY date
+    and was written by the Phase-2U-hardened code. Returns None otherwise.
+    Never raises.
 
-    Phase 2U: validates every open position in the snapshot before returning it.
-    Positions with entry_mode=None (fingerprint of test pollution) or with no
-    matching journal entry row are dropped and recorded in restore_warnings with
-    the format "orphaned_redis_position_skipped:<symbol>:<position_id>".
+    Validation applied to every open position before returning the snapshot:
+      1. schema_version must be 2 and saved_after_journal must be true.
+      2. position_id must be non-empty.
+      3. entry_mode must be in the allowed set (catalyst / momentum /
+         momentum_no_catalyst). Missing/null emits missing_entry_mode_skipped.
+      4. position_id must have a matching journal entry row (today).
+         Missing entry emits orphaned_redis_position_skipped.
+      5. position_id must NOT have a matching journal exit row (any date).
+         Existing exit emits closed_position_skipped.
     """
     try:
         r = make_redis()
@@ -64,15 +97,26 @@ async def try_redis_restore(ny_today: str) -> dict[str, Any] | None:
         if not raw:
             return None
         snapshot = json.loads(raw)
+
+        # ── Gate 1: date must match today ─────────────────────────────────────
         if snapshot.get("daily_baseline_date") != ny_today:
+            return None
+
+        # ── Gate 2: must have been saved by Phase-2U-hardened code ────────────
+        if not snapshot.get("saved_after_journal"):
+            logger.warning(
+                "session_restore: rejected Redis snapshot: "
+                "saved_after_journal missing/false (pre-Phase-2U snapshot)"
+            )
             return None
 
         positions: dict[str, Any] = snapshot.get("positions") or {}
         if not positions:
             return snapshot
 
-        # Fetch journal-confirmed position_ids once; None means DB unavailable.
+        # Fetch journal sets once; None means DB unavailable (fail-open).
         valid_pids = await _get_valid_journal_position_ids(ny_today)
+        closed_pids = await _get_closed_journal_position_ids()
 
         filtered: dict[str, Any] = {}
         restore_warnings: list[str] = list(snapshot.get("restore_warnings") or [])
@@ -81,22 +125,35 @@ async def try_redis_restore(ny_today: str) -> dict[str, Any] | None:
             pid: str = pos_data.get("position_id") or ""
             entry_mode = pos_data.get("entry_mode")
 
-            if entry_mode is None:
+            # ── Check 1: entry_mode must be in allowed set ─────────────────
+            if entry_mode not in _ALLOWED_ENTRY_MODES:
                 restore_warnings.append(
-                    f"orphaned_redis_position_skipped:{symbol}:{pid}"
+                    f"missing_entry_mode_skipped:{symbol}:{pid}"
                 )
                 logger.warning(
-                    "session_restore: dropped Redis position %s/%s: entry_mode is NULL",
-                    symbol, pid,
+                    "session_restore: dropped %s/%s: entry_mode %r not in allowed set",
+                    symbol, pid, entry_mode,
                 )
                 continue
 
+            # ── Check 2: must have matching journal entry row ──────────────
             if valid_pids is not None and pid and pid not in valid_pids:
                 restore_warnings.append(
                     f"orphaned_redis_position_skipped:{symbol}:{pid}"
                 )
                 logger.warning(
-                    "session_restore: dropped Redis position %s/%s: no matching journal entry",
+                    "session_restore: dropped %s/%s: no matching journal entry row",
+                    symbol, pid,
+                )
+                continue
+
+            # ── Check 3: must NOT have a journal exit row (already closed) ──
+            if closed_pids is not None and pid and pid in closed_pids:
+                restore_warnings.append(
+                    f"closed_position_skipped:{symbol}:{pid}"
+                )
+                logger.warning(
+                    "session_restore: dropped %s/%s: position already has exit row",
                     symbol, pid,
                 )
                 continue

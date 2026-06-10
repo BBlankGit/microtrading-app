@@ -30,7 +30,7 @@ from paper.universe import get_active_paper_universe, get_cached_universe
 
 logger = logging.getLogger(__name__)
 
-_REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state"
+_REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state:v2"
 
 
 def _ny_trading_date() -> str:
@@ -901,15 +901,17 @@ async def run_tick() -> dict[str, Any]:
     # Journal is written BEFORE Redis snapshot so that any position stored in
     # Redis always has a corresponding journal entry row (Phase 2U write-order fix).
     result["journal"] = {"ok": False, "skipped": True, "reason": "not attempted"}
+    _journal_tick_id: str | None = None
     try:
         result["journal"] = await _persist_journal_tick(
             result, get_status(), get_cached_universe()
         )
+        _journal_tick_id = result["journal"].get("tick_id") if isinstance(result["journal"], dict) else None
     except Exception as exc:
         result["journal"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     # ── 7. Persist Redis snapshot AFTER journal ───────────────────────────────
-    await _save_state()
+    await _save_state(tick_id=_journal_tick_id)
 
     # ── 8. Market regime already fetched in step 2b (observational only) ────────
     # result["market_regime"] is already set from step 2b.
@@ -919,9 +921,16 @@ async def run_tick() -> dict[str, Any]:
 
 # ── Redis persistence (best-effort) ──────────────────────────────────────────
 
-async def _save_state() -> None:
+async def _save_state(tick_id: str | None = None) -> None:
     async with _lock:
         snapshot = {
+            # ── Phase 2U integrity metadata ──────────────────────────────────
+            "schema_version": 2,
+            "namespace": settings.PAPER_STATE_REDIS_NAMESPACE,
+            "saved_after_journal": True,
+            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "tick_id": tick_id,
+            # ── Account state ────────────────────────────────────────────────
             "cash": _account.cash,
             "starting_cash": _account.starting_cash,
             "positions": {s: asdict(p) for s, p in _account.positions.items()},

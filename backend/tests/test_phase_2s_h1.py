@@ -292,6 +292,12 @@ class TestRestoreSessionWarnings(unittest.IsolatedAsyncioTestCase):
         from paper.session_restore import restore_session
 
         snapshot = json.dumps({
+            # Phase-2U integrity metadata required for restore acceptance
+            "schema_version": 2,
+            "namespace": "paper:prod",
+            "saved_after_journal": True,
+            "saved_at": "2026-06-10T14:00:00+00:00",
+            "tick_id": None,
             "cash": 950.0, "starting_cash": STARTING_CASH,
             "positions": {}, "trades": [],
             "daily_trade_count": 0, "daily_date": TODAY_NY,
