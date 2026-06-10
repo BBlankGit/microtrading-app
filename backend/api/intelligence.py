@@ -1,10 +1,11 @@
 """
 Intelligence API — read-only data layer, no broker, no live trading, no real orders.
-Phase I2: Reddit ranking. Other intelligence features planned for future phases.
+Phase I2: Reddit ranking. Phase I3-A: Pre-market movers.
 """
 from fastapi import APIRouter, Depends
 
 from api.dependencies import require_admin_token
+from intelligence import premarket as premarket_intel
 from intelligence import reddit as reddit_intel
 
 router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
@@ -44,3 +45,19 @@ async def refresh_reddit():
         "spike_count": len(result.get("spikes") or []),
         "error": result.get("error"),
     }
+
+
+@router.get("/premarket")
+async def get_premarket():
+    """
+    Pre-market movers from the marketdata collector cache.
+
+    Reads from Redis market:snapshot:{symbol} keys — no direct Polygon calls.
+    TTL: 60s during premarket/regular session, 300s afterhours/closed.
+    Returns cached data if still fresh; refreshes on cold start or TTL expiry.
+    Read-only — not integrated into trading decisions.
+    """
+    snap = premarket_intel.get_snapshot()
+    if not snap["fetched_at"]:
+        snap = await premarket_intel.fetch_and_refresh()
+    return snap

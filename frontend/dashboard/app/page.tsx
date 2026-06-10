@@ -291,6 +291,27 @@ interface RedditSnapshot {
   error: string | null;
 }
 
+interface PremarketMover {
+  symbol: string;
+  last_price: number;
+  prev_close: number | null;
+  change_percent: number;
+  day_volume: number | null;
+  as_of: string | null;
+}
+
+interface PremarketSnapshot {
+  ok: boolean;
+  session: string;
+  symbol_count: number;
+  gainers: PremarketMover[];
+  losers: PremarketMover[];
+  fetched_at: number | null;
+  age_seconds: number | null;
+  ttl_seconds: number | null;
+  error: string | null;
+}
+
 // ── Journal types ─────────────────────────────────────────────────────────────
 
 interface JournalStatus {
@@ -580,6 +601,16 @@ async function fetchMonitoringStatus(): Promise<MonitoringStatus | null> {
 async function fetchReddit(): Promise<RedditSnapshot | null> {
   try {
     const r = await fetch("/api/intelligence/reddit");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchPremarket(): Promise<PremarketSnapshot | null> {
+  try {
+    const r = await fetch("/api/intelligence/premarket");
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -2388,23 +2419,25 @@ function TodayReportPanel({ report }: { report: TodayReport | null }) {
 // ── Intelligence section ──────────────────────────────────────────────────────
 
 const INTEL_TABS = [
-  { key: "reddit",   label: "🚀 Reddit"    },
-  { key: "prepost",  label: "🌗 PRE/POST"  },
-  { key: "earnings", label: "📅 Earnings"  },
-  { key: "insiders", label: "👔 Insiders"  },
-  { key: "news",     label: "📰 News"      },
-  { key: "heatmap",  label: "🗺 Heatmap"   },
-  { key: "llm",      label: "🤖 LLM Shadow"},
+  { key: "reddit",    label: "🚀 Reddit"          },
+  { key: "premarket", label: "🌗 PRE Market Movers"},
+  { key: "earnings",  label: "📅 Earnings"         },
+  { key: "insiders",  label: "👔 Insiders"         },
+  { key: "news",      label: "📰 News"             },
+  { key: "heatmap",   label: "🗺 Heatmap"          },
+  { key: "llm",       label: "🤖 LLM Shadow"       },
 ] as const;
 
 type IntelTab = typeof INTEL_TABS[number]["key"];
 
 function IntelligenceSection({
   reddit,
+  premarket,
   token,
   onRefresh,
 }: {
   reddit: RedditSnapshot | null;
+  premarket: PremarketSnapshot | null;
   token: string;
   onRefresh: () => void;
 }) {
@@ -2438,6 +2471,102 @@ function IntelligenceSection({
         <p className="text-lg font-semibold text-gray-400">{name}</p>
         <p className="text-sm mt-2">Planned for a future phase.</p>
         <p className="text-xs mt-1 text-gray-600">Read-only · no trading integration</p>
+      </div>
+    );
+  }
+
+  function PremarketTab() {
+    if (!premarket) {
+      return (
+        <div className="text-center py-8 text-gray-500 text-sm animate-pulse">
+          Loading pre-market data…
+        </div>
+      );
+    }
+
+    const SESSION_LABELS: Record<string, string> = {
+      premarket:  "PRE-MARKET",
+      regular:    "REGULAR SESSION",
+      afterhours: "AFTER HOURS",
+      closed:     "CLOSED",
+    };
+    const SESSION_COLORS: Record<string, string> = {
+      premarket:  "text-yellow-400",
+      regular:    "text-green-400",
+      afterhours: "text-blue-400",
+      closed:     "text-gray-500",
+    };
+    const sessionLabel = SESSION_LABELS[premarket.session] ?? premarket.session.toUpperCase();
+    const sessionColor = SESSION_COLORS[premarket.session] ?? "text-gray-400";
+    const age = premarket.age_seconds;
+    const ageLabel = age == null ? "—" : age < 60 ? `${age}s` : `${Math.floor(age / 60)}m ${age % 60}s`;
+
+    function MoverRow({ m }: { m: PremarketMover }) {
+      const pct = m.change_percent;
+      const isPos = pct >= 0;
+      const pctStr = `${isPos ? "+" : ""}${pct.toFixed(2)}%`;
+      const vol = m.day_volume != null ? m.day_volume.toLocaleString() : "—";
+      return (
+        <div className="flex items-center justify-between px-3 py-2 rounded bg-gray-900 border border-gray-800 text-sm">
+          <span className="font-bold text-white w-16">{m.symbol}</span>
+          <span className="text-gray-300 w-20 text-right">${m.last_price.toFixed(2)}</span>
+          <span className={`font-semibold w-20 text-right ${isPos ? "text-green-400" : "text-red-400"}`}>
+            {pctStr}
+          </span>
+          <span className="text-gray-500 w-24 text-right text-xs">{vol}</span>
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        {/* Header row */}
+        <div className="flex flex-wrap items-center gap-3 mb-4 text-xs text-gray-500">
+          <span className={`font-semibold text-sm ${sessionColor}`}>{sessionLabel}</span>
+          <span>{premarket.symbol_count} symbols tracked</span>
+          <span>age: {ageLabel}</span>
+          {premarket.ttl_seconds != null && <span>ttl: {premarket.ttl_seconds}s</span>}
+          {premarket.fetched_at && (
+            <span>fetched: {new Date(premarket.fetched_at * 1000).toLocaleTimeString()}</span>
+          )}
+        </div>
+
+        {premarket.error && (
+          <div className="rounded border border-yellow-700 bg-yellow-950 text-yellow-300 px-3 py-2 text-sm mb-4">
+            <span className="font-semibold">⚠ Refresh failed;</span> showing cached data. {premarket.error}
+          </div>
+        )}
+
+        {premarket.gainers.length === 0 && premarket.losers.length === 0 ? (
+          <div className="text-center py-8 text-gray-500 text-sm">
+            No movers available — collector may not have run yet.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Gainers */}
+            <div>
+              <h4 className="text-xs font-semibold text-green-500 uppercase tracking-wide mb-2">
+                Top Gainers ({premarket.gainers.length})
+              </h4>
+              <div className="space-y-1">
+                {premarket.gainers.map((m) => <MoverRow key={m.symbol} m={m} />)}
+              </div>
+            </div>
+            {/* Losers */}
+            <div>
+              <h4 className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">
+                Top Losers ({premarket.losers.length})
+              </h4>
+              <div className="space-y-1">
+                {premarket.losers.map((m) => <MoverRow key={m.symbol} m={m} />)}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <p className="text-xs text-gray-600 mt-4">
+          Source: marketdata collector cache · price ≥ $3 · sorted by |gap%| · read-only · no trading integration
+        </p>
       </div>
     );
   }
@@ -2629,8 +2758,8 @@ function IntelligenceSection({
       </div>
 
       {/* Tab content */}
-      {activeTab === "reddit"   && <RedditTab />}
-      {activeTab === "prepost"  && <ComingSoon name="PRE/POST Gap Scanner" />}
+      {activeTab === "reddit"    && <RedditTab />}
+      {activeTab === "premarket" && <PremarketTab />}
       {activeTab === "earnings" && <ComingSoon name="Earnings Calendar" />}
       {activeTab === "insiders" && <ComingSoon name="Insider Transactions" />}
       {activeTab === "news"     && <ComingSoon name="News Intelligence" />}
@@ -2653,11 +2782,12 @@ export default function Home() {
   const [actionMsg, setActionMsg] = useState("");
   const [lastRefresh, setLastRefresh] = useState("");
   const [reddit, setReddit] = useState<RedditSnapshot | null>(null);
+  const [premarket, setPremarket] = useState<PremarketSnapshot | null>(null);
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
-      fetchReddit(),
+      fetchReddit(), fetchPremarket(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -2665,6 +2795,7 @@ export default function Home() {
     setTodayReport(tdata);
     setReadiness(rdata);
     setReddit(rddata);
+    setPremarket(pmdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -2960,10 +3091,10 @@ export default function Home() {
         <h2 className="text-lg font-semibold mb-1">
           Intelligence
           <span className="ml-2 text-xs font-normal text-gray-400">
-            read-only · no trading integration · Phase I2
+            read-only · no trading integration · Phase I3-A
           </span>
         </h2>
-        <IntelligenceSection reddit={reddit} token={token} onRefresh={refresh} />
+        <IntelligenceSection reddit={reddit} premarket={premarket} token={token} onRefresh={refresh} />
       </section>
 
       <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4 space-y-1">
