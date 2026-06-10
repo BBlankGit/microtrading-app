@@ -322,6 +322,10 @@ interface PremarketMover {
   raw_change_percent: number | null;
   day_volume: number | null;
   dollar_volume: number | null;
+  previous_day_volume: number | null;
+  volume_vs_prev_day: number | null;
+  time_adj_volume_ratio: number | null;
+  expected_volume_now: number | null;
   source: string;
 }
 
@@ -2612,6 +2616,12 @@ function IntelligenceSection({
       const dvol = m.dollar_volume != null
         ? `$${(m.dollar_volume / 1_000_000).toFixed(1)}M`
         : null;
+      const volVsPrev = m.volume_vs_prev_day != null
+        ? `${m.volume_vs_prev_day.toFixed(2)}x`
+        : "—";
+      const taVol = m.time_adj_volume_ratio != null
+        ? `${m.time_adj_volume_ratio.toFixed(2)}x`
+        : "—";
       return (
         <div className="flex items-center justify-between px-3 py-2 rounded bg-gray-900 border border-gray-800 text-sm">
           <span className="font-bold text-white w-16">{m.symbol}</span>
@@ -2625,6 +2635,12 @@ function IntelligenceSection({
           <span className="text-gray-500 w-24 text-right text-xs">
             {dvol ?? vol}
           </span>
+          <span className="text-gray-500 w-16 text-right text-xs" title="Vol / Prev-Day Vol">
+            {volVsPrev}
+          </span>
+          <span className="text-indigo-400 w-16 text-right text-xs" title="Time-Adjusted Vol Ratio">
+            {taVol}
+          </span>
         </div>
       );
     }
@@ -2635,7 +2651,7 @@ function IntelligenceSection({
         <div className="mb-3">
           <h3 className={`text-base font-bold ${sessionColor}`}>{sessionTitle}</h3>
           <p className="text-xs text-gray-500 mt-0.5">
-            Read-only full-market visibility. Not integrated into trading decisions unless explicitly injected into the paper candidate universe. No broker. No real orders.
+            Read-only full-market visibility. Not used in trading decisions unless explicitly injected into the fake-money paper candidate universe. No broker. No real orders.
           </p>
         </div>
         {/* Header row */}
@@ -2692,6 +2708,8 @@ function IntelligenceSection({
                 <span className="w-20 text-right">Gap%</span>
                 <span className="w-20 text-right">Prev Close</span>
                 <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Volume"}</span>
+                <span className="w-16 text-right">Vol/Prev</span>
+                <span className="w-16 text-right">TA Vol</span>
               </div>
               <div className="space-y-1">
                 {gainers.map((m) => <MoverRow key={m.symbol} m={m} />)}
@@ -2708,6 +2726,8 @@ function IntelligenceSection({
                 <span className="w-20 text-right">Gap%</span>
                 <span className="w-20 text-right">Prev Close</span>
                 <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Volume"}</span>
+                <span className="w-16 text-right">Vol/Prev</span>
+                <span className="w-16 text-right">TA Vol</span>
               </div>
               <div className="space-y-1">
                 {losers.map((m) => <MoverRow key={m.symbol} m={m} />)}

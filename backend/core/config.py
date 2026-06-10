@@ -217,5 +217,10 @@ class Settings(BaseSettings):
     PAPER_MARKET_MOVERS_CANDIDATES_MAX_GAP_PERCENT: float = 40.0
     PAPER_MARKET_MOVERS_CANDIDATES_REQUIRE_FULL_UNIVERSE: bool = True
 
+    # Time-adjusted relative volume gate (Phase S1-V1 — no broker, no real orders)
+    PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO: bool = True
+    PAPER_TIME_ADJUSTED_VOLUME_MIN_FLOOR: float = 0.05
+    PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN: float = 0.8
+
 
 settings = Settings()

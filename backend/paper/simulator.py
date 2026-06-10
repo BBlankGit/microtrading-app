@@ -26,11 +26,13 @@ from paper.momentum import evaluate_momentum_entry
 from paper.no_catalyst_momentum import evaluate_no_catalyst_entry
 from paper.risk import daily_loss_guard_triggered as _daily_loss_guard
 from paper.scoring import score_candidate
+from paper.time_adjusted_volume import session_elapsed_ratio as _tv_session_ratio, time_adjusted_volume_ratio as _tv_ratio
 from paper.universe import get_active_paper_universe, get_cached_universe
 
 logger = logging.getLogger(__name__)
 
 _REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state:v2"
+_DESIRED_RUNNING_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:desired_running"
 
 
 def _ny_trading_date() -> str:
@@ -72,6 +74,12 @@ _state: dict[str, Any] = {
     "restored_trades_today": 0,
     "restore_warning": None,
     "restore_warnings": [],
+    # S1-V1: auto-resume metadata (populated by auto_resume_if_desired at startup)
+    "desired_running": False,
+    "auto_resumed": False,
+    "auto_resumed_at": None,
+    "auto_resume_source": None,
+    "auto_resume_warning": None,
 }
 
 
@@ -118,6 +126,12 @@ def get_status() -> dict[str, Any]:
         "restored_trades_today": _state.get("restored_trades_today", 0),
         "restore_warning": _state.get("restore_warning"),
         "restore_warnings": _state.get("restore_warnings", []),
+        # S1-V1: auto-resume fields
+        "desired_running": _state.get("desired_running", False),
+        "auto_resumed": _state.get("auto_resumed", False),
+        "auto_resumed_at": _state.get("auto_resumed_at"),
+        "auto_resume_source": _state.get("auto_resume_source"),
+        "auto_resume_warning": _state.get("auto_resume_warning"),
         "mode": "research_paper_simulation",
         "live_trading_enabled": False,
         "broker_connected": False,
@@ -202,7 +216,71 @@ async def reset_simulator() -> None:
         _state["restored_trades_today"] = 0
         _state["restore_warning"] = None
         _state["restore_warnings"] = []
+        _state["desired_running"] = False
+        _state["auto_resumed"] = False
+        _state["auto_resumed_at"] = None
+        _state["auto_resume_source"] = None
+        _state["auto_resume_warning"] = None
     await _save_state()
+
+
+# ── Auto-resume helpers (Phase S1-V1) ─────────────────────────────────────────
+
+async def _persist_desired_running(val: bool) -> None:
+    """Persist desired_running flag to Redis (best-effort, non-fatal)."""
+    _state["desired_running"] = val
+    try:
+        r = make_redis()
+        await r.set(_DESIRED_RUNNING_KEY, "1" if val else "0")
+        await r.aclose()
+    except Exception:
+        pass
+
+
+async def load_desired_running() -> bool | None:
+    """Load desired_running from Redis. Returns None on error or missing key."""
+    try:
+        r = make_redis()
+        raw = await r.get(_DESIRED_RUNNING_KEY)
+        await r.aclose()
+        if raw is None:
+            return None
+        return raw.decode() == "1" if isinstance(raw, bytes) else str(raw) == "1"
+    except Exception:
+        return None
+
+
+async def auto_resume_if_desired() -> dict:
+    """
+    Called once at startup (after restore_paper_session).
+    Reads the persisted desired_running flag and auto-starts the simulator if True.
+    Non-fatal: errors are recorded in _state but do not prevent startup.
+    No broker. No real orders. Fake-money only.
+    """
+    result: dict = {"auto_resumed": False, "source": None, "warning": None}
+    try:
+        desired = await load_desired_running()
+        if desired is None:
+            result["source"] = "no_persisted_state"
+            _state["auto_resume_source"] = "no_persisted_state"
+            return result
+        _state["desired_running"] = desired
+        if desired:
+            await start_simulator()
+            _state["auto_resumed"] = True
+            _state["auto_resumed_at"] = datetime.now(timezone.utc).isoformat()
+            _state["auto_resume_source"] = "redis"
+            result.update({"auto_resumed": True, "source": "redis"})
+            logger.info("Paper simulator auto-resumed from desired_running flag.")
+        else:
+            _state["auto_resume_source"] = "redis_not_desired"
+            result["source"] = "redis_not_desired"
+    except Exception as exc:
+        warn = f"auto_resume_if_desired error: {type(exc).__name__}: {exc}"
+        _state["auto_resume_warning"] = warn
+        result["warning"] = warn
+        logger.warning(warn)
+    return result
 
 
 async def start_simulator() -> None:
@@ -216,6 +294,7 @@ async def start_simulator() -> None:
     _state["running"] = True
     _state["last_error"] = None
     _simulator_task = asyncio.create_task(_loop())
+    await _persist_desired_running(True)
     logger.info("Paper simulator started.")
 
 
@@ -237,6 +316,7 @@ async def stop_simulator() -> None:
     _simulator_task = None
     _stop_event = None
     _state["running"] = False
+    await _persist_desired_running(False)
     logger.info("Paper simulator stopped.")
 
 
@@ -420,6 +500,14 @@ async def run_tick() -> dict[str, Any]:
     result["max_hold_minutes"] = _cfg("PAPER_MAX_HOLD_MINUTES")
     result["momentum_mode_enabled"] = bool(_cfg("PAPER_MOMENTUM_MODE_ENABLED"))
     result["no_catalyst_entry_enabled"] = bool(_cfg("PAPER_NO_CATALYST_ENTRY_ENABLED"))
+
+    # S1-V1: session context computed once per tick for time-adjusted volume gate
+    try:
+        from intelligence.full_premarket import get_current_session as _gcs
+        _tick_session_type: str = _gcs()
+    except Exception:
+        _tick_session_type = "unknown"
+    _tick_session_elapsed_ratio: float = _tv_session_ratio()
 
     # ── 1. Fetch market quality for all symbols concurrently ──────────────────
     quality_map: dict[str, dict] = {}
@@ -758,6 +846,26 @@ async def run_tick() -> dict[str, Any]:
             # Score every candidate (transparent, always computed)
             scoring = score_candidate(sym, q, cats)
 
+            # S1-V1: per-symbol time-adjusted volume computation
+            _ta_ratio: float | None = None
+            _expected_volume_now: int | None = None
+            if bool(_cfg("PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO")) and _tick_session_type == "regular":
+                _min_floor = float(_cfg("PAPER_TIME_ADJUSTED_VOLUME_MIN_FLOOR"))
+                _ta_ratio = _tv_ratio(
+                    q.get("day_volume"),
+                    q.get("previous_day_volume"),
+                    _tick_session_elapsed_ratio,
+                    _min_floor,
+                )
+                if _ta_ratio is not None and q.get("previous_day_volume"):
+                    _eff = max(_tick_session_elapsed_ratio, _min_floor)
+                    _expected_volume_now = int(q["previous_day_volume"] * _eff)
+
+            # S1-V1: when time-adjusted volume is active, build a modified quality view
+            # for downstream evaluators so they use the same adjusted ratio
+            _use_ta_vol = bool(_cfg("PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO")) and _tick_session_type == "regular" and _ta_ratio is not None
+            _q_for_paths = dict(q, volume_ratio=_ta_ratio) if _use_ta_vol else q
+
             # ── Hard safety gates shared by both entry paths ───────────────────
             # These gates hard-reject regardless of mode.
             hard_rejection: str | None = None
@@ -771,7 +879,9 @@ async def run_tick() -> dict[str, Any]:
                 hard_rejection = f"spread {q.get('spread_percent')}% > 0.50%"
             elif (q.get("change_percent") or 0) <= 0:
                 hard_rejection = f"change_percent {q.get('change_percent')} not positive"
-            elif q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < _cfg("PAPER_MIN_VOLUME_RATIO"):
+            elif _use_ta_vol and _ta_ratio < float(_cfg("PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN")):
+                hard_rejection = f"ta_volume_ratio {_ta_ratio} < {_cfg('PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN')}"
+            elif not _use_ta_vol and q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < _cfg("PAPER_MIN_VOLUME_RATIO"):
                 hard_rejection = f"volume_ratio {q.get('volume_ratio')} < {_cfg('PAPER_MIN_VOLUME_RATIO')}"
             elif (
                 _cfg("PAPER_REJECT_STRONG_BEARISH_CATALYST")
@@ -815,7 +925,7 @@ async def run_tick() -> dict[str, Any]:
             momentum_eval: dict | None = None
             if _cfg("PAPER_MOMENTUM_MODE_ENABLED"):
                 try:
-                    momentum_eval = evaluate_momentum_entry(sym, q, _tick_regime)
+                    momentum_eval = evaluate_momentum_entry(sym, _q_for_paths, _tick_regime)
                 except Exception:
                     momentum_eval = None
 
@@ -823,7 +933,7 @@ async def run_tick() -> dict[str, Any]:
             nc_eval: dict | None = None
             if is_no_catalyst_rejection:
                 try:
-                    nc_eval = evaluate_no_catalyst_entry(sym, q, scoring, _tick_regime)
+                    nc_eval = evaluate_no_catalyst_entry(sym, _q_for_paths, scoring, _tick_regime)
                 except Exception:
                     nc_eval = None
 
@@ -845,6 +955,11 @@ async def run_tick() -> dict[str, Any]:
                 "spread_percent": q.get("spread_percent"),
                 "change_percent": q.get("change_percent"),
                 "volume_ratio": q.get("volume_ratio"),
+                # S1-V1: time-adjusted volume fields
+                "time_adjusted_volume_enabled": _use_ta_vol,
+                "time_adjusted_volume_ratio": _ta_ratio,
+                "expected_volume_now": _expected_volume_now,
+                "prev_day_volume": q.get("previous_day_volume"),
                 "catalyst_count": len(cats),
                 "catalyst_type": cat_type,
                 "catalyst_type_blocked": _blocked_cat_type is not None,

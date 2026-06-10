@@ -434,6 +434,37 @@ _SCHEMA: dict[str, dict] = {
         "category": "universe",
         "runtime_applied": True, "applies_to": "universe", "restart_required": False,
     },
+    # Time-adjusted relative volume gate (Phase S1-V1 — no broker, no real orders)
+    "PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Replace the flat volume_ratio gate with a time-adjusted ratio during regular session. "
+            "Accounts for early-session low volume by normalising against expected volume so far. "
+            "Fake-money only. No broker, no real orders."
+        ),
+        "category": "quality",
+        "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
+    },
+    "PAPER_TIME_ADJUSTED_VOLUME_MIN_FLOOR": {
+        "type": "float", "min": 0.01, "max": 1.0,
+        "description": (
+            "Minimum elapsed-session fraction used in the denominator of the time-adjusted "
+            "volume ratio. Prevents division by near-zero at session open. "
+            "Fake-money only."
+        ),
+        "category": "quality",
+        "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
+    },
+    "PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN": {
+        "type": "float", "min": 0.0, "max": 10.0,
+        "description": (
+            "Minimum time-adjusted volume ratio required before opening a fake-money position. "
+            "Only applied when PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO=true during regular session. "
+            "Fake-money only. No broker, no real orders."
+        ),
+        "category": "quality",
+        "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
+    },
 }
 
 # Sentinel: fields that map to settings attributes under different names

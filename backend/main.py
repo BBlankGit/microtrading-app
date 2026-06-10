@@ -24,10 +24,11 @@ from core.config import settings
 async def lifespan(app: FastAPI):
     from paper.journal import init_journal
     from paper.runtime_config import init_runtime_config_tables
-    from paper.simulator import restore_paper_session
+    from paper.simulator import restore_paper_session, auto_resume_if_desired
     await init_journal()
     await init_runtime_config_tables()
     await restore_paper_session()
+    await auto_resume_if_desired()
 
     # Register open-positions provider for universe builder (Phase D4)
     from paper.simulator import get_open_position_symbols

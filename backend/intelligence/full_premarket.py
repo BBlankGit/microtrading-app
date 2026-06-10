@@ -119,16 +119,19 @@ def _entry_to_mover(entry: dict) -> dict | None:
         gap_percent  = ((last_price - prev_close) / prev_close) * 100
         day_volume   = int(day_volume_raw) if day_volume_raw is not None else None
         dollar_volume = round(last_price * day_volume_raw, 2) if day_volume_raw else None
+        prev_day_volume_raw = _safe_float(prev_day.get("v"))
+        prev_day_volume = int(prev_day_volume_raw) if prev_day_volume_raw is not None else None
 
         return {
-            "symbol":             symbol,
-            "last_price":         round(last_price, 4),
-            "previous_close":     round(prev_close, 4),
-            "gap_percent":        round(gap_percent, 4),
-            "raw_change_percent": round(raw_change_pct, 4),
-            "day_volume":         day_volume,
-            "dollar_volume":      dollar_volume,
-            "source":             "polygon_bulk_snapshot",
+            "symbol":              symbol,
+            "last_price":          round(last_price, 4),
+            "previous_close":      round(prev_close, 4),
+            "gap_percent":         round(gap_percent, 4),
+            "raw_change_percent":  round(raw_change_pct, 4),
+            "day_volume":          day_volume,
+            "dollar_volume":       dollar_volume,
+            "previous_day_volume": prev_day_volume,
+            "source":              "polygon_bulk_snapshot",
         }
     except Exception:
         return None
@@ -333,9 +336,48 @@ async def _redis_load_result() -> tuple[dict, float] | None:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+def _elapsed_ratio_for_enrichment() -> float:
+    """
+    Local helper — fraction of regular session (9:30–16:00 ET) elapsed.
+    Mirrors paper.time_adjusted_volume.session_elapsed_ratio() to avoid cross-package import.
+    Returns 1.0 outside regular session.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        from datetime import timedelta
+        now = datetime.now(timezone(timedelta(hours=-4)))
+    t = now.time()
+    if t < dtime(9, 30) or t >= dtime(16, 0):
+        return 1.0
+    elapsed = (t.hour - 9) * 3600 + (t.minute - 30) * 60 + t.second
+    return min(elapsed / (390 * 60), 1.0)
+
+
+def _enrich_mover_volumes(m: dict, elapsed_ratio: float, min_floor: float = 0.05) -> dict:
+    """Add volume-multiple fields to a mover dict (non-mutating)."""
+    dv = m.get("day_volume")
+    pdv = m.get("previous_day_volume")
+    enriched = dict(m)
+    if dv is not None and pdv is not None and pdv > 0:
+        enriched["volume_vs_prev_day"] = round(dv / pdv, 4)
+        eff = max(elapsed_ratio, min_floor)
+        ta = dv / (pdv * eff)
+        import math as _math
+        enriched["time_adj_volume_ratio"] = round(ta, 4) if _math.isfinite(ta) else None
+        exp = pdv * eff
+        enriched["expected_volume_now"] = int(exp) if _math.isfinite(exp) else None
+    else:
+        enriched["volume_vs_prev_day"] = None
+        enriched["time_adj_volume_ratio"] = None
+        enriched["expected_volume_now"] = None
+    return enriched
+
+
 def get_snapshot() -> dict[str, Any]:
     """
-    Return in-memory snapshot with live age/ttl fields.
+    Return in-memory snapshot with live age/ttl fields and volume-multiple enrichment.
     Returns empty dict if no data available yet (caller treats as unavailable).
     """
     if not _snapshot:
@@ -344,13 +386,19 @@ def get_snapshot() -> dict[str, Any]:
     ttl         = settings.PREMARKET_SCANNER_RESULT_TTL_SECONDS
     age         = int(time.time() - _fetched_at) if _fetched_at else None
     remaining   = max(0, ttl - age) if age is not None else None
-    return {
+    result = {
         **_snapshot,
         "session":     session,
         "fetched_at":  _fetched_at if _fetched_at else None,
         "age_seconds": age,
         "ttl_seconds": remaining,
     }
+    # S1-V1: enrich mover lists with volume-multiple fields (non-mutating)
+    _elapsed = _elapsed_ratio_for_enrichment()
+    for _key in ("top_gainers", "top_losers", "top_movers"):
+        if result.get(_key):
+            result[_key] = [_enrich_mover_volumes(m, _elapsed) for m in result[_key]]
+    return result
 
 
 async def fetch_and_refresh(force: bool = False) -> dict[str, Any]:
