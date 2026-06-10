@@ -406,6 +406,10 @@ async def run_tick() -> dict[str, Any]:
     result["market_movers_injection"] = _mm_stats
     _state["last_tick_market_movers"] = _mm_stats
 
+    # I4-B-H1: track which symbols are injection-only (added by movers, not in base universe).
+    # These symbols must never trigger a Polygon call — cache hits only.
+    _injection_only_symbols: set[str] = set(_movers_added)
+
     # ── 0b. Snapshot effective runtime config for this tick ───────────────────
     from paper.runtime_config import get_runtime_status as _rc_status
     _rc = _rc_status()
@@ -471,6 +475,22 @@ async def run_tick() -> dict[str, Any]:
                 result["errors"].append({"symbol": sym, "error": error_key})
                 return
 
+            # I4-B-H1: injection-only symbols must never fall back to Polygon.
+            if sym in _injection_only_symbols:
+                if "stale" in orig_src:
+                    _cache_stats["stale"] += 1
+                    _err_key = "stale_marketdata_for_injected_mover"
+                else:
+                    _cache_stats["misses"] += 1
+                    _err_key = "missing_marketdata_for_injected_mover"
+                _sym_meta["marketdata_error"] = _err_key
+                _sym_meta["marketdata_source"] = "injection_only_no_polygon"
+                _sym_meta["marketdata_fallback_used"] = False
+                source_meta_map[sym] = _sym_meta
+                _cache_stats["missing"] += 1
+                result["errors"].append({"symbol": sym, "error": _err_key})
+                return
+
             # Stale or missing with fallback enabled → fall through to Polygon
             if "stale" in orig_src:
                 _cache_stats["stale"] += 1
@@ -481,6 +501,14 @@ async def run_tick() -> dict[str, Any]:
             _sym_meta["marketdata_fallback_used"] = True
             _cache_stats["fallbacks"] += 1
         else:
+            # I4-B-H1: injection-only without cache → reject, no Polygon call.
+            if sym in _injection_only_symbols:
+                _sym_meta["marketdata_error"] = "missing_marketdata_for_injected_mover"
+                _sym_meta["marketdata_source"] = "injection_only_no_polygon"
+                source_meta_map[sym] = _sym_meta
+                _cache_stats["missing"] += 1
+                result["errors"].append({"symbol": sym, "error": "missing_marketdata_for_injected_mover"})
+                return
             _cache_stats["polygon_direct"] += 1
 
         source_meta_map[sym] = _sym_meta
