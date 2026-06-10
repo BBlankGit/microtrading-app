@@ -106,6 +106,12 @@ interface Candidate {
   momentum_score: number | null;
   momentum_score_threshold: number | null;
   momentum_rejection_reason: string | null;
+  // Phase I4-B: candidate source metadata
+  candidate_sources?: string[] | null;
+  market_mover_rank?: number | null;
+  market_mover_gap_percent?: number | null;
+  market_mover_session?: string | null;
+  market_mover_mode?: string | null;
   // Phase I4-A: enhanced shadow scoring (diagnostic only, not used for trading)
   enhanced_shadow_score: number | null;
   enhanced_shadow_decision: string | null;
@@ -2512,7 +2518,7 @@ function TodayReportPanel({ report }: { report: TodayReport | null }) {
 
 const INTEL_TABS = [
   { key: "reddit",    label: "🚀 Reddit"          },
-  { key: "premarket", label: "🌗 PRE Market Movers"},
+  { key: "premarket", label: "🌐 Full-Market Movers" },
   { key: "earnings",  label: "📅 Earnings"         },
   { key: "insiders",  label: "👔 Insiders"         },
   { key: "news",      label: "📰 News"             },
@@ -2571,16 +2577,16 @@ function IntelligenceSection({
     if (!premarket) {
       return (
         <div className="text-center py-8 text-gray-500 text-sm animate-pulse">
-          Loading pre-market data…
+          Loading full-market movers data…
         </div>
       );
     }
 
-    const SESSION_LABELS: Record<string, string> = {
-      premarket:  "PRE-MARKET",
-      regular:    "REGULAR SESSION",
-      afterhours: "AFTER HOURS",
-      closed:     "CLOSED",
+    const SESSION_TITLES: Record<string, string> = {
+      premarket:  "Premarket Movers",
+      regular:    "Regular Session Movers",
+      afterhours: "After-Hours Movers",
+      closed:     "Last Cached Movers / Market Closed",
     };
     const SESSION_COLORS: Record<string, string> = {
       premarket:  "text-yellow-400",
@@ -2588,14 +2594,14 @@ function IntelligenceSection({
       afterhours: "text-blue-400",
       closed:     "text-gray-500",
     };
-    const sessionLabel = SESSION_LABELS[premarket.session] ?? premarket.session.toUpperCase();
+    const sessionTitle = SESSION_TITLES[premarket.session] ?? "Full-Market Movers";
     const sessionColor = SESSION_COLORS[premarket.session] ?? "text-gray-400";
     const age = premarket.age_seconds;
     const ageLabel = age == null ? "—" : age < 60 ? `${age}s` : `${Math.floor(age / 60)}m ${age % 60}s`;
 
     const isFullUniverse = premarket.mode === "full_universe";
-    const gainers = premarket.top_gainers ?? premarket.gainers ?? [];
-    const losers  = premarket.top_losers  ?? premarket.losers  ?? [];
+    const gainers = (premarket.top_gainers ?? premarket.gainers ?? []).slice(0, 30);
+    const losers  = (premarket.top_losers  ?? premarket.losers  ?? []).slice(0, 30);
     const universeCount = premarket.universe_count ?? premarket.symbol_count ?? 0;
 
     function MoverRow({ m }: { m: PremarketMover }) {
@@ -2625,9 +2631,15 @@ function IntelligenceSection({
 
     return (
       <div>
+        {/* Title + disclaimer */}
+        <div className="mb-3">
+          <h3 className={`text-base font-bold ${sessionColor}`}>{sessionTitle}</h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Read-only full-market visibility. Not integrated into trading decisions unless explicitly injected into the paper candidate universe. No broker. No real orders.
+          </p>
+        </div>
         {/* Header row */}
         <div className="flex flex-wrap items-center gap-3 mb-4 text-xs text-gray-500">
-          <span className={`font-semibold text-sm ${sessionColor}`}>{sessionLabel}</span>
           {isFullUniverse ? (
             <span className="rounded px-1.5 py-0.5 bg-indigo-900 text-indigo-300 font-mono text-xs">
               FULL UNIVERSE
@@ -2672,7 +2684,7 @@ function IntelligenceSection({
             {/* Gainers */}
             <div>
               <h4 className="text-xs font-semibold text-green-500 uppercase tracking-wide mb-2">
-                Top Gainers ({gainers.length})
+                Top 30 Gainers ({gainers.length})
               </h4>
               <div className="flex items-center justify-between px-3 py-1 text-xs text-gray-600 mb-1">
                 <span className="w-16">Symbol</span>
@@ -2688,7 +2700,7 @@ function IntelligenceSection({
             {/* Losers */}
             <div>
               <h4 className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">
-                Top Losers ({losers.length})
+                Top 30 Losers ({losers.length})
               </h4>
               <div className="flex items-center justify-between px-3 py-1 text-xs text-gray-600 mb-1">
                 <span className="w-16">Symbol</span>
@@ -2706,8 +2718,8 @@ function IntelligenceSection({
 
         <p className="text-xs text-gray-600 mt-4">
           {isFullUniverse
-            ? `Source: Polygon bulk snapshot · ~${universeCount.toLocaleString()} CS tickers · price ≥ $3 · sorted by |gap%| · read-only · no trading integration`
-            : "Source: marketdata collector cache · price ≥ $3 · sorted by |gap%| · read-only · no trading integration"
+            ? `Full Universe · Polygon bulk snapshot · ~${universeCount.toLocaleString()} CS tickers · price ≥ $3 · sorted by |gap%| · read-only · no broker · no real orders`
+            : "Active Universe fallback · marketdata collector cache · price ≥ $3 · sorted by |gap%| · read-only · no broker · no real orders"
           }
         </p>
       </div>

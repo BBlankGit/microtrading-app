@@ -210,5 +210,12 @@ class Settings(BaseSettings):
     PAPER_MARKETDATA_CACHE_FALLBACK_ENABLED: bool = True
     PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY: bool = True
 
+    # Full-market movers candidate injection (Phase I4-B — fake-money only, no broker, no real orders)
+    PAPER_MARKET_MOVERS_CANDIDATES_ENABLED: bool = True
+    PAPER_MARKET_MOVERS_CANDIDATES_TOP_N: int = 50
+    PAPER_MARKET_MOVERS_CANDIDATES_MIN_GAP_PERCENT: float = 2.0
+    PAPER_MARKET_MOVERS_CANDIDATES_MAX_GAP_PERCENT: float = 40.0
+    PAPER_MARKET_MOVERS_CANDIDATES_REQUIRE_FULL_UNIVERSE: bool = True
+
 
 settings = Settings()

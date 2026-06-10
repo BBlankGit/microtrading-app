@@ -62,6 +62,8 @@ _state: dict[str, Any] = {
     "restart_persistent": False,
     "last_tick_marketdata": {},  # D2-H1: per-tick cache counters, updated after each tick
     "last_shadow_stats": {},    # I4-A: shadow aggregate stats, updated after each tick
+    "last_tick_symbols_evaluated": 0,  # I4-B: symbols evaluated last tick
+    "last_tick_market_movers": {},     # I4-B: market movers injection stats
     # Phase 2S: restore metadata (populated by restore_paper_session at startup)
     "restore_source": "none",
     "restored_closed_trades_count": 0,
@@ -126,9 +128,33 @@ def get_status() -> dict[str, Any]:
     except Exception:
         status["daily_loss_guard"] = {"triggered": False, "reason": None, "enabled": False}
     # D2-H1: per-tick cache counters (empty until first tick completes)
-    status["last_tick_marketdata"] = _state.get("last_tick_marketdata", {})
+    _ltmd = _state.get("last_tick_marketdata", {})
+    status["last_tick_marketdata"] = _ltmd
     # I4-A: shadow aggregate stats (empty until first tick completes)
     status["last_shadow_stats"] = _state.get("last_shadow_stats", {})
+
+    # I4-B: flat telemetry fields for dashboard/monitoring consumers
+    _last_at = _state.get("last_tick_at")
+    status["last_tick"] = _last_at
+    status["tick_age_seconds"] = None
+    if _last_at:
+        try:
+            from datetime import datetime, timezone as _tz
+            _lt = datetime.fromisoformat(_last_at)
+            if _lt.tzinfo is None:
+                _lt = _lt.replace(tzinfo=_tz.utc)
+            status["tick_age_seconds"] = round(
+                (datetime.now(_tz.utc) - _lt).total_seconds(), 1
+            )
+        except Exception:
+            pass
+    status["symbols_evaluated_last_tick"] = _state.get("last_tick_symbols_evaluated", 0)
+    status["cache_hits_last_tick"]         = _ltmd.get("cache_hits_last_tick")
+    status["cache_misses_last_tick"]       = _ltmd.get("cache_misses_last_tick")
+    status["polygon_fallbacks_last_tick"]  = _ltmd.get("polygon_fallbacks_last_tick")
+    status["missing_marketdata_last_tick"] = _ltmd.get("missing_marketdata_last_tick")
+    # I4-B: market movers injection stats
+    status["last_tick_market_movers"] = _state.get("last_tick_market_movers", {})
     return status
 
 
@@ -160,6 +186,10 @@ async def reset_simulator() -> None:
         _account.daily_start_equity = _account.starting_cash
         _last_prices = {}
         _state["last_tick_at"] = None
+        _state["last_tick_symbols_evaluated"] = 0
+        _state["last_tick_market_movers"] = {}
+        _state["last_tick_marketdata"] = {}
+        _state["last_shadow_stats"] = {}
         _state["last_error"] = None
         _state["last_candidates"] = []
         _state["snapshot_storage"] = "memory"
@@ -290,6 +320,91 @@ async def run_tick() -> dict[str, Any]:
         symbols = settings.paper_base_universe_list()[:int(_cfg("PAPER_MAX_SYMBOLS_PER_TICK"))]
         result["universe_refresh_reason"] = "error_fallback"
         result["errors"].append({"phase": "universe", "error": str(exc)})
+
+    # ── 0c. Full-market movers candidate injection (Phase I4-B) ──────────────
+    # Reads only from the already-fetched full-universe snapshot cache.
+    # No new Polygon calls. No broker. Fake-money only.
+    # Injected symbols are merged into the candidate set and still go through
+    # all existing quality/score/catalyst gates unchanged.
+    _mover_meta_map: dict[str, dict] = {}  # symbol → mover metadata for candidate tagging
+    _movers_added: list[str] = []
+    _movers_skipped_gap: int = 0
+    _movers_skipped_mode: int = 0
+    _movers_injected_total: int = 0
+    if _cfg("PAPER_MARKET_MOVERS_CANDIDATES_ENABLED"):
+        try:
+            from intelligence import full_premarket as _fp_inj
+            _fm_snap = _fp_inj.get_snapshot() or {}
+            _fm_mode = _fm_snap.get("mode", "unknown")
+            _require_full = _cfg("PAPER_MARKET_MOVERS_CANDIDATES_REQUIRE_FULL_UNIVERSE")
+            _top_n = int(_cfg("PAPER_MARKET_MOVERS_CANDIDATES_TOP_N"))
+            _min_gap = float(_cfg("PAPER_MARKET_MOVERS_CANDIDATES_MIN_GAP_PERCENT"))
+            _max_gap = float(_cfg("PAPER_MARKET_MOVERS_CANDIDATES_MAX_GAP_PERCENT"))
+            _min_price = float(settings.PREMARKET_SCANNER_MIN_PRICE)
+
+            if _fm_snap.get("ok") and (not _require_full or _fm_mode == "full_universe"):
+                # Collect ranked movers: top_gainers first, then top_movers for diversity
+                _seen_inj: set[str] = set()
+                _mover_candidates: list[dict] = []
+                for _lst_key in ("top_gainers", "top_movers", "top_losers"):
+                    for _m in (_fm_snap.get(_lst_key) or []):
+                        _msym = (_m.get("symbol") or "").upper()
+                        if _msym and _msym not in _seen_inj:
+                            _seen_inj.add(_msym)
+                            _mover_candidates.append(_m)
+
+                _rank_counter = 0
+                for _m in _mover_candidates:
+                    if len(_movers_added) >= _top_n:
+                        break
+                    _msym = (_m.get("symbol") or "").upper()
+                    if not _msym:
+                        continue
+                    _gap = _m.get("gap_percent")
+                    _price = _m.get("last_price") or _m.get("price") or 0.0
+                    try:
+                        _gap_f = float(_gap) if _gap is not None else None
+                    except (TypeError, ValueError):
+                        _gap_f = None
+                    if _gap_f is None:
+                        _movers_skipped_gap += 1
+                        continue
+                    _abs_gap = abs(_gap_f)
+                    if _abs_gap < _min_gap or _abs_gap > _max_gap:
+                        _movers_skipped_gap += 1
+                        continue
+                    try:
+                        _price_f = float(_price)
+                    except (TypeError, ValueError):
+                        _price_f = 0.0
+                    if _price_f < _min_price:
+                        continue
+                    _rank_counter += 1
+                    _mover_meta_map[_msym] = {
+                        "market_mover_rank":       _m.get("rank") or _rank_counter,
+                        "market_mover_gap_percent": _gap_f,
+                        "market_mover_session":    _fm_snap.get("session"),
+                        "market_mover_mode":       _fm_mode,
+                    }
+                    if _msym not in symbols:
+                        symbols = list(symbols) + [_msym]
+                        _movers_added.append(_msym)
+                _movers_injected_total = len(_mover_meta_map)
+            else:
+                _movers_skipped_mode = 1
+        except Exception as _inj_exc:
+            result["errors"].append({"phase": "market_movers_injection", "error": str(_inj_exc)})
+
+    _mm_stats = {
+        "enabled": bool(_cfg("PAPER_MARKET_MOVERS_CANDIDATES_ENABLED")),
+        "injected_count": _movers_injected_total,
+        "added_to_universe": len(_movers_added),
+        "skipped_gap_filter": _movers_skipped_gap,
+        "skipped_mode_filter": _movers_skipped_mode,
+        "injected_symbols": _movers_added[:20],
+    }
+    result["market_movers_injection"] = _mm_stats
+    _state["last_tick_market_movers"] = _mm_stats
 
     # ── 0b. Snapshot effective runtime config for this tick ───────────────────
     from paper.runtime_config import get_runtime_status as _rc_status
@@ -684,6 +799,15 @@ async def run_tick() -> dict[str, Any]:
                 except Exception:
                     nc_eval = None
 
+            # ── Determine candidate sources (Phase I4-B) ──────────────────────
+            _cand_sources: list[str] = []
+            _mm_meta = _mover_meta_map.get(sym)
+            if _mm_meta:
+                _cand_sources.append("full_market_movers")
+            # Tag with dynamic/watchlist/collector source later if needed
+            if not _cand_sources:
+                _cand_sources.append("dynamic")
+
             candidate: dict[str, Any] = {
                 "symbol": sym,
                 "eligible": False,
@@ -698,6 +822,12 @@ async def run_tick() -> dict[str, Any]:
                 "catalyst_type_blocked": _blocked_cat_type is not None,
                 "blocked_catalyst_type": _blocked_cat_type,
                 "catalyst_type_weight": None,
+                # Phase I4-B: candidate source metadata
+                "candidate_sources": _cand_sources,
+                "market_mover_rank":        _mm_meta["market_mover_rank"]        if _mm_meta else None,
+                "market_mover_gap_percent": _mm_meta["market_mover_gap_percent"] if _mm_meta else None,
+                "market_mover_session":     _mm_meta["market_mover_session"]     if _mm_meta else None,
+                "market_mover_mode":        _mm_meta["market_mover_mode"]        if _mm_meta else None,
                 # Scoring fields
                 "total_score": scoring["total_score"],
                 "score_threshold": scoring["score_threshold"],
@@ -1003,6 +1133,7 @@ async def run_tick() -> dict[str, Any]:
     result["exits_made"] = len(result["exits"])
     result["entries_made"] = len(result["entries"])
     _state["last_tick_at"] = tick_start.isoformat()
+    _state["last_tick_symbols_evaluated"] = result["symbols_evaluated"]
     _state["last_error"] = None
     _state["last_candidates"] = result["candidates"]
 

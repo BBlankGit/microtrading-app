@@ -292,6 +292,33 @@ async def monitoring_status():
     except Exception:
         pass
 
+    # ── Market movers candidate injection stats (Phase I4-B) ─────────────────
+    _mm_inj: dict = {}
+    try:
+        _mm_inj = sim_status.get("last_tick_market_movers") or {}
+    except Exception:
+        pass
+
+    # ── Tick telemetry flat fields (Phase I4-B) ───────────────────────────────
+    tick_telemetry: dict = {
+        "last_tick":                    sim_status.get("last_tick"),
+        "tick_age_seconds":             sim_status.get("tick_age_seconds"),
+        "symbols_evaluated_last_tick":  sim_status.get("symbols_evaluated_last_tick"),
+        "cache_hits_last_tick":         sim_status.get("cache_hits_last_tick"),
+        "cache_misses_last_tick":       sim_status.get("cache_misses_last_tick"),
+        "polygon_fallbacks_last_tick":  sim_status.get("polygon_fallbacks_last_tick"),
+        "missing_marketdata_last_tick": sim_status.get("missing_marketdata_last_tick"),
+    }
+
+    # ── Candidate source breakdown from last tick ─────────────────────────────
+    candidate_source_breakdown: dict[str, int] = {}
+    try:
+        for _cand in sim_status.get("last_candidates", []):
+            for _src in (_cand.get("candidate_sources") or []):
+                candidate_source_breakdown[_src] = candidate_source_breakdown.get(_src, 0) + 1
+    except Exception:
+        pass
+
     return {
         "backend_ok": True,
         "paper_running": paper_running,
@@ -312,6 +339,12 @@ async def monitoring_status():
         "daily_loss_guard": daily_loss_guard,
         "marketdata_cache": marketdata_cache,
         "enhanced_shadow_stats": shadow_stats,
+        # I4-B: tick telemetry and market movers
+        "tick_telemetry": tick_telemetry,
+        "market_movers_candidates_enabled":          _mm_inj.get("enabled", False),
+        "market_movers_candidates_added_last_tick":  _mm_inj.get("added_to_universe", 0),
+        "market_mover_candidate_symbols_last_tick":  _mm_inj.get("injected_symbols", []),
+        "candidate_source_breakdown":                candidate_source_breakdown,
         "warnings": warnings,
     }
 

@@ -109,7 +109,7 @@ _SCHEMA: dict[str, dict] = {
         "type": "int", "min": 5, "max": 300,
         "description": "Seconds between automatic simulator ticks.",
         "category": "timing",
-        "runtime_applied": True, "applies_to": "simulator_loop", "restart_required": False,
+        "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
     },
     "PAPER_MAX_UNIVERSE_SIZE": {
         "type": "int", "min": 10, "max": 1000,
@@ -395,6 +395,44 @@ _SCHEMA: dict[str, dict] = {
         ),
         "category": "marketdata",
         "runtime_applied": True, "applies_to": "marketdata", "restart_required": False,
+    },
+    # Full-market movers candidate injection (Phase I4-B — fake-money only, no broker, no real orders)
+    "PAPER_MARKET_MOVERS_CANDIDATES_ENABLED": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Inject top full-market mover symbols from the cached full-universe scanner "
+            "into the paper candidate universe. All existing entry gates still apply. "
+            "Fake-money simulation only. No broker. No real orders."
+        ),
+        "category": "universe",
+        "runtime_applied": True, "applies_to": "universe", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVERS_CANDIDATES_TOP_N": {
+        "type": "int", "min": 1, "max": 200,
+        "description": "Maximum number of full-market mover symbols to inject per tick.",
+        "category": "universe",
+        "runtime_applied": True, "applies_to": "universe", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVERS_CANDIDATES_MIN_GAP_PERCENT": {
+        "type": "float", "min": 0.0, "max": 50.0,
+        "description": "Minimum absolute gap% for a mover to be injected as a candidate.",
+        "category": "universe",
+        "runtime_applied": True, "applies_to": "universe", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVERS_CANDIDATES_MAX_GAP_PERCENT": {
+        "type": "float", "min": 1.0, "max": 200.0,
+        "description": "Maximum absolute gap% for a mover to be injected (filters extreme/erroneous gaps).",
+        "category": "universe",
+        "runtime_applied": True, "applies_to": "universe", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVERS_CANDIDATES_REQUIRE_FULL_UNIVERSE": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Only inject movers when the scanner ran in full_universe mode. "
+            "If false, active_universe_fallback results are also accepted."
+        ),
+        "category": "universe",
+        "runtime_applied": True, "applies_to": "universe", "restart_required": False,
     },
 }
 
