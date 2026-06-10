@@ -81,7 +81,7 @@ def test_schema_has_all_required_fields():
 def test_schema_types_valid():
     from paper.runtime_config import _SCHEMA
     for field, spec in _SCHEMA.items():
-        assert spec["type"] in ("int", "float", "bool"), f"{field}: unknown type {spec['type']}"
+        assert spec["type"] in ("int", "float", "bool", "str"), f"{field}: unknown type {spec['type']}"
         assert "description" in spec
         assert "category" in spec
 

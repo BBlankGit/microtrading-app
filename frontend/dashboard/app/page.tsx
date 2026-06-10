@@ -360,6 +360,14 @@ interface DailyLossGuard {
   reason: string | null;
 }
 
+interface CatalystTypeGuard {
+  enabled: boolean;
+  blocked_catalyst_types: string[];
+  blocked_candidates_last_tick: number;
+  disclaimer?: string;
+  error?: string;
+}
+
 interface MonitoringStatus {
   backend_ok: boolean;
   paper_running: boolean;
@@ -374,6 +382,7 @@ interface MonitoringStatus {
   market_session: MarketSession;
   runtime_config?: RuntimeConfigStatus;
   daily_loss_guard?: DailyLossGuard;
+  catalyst_type_guard?: CatalystTypeGuard;
   warnings: string[];
 }
 
@@ -2417,6 +2426,21 @@ export default function Home() {
               <span>Threshold: -{s.daily_loss_guard.threshold_percent}%{s.daily_loss_guard.threshold_usd ? ` / $${s.daily_loss_guard.threshold_usd}` : ""}</span>
               {s.daily_loss_guard.triggered && s.daily_loss_guard.reason && (
                 <span className="text-red-400 font-semibold">Reason: {s.daily_loss_guard.reason}</span>
+              )}
+            </div>
+          )}
+          {s.catalyst_type_guard && !s.catalyst_type_guard.error && (
+            <div className={`mt-2 flex flex-wrap gap-3 text-xs font-mono px-1 py-1 rounded border ${
+              s.catalyst_type_guard.enabled && s.catalyst_type_guard.blocked_candidates_last_tick > 0
+                ? "border-yellow-700 bg-yellow-950 text-yellow-300"
+                : "border-gray-700 bg-gray-900 text-gray-400"
+            }`}>
+              <span>Cat Type Guard: {s.catalyst_type_guard.enabled ? "active" : "disabled"}</span>
+              {s.catalyst_type_guard.enabled && (
+                <>
+                  <span>Blocked types: {s.catalyst_type_guard.blocked_catalyst_types.length > 0 ? s.catalyst_type_guard.blocked_catalyst_types.join(", ") : "none"}</span>
+                  <span>Blocked last tick: {s.catalyst_type_guard.blocked_candidates_last_tick}</span>
+                </>
               )}
             </div>
           )}

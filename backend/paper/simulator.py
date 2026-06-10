@@ -15,7 +15,7 @@ from typing import Any
 from catalysts.news_collector import collect_news_for_symbols
 from core.config import settings
 from data import polygon_client
-from paper.runtime_config import effective_value as _cfg
+from paper.runtime_config import effective_value as _cfg, blocked_catalyst_types_list as _blocked_catalyst_types_list
 from data.market_quality import evaluate_market_quality
 from data.polygon_client import PolygonError
 from data.redis_client import make_redis
@@ -30,7 +30,7 @@ from paper.universe import get_active_paper_universe, get_cached_universe
 
 logger = logging.getLogger(__name__)
 
-_REDIS_KEY = "paper:state"
+_REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state"
 
 
 def _ny_trading_date() -> str:
@@ -573,6 +573,13 @@ async def run_tick() -> dict[str, Any]:
         _guard = _daily_loss_guard(_account, _last_prices)
         result["daily_loss_guard"] = _guard
 
+        # Phase 2T: blocked catalyst types, computed once per tick
+        _blocked_cat_types: set[str] = (
+            set(_blocked_catalyst_types_list())
+            if _cfg("PAPER_BLOCK_STRONG_NEGATIVE_CATALYST_TYPES")
+            else set()
+        )
+
         # Entries
         for sym in symbols:
             q = quality_map.get(sym)
@@ -623,6 +630,11 @@ async def run_tick() -> dict[str, Any]:
 
             cat_type = cats[0].get("classified_event_type") if cats else None
 
+            # ── Catalyst-type block (Phase 2T — fake-money only, no broker, no real orders) ──
+            if hard_rejection is None and cat_type is not None and cat_type in _blocked_cat_types:
+                hard_rejection = f"catalyst_type_blocked:{cat_type}"
+                is_no_catalyst_rejection = False
+
             # ── Momentum evaluation (always computed when mode enabled) ────────
             momentum_eval: dict | None = None
             if _cfg("PAPER_MOMENTUM_MODE_ENABLED"):
@@ -650,6 +662,8 @@ async def run_tick() -> dict[str, Any]:
                 "volume_ratio": q.get("volume_ratio"),
                 "catalyst_count": len(cats),
                 "catalyst_type": cat_type,
+                "catalyst_type_blocked": bool(cat_type and cat_type in _blocked_cat_types),
+                "catalyst_type_weight": None,
                 # Scoring fields
                 "total_score": scoring["total_score"],
                 "score_threshold": scoring["score_threshold"],
@@ -876,15 +890,16 @@ async def run_tick() -> dict[str, Any]:
 
             result["candidates"].append(candidate)
 
-    # ── 5. Persist and update state ───────────────────────────────────────────
+    # ── 5. Update in-memory state ─────────────────────────────────────────────
     result["exits_made"] = len(result["exits"])
     result["entries_made"] = len(result["entries"])
-    await _save_state()
     _state["last_tick_at"] = tick_start.isoformat()
     _state["last_error"] = None
     _state["last_candidates"] = result["candidates"]
 
     # ── 6. Journal write (non-fatal, must not affect simulation) ─────────────
+    # Journal is written BEFORE Redis snapshot so that any position stored in
+    # Redis always has a corresponding journal entry row (Phase 2U write-order fix).
     result["journal"] = {"ok": False, "skipped": True, "reason": "not attempted"}
     try:
         result["journal"] = await _persist_journal_tick(
@@ -893,7 +908,10 @@ async def run_tick() -> dict[str, Any]:
     except Exception as exc:
         result["journal"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    # ── 7. Market regime already fetched in step 2b (observational only) ────────
+    # ── 7. Persist Redis snapshot AFTER journal ───────────────────────────────
+    await _save_state()
+
+    # ── 8. Market regime already fetched in step 2b (observational only) ────────
     # result["market_regime"] is already set from step 2b.
 
     return result

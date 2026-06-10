@@ -84,6 +84,26 @@ _SCHEMA: dict[str, dict] = {
         "category": "catalyst",
         "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
     },
+    # Catalyst type performance guard (Phase 2T — fake-money only, no broker, no real orders)
+    "PAPER_BLOCKED_CATALYST_TYPES": {
+        "type": "str", "min": None, "max": None,
+        "description": (
+            "Comma-separated catalyst types hard-blocked from entry "
+            "(e.g. 'fda_regulatory'). Applied when PAPER_BLOCK_STRONG_NEGATIVE_CATALYST_TYPES=true. "
+            "Fake-money only. No broker, no real orders."
+        ),
+        "category": "catalyst",
+        "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
+    },
+    "PAPER_BLOCK_STRONG_NEGATIVE_CATALYST_TYPES": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Enable hard-blocking of catalyst types listed in PAPER_BLOCKED_CATALYST_TYPES. "
+            "Fake-money only. No broker, no real orders."
+        ),
+        "category": "catalyst",
+        "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
+    },
     "PAPER_MAX_UNIVERSE_SIZE": {
         "type": "int", "min": 10, "max": 1000,
         "description": "Maximum symbols in the universe candidate pool.",
@@ -462,6 +482,9 @@ def validate_runtime_config(updates: dict) -> tuple[bool, list[str]]:
                 errors.append(f"{key}: {value} is below minimum {spec['min']}")
             elif spec["max"] is not None and value > spec["max"]:
                 errors.append(f"{key}: {value} exceeds maximum {spec['max']}")
+        elif expected_type == "str":
+            if not isinstance(value, str):
+                errors.append(f"{key}: expected str, got {type(value).__name__}")
 
     # Cross-field: discovery price min < max
     min_price = updates.get("PAPER_MARKET_DISCOVERY_MIN_PRICE",
@@ -565,6 +588,14 @@ def get_runtime_status() -> dict[str, Any]:
         "persistent": _persistent,
         "warnings": [_persistence_warning] if _persistence_warning else [],
     }
+
+
+def blocked_catalyst_types_list() -> list[str]:
+    """Return the effective blocked catalyst types, parsed from the runtime-configurable CSV string."""
+    raw = effective_value("PAPER_BLOCKED_CATALYST_TYPES")
+    if not raw:
+        return []
+    return [s.strip().lower() for s in raw.split(",") if s.strip()]
 
 
 # ── Postgres persistence ──────────────────────────────────────────────────────

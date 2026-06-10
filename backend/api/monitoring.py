@@ -206,6 +206,33 @@ async def monitoring_status():
     except Exception as exc:
         no_catalyst_mode = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ── Catalyst type guard (Phase 2T) ───────────────────────────────────────
+    catalyst_type_guard: dict = {}
+    try:
+        from paper.runtime_config import effective_value as _cfg_ct, blocked_catalyst_types_list
+        ct_enabled = bool(_cfg_ct("PAPER_BLOCK_STRONG_NEGATIVE_CATALYST_TYPES"))
+        blocked_types = blocked_catalyst_types_list() if ct_enabled else []
+        blocked_last_tick = sum(
+            1 for c in sim_status.get("last_candidates", [])
+            if c.get("catalyst_type_blocked")
+        )
+        catalyst_type_guard = {
+            "enabled": ct_enabled,
+            "blocked_catalyst_types": blocked_types,
+            "blocked_candidates_last_tick": blocked_last_tick,
+            "disclaimer": (
+                "Catalyst type guard is fake-money simulation only. "
+                "No live trading. No real orders."
+            ),
+        }
+        if ct_enabled and blocked_types:
+            warnings.append(
+                f"Catalyst type guard active — blocking: {', '.join(blocked_types)}. "
+                "Fake-money simulation only."
+            )
+    except Exception as exc:
+        catalyst_type_guard = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+
     daily_loss_guard: dict = {}
     try:
         import paper.simulator as _sim_dlg
@@ -274,6 +301,7 @@ async def monitoring_status():
         "runtime_config": runtime_config_status,
         "momentum_mode": momentum_mode,
         "no_catalyst_mode": no_catalyst_mode,
+        "catalyst_type_guard": catalyst_type_guard,
         "daily_loss_guard": daily_loss_guard,
         "marketdata_cache": marketdata_cache,
         "warnings": warnings,

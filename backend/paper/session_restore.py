@@ -10,19 +10,52 @@ import logging
 from datetime import date
 from typing import Any
 
+from core.config import settings
 from data.redis_client import make_redis
 from paper import db as _db
 from paper.models import ClosedTrade, Position
 
 logger = logging.getLogger(__name__)
 
-_REDIS_KEY = "paper:state"
+_REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state"
+
+
+async def _get_valid_journal_position_ids(ny_today: str) -> set[str] | None:
+    """
+    Return the set of position_ids that have a matching entry event in the journal
+    for ny_today. Returns None if the DB is unavailable; callers must handle None
+    by skipping the journal check (fail-open on DB error).
+    """
+    try:
+        pool = await _db.get_pool()
+        if pool is None:
+            return None
+        ny_date = date.fromisoformat(ny_today)
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT position_id FROM paper_trades_journal
+                WHERE event = 'entry'
+                  AND position_id IS NOT NULL
+                  AND (opened_at AT TIME ZONE 'America/New_York')::date = $1
+                """,
+                ny_date,
+            )
+        return {row["position_id"] for row in rows}
+    except Exception as exc:
+        logger.warning("session_restore: failed to fetch valid position_ids: %s", exc)
+        return None
 
 
 async def try_redis_restore(ny_today: str) -> dict[str, Any] | None:
     """
     Read paper:state from Redis. Return snapshot dict if it's for today's NY date.
     Returns None if unavailable, stale, or any error. Never raises.
+
+    Phase 2U: validates every open position in the snapshot before returning it.
+    Positions with entry_mode=None (fingerprint of test pollution) or with no
+    matching journal entry row are dropped and recorded in restore_warnings with
+    the format "orphaned_redis_position_skipped:<symbol>:<position_id>".
     """
     try:
         r = make_redis()
@@ -33,6 +66,46 @@ async def try_redis_restore(ny_today: str) -> dict[str, Any] | None:
         snapshot = json.loads(raw)
         if snapshot.get("daily_baseline_date") != ny_today:
             return None
+
+        positions: dict[str, Any] = snapshot.get("positions") or {}
+        if not positions:
+            return snapshot
+
+        # Fetch journal-confirmed position_ids once; None means DB unavailable.
+        valid_pids = await _get_valid_journal_position_ids(ny_today)
+
+        filtered: dict[str, Any] = {}
+        restore_warnings: list[str] = list(snapshot.get("restore_warnings") or [])
+
+        for symbol, pos_data in positions.items():
+            pid: str = pos_data.get("position_id") or ""
+            entry_mode = pos_data.get("entry_mode")
+
+            if entry_mode is None:
+                restore_warnings.append(
+                    f"orphaned_redis_position_skipped:{symbol}:{pid}"
+                )
+                logger.warning(
+                    "session_restore: dropped Redis position %s/%s: entry_mode is NULL",
+                    symbol, pid,
+                )
+                continue
+
+            if valid_pids is not None and pid and pid not in valid_pids:
+                restore_warnings.append(
+                    f"orphaned_redis_position_skipped:{symbol}:{pid}"
+                )
+                logger.warning(
+                    "session_restore: dropped Redis position %s/%s: no matching journal entry",
+                    symbol, pid,
+                )
+                continue
+
+            filtered[symbol] = pos_data
+
+        snapshot = dict(snapshot)
+        snapshot["positions"] = filtered
+        snapshot["restore_warnings"] = restore_warnings
         return snapshot
     except Exception as exc:
         logger.warning("session_restore: Redis read failed: %s", exc)

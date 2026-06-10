@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     PAPER_REJECT_STRONG_BEARISH_CATALYST: bool = True
     PAPER_BEARISH_CATALYST_REJECT_MATERIALITY: float = 0.8
 
+    # Paper Redis state namespace (Phase 2U — namespace isolation, no broker, no real orders)
+    PAPER_STATE_REDIS_NAMESPACE: str = "paper:prod"
+
+    # Catalyst type performance guard (Phase 2T — fake-money only, no broker, no real orders)
+    PAPER_BLOCKED_CATALYST_TYPES: str = "fda_regulatory"
+    PAPER_CATALYST_TYPE_WEIGHTS: str = "{}"
+    PAPER_BLOCK_STRONG_NEGATIVE_CATALYST_TYPES: bool = True
+
     # Momentum entry mode (Phase 2M — disabled by default, no broker, no real orders)
     PAPER_MOMENTUM_MODE_ENABLED: bool = False
     PAPER_MOMENTUM_ENTRY_SCORE_THRESHOLD: int = 85
@@ -94,6 +102,9 @@ class Settings(BaseSettings):
     PAPER_MARKET_DISCOVERY_MAX_PRICE: float = 1000.00
     PAPER_MARKET_DISCOVERY_MIN_VOLUME: int = 500_000
     PAPER_MARKET_DISCOVERY_MIN_ABS_CHANGE_PERCENT: float = 1.0
+
+    def paper_blocked_catalyst_types_list(self) -> list[str]:
+        return [s.strip().lower() for s in self.PAPER_BLOCKED_CATALYST_TYPES.split(",") if s.strip()]
 
     def paper_universe_list(self) -> list[str]:
         return [s.strip().upper() for s in self.PAPER_DEFAULT_UNIVERSE.split(",") if s.strip()]
