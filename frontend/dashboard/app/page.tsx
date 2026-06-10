@@ -294,8 +294,9 @@ interface RedditSnapshot {
 interface PremarketMover {
   symbol: string;
   last_price: number;
-  prev_close: number | null;
-  change_percent: number;
+  previous_close: number | null;
+  gap_percent: number;
+  raw_change_percent: number | null;
   day_volume: number | null;
   as_of: string | null;
 }
@@ -2502,16 +2503,19 @@ function IntelligenceSection({
     const ageLabel = age == null ? "—" : age < 60 ? `${age}s` : `${Math.floor(age / 60)}m ${age % 60}s`;
 
     function MoverRow({ m }: { m: PremarketMover }) {
-      const pct = m.change_percent;
-      const isPos = pct >= 0;
-      const pctStr = `${isPos ? "+" : ""}${pct.toFixed(2)}%`;
+      const gap = m.gap_percent;
+      const isPos = gap >= 0;
+      const gapStr = `${isPos ? "+" : ""}${gap.toFixed(2)}%`;
       const vol = m.day_volume != null ? m.day_volume.toLocaleString() : "—";
       return (
         <div className="flex items-center justify-between px-3 py-2 rounded bg-gray-900 border border-gray-800 text-sm">
           <span className="font-bold text-white w-16">{m.symbol}</span>
           <span className="text-gray-300 w-20 text-right">${m.last_price.toFixed(2)}</span>
           <span className={`font-semibold w-20 text-right ${isPos ? "text-green-400" : "text-red-400"}`}>
-            {pctStr}
+            {gapStr}
+          </span>
+          <span className="text-gray-400 w-20 text-right text-xs">
+            prev ${m.previous_close != null ? m.previous_close.toFixed(2) : "—"}
           </span>
           <span className="text-gray-500 w-24 text-right text-xs">{vol}</span>
         </div>
@@ -2548,6 +2552,13 @@ function IntelligenceSection({
               <h4 className="text-xs font-semibold text-green-500 uppercase tracking-wide mb-2">
                 Top Gainers ({premarket.gainers.length})
               </h4>
+              <div className="flex items-center justify-between px-3 py-1 text-xs text-gray-600 mb-1">
+                <span className="w-16">Symbol</span>
+                <span className="w-20 text-right">Last</span>
+                <span className="w-20 text-right">Gap%</span>
+                <span className="w-20 text-right">Prev Close</span>
+                <span className="w-24 text-right">Volume</span>
+              </div>
               <div className="space-y-1">
                 {premarket.gainers.map((m) => <MoverRow key={m.symbol} m={m} />)}
               </div>
@@ -2557,6 +2568,13 @@ function IntelligenceSection({
               <h4 className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">
                 Top Losers ({premarket.losers.length})
               </h4>
+              <div className="flex items-center justify-between px-3 py-1 text-xs text-gray-600 mb-1">
+                <span className="w-16">Symbol</span>
+                <span className="w-20 text-right">Last</span>
+                <span className="w-20 text-right">Gap%</span>
+                <span className="w-20 text-right">Prev Close</span>
+                <span className="w-24 text-right">Volume</span>
+              </div>
               <div className="space-y-1">
                 {premarket.losers.map((m) => <MoverRow key={m.symbol} m={m} />)}
               </div>

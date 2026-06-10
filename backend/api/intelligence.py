@@ -54,10 +54,15 @@ async def get_premarket():
 
     Reads from Redis market:snapshot:{symbol} keys — no direct Polygon calls.
     TTL: 60s during premarket/regular session, 300s afterhours/closed.
-    Returns cached data if still fresh; refreshes on cold start or TTL expiry.
+    Refreshes when: no snapshot exists (cold start) OR TTL has expired
+    (age_seconds >= ttl_seconds, i.e. ttl_seconds == 0).
     Read-only — not integrated into trading decisions.
     """
     snap = premarket_intel.get_snapshot()
-    if not snap["fetched_at"]:
+    needs_refresh = (
+        not snap["fetched_at"]
+        or (snap["ttl_seconds"] is not None and snap["ttl_seconds"] <= 0)
+    )
+    if needs_refresh:
         snap = await premarket_intel.fetch_and_refresh()
     return snap

@@ -3,11 +3,15 @@ Pre-market movers intelligence — read-only snapshot.
 
 Reads from the marketdata collector's Redis cache (market:snapshot:{symbol}).
 No direct Polygon calls. No broker. No live trading. No real orders.
+
+gap_percent is computed from validated last_price and previous_close.
+raw_change_percent stores the collector's todaysChangePerc (Polygon) for reference.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Any
@@ -53,35 +57,70 @@ def _cache_ttl(session: str) -> int:
     return _TTL_ACTIVE if session in ("premarket", "regular") else _TTL_IDLE
 
 
+# ── Safe numeric coercion ─────────────────────────────────────────────────────
+
+def _safe_float(val: Any) -> float | None:
+    """Coerce val to float; return None if missing, non-numeric, or non-finite."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
 # ── Mover computation ─────────────────────────────────────────────────────────
 
 def _compute_mover(snap: dict) -> dict | None:
     """
     Convert a SymbolPayload dict to a mover entry.
-    Returns None if the symbol should be excluded (missing data, price < $3).
+
+    Returns None to skip this symbol; never raises.
+    Exclusion rules (per symbol, no global failure):
+      - last_price missing, non-numeric, non-finite, <= 0, or < _MIN_PRICE
+      - previous_close missing, non-numeric, non-finite, or <= 0
+      - change_percent missing, non-numeric, or non-finite
+    gap_percent is computed from validated last_price and previous_close.
+    raw_change_percent is the collector's todaysChangePerc stored for reference.
     """
-    symbol = (snap.get("symbol") or "").upper()
-    if not symbol:
-        return None
+    try:
+        symbol = (snap.get("symbol") or "").upper()
+        if not symbol:
+            return None
 
-    last_price = snap.get("last_price")
-    prev_close = snap.get("prev_close")
-    change_pct = snap.get("change_percent")
-    volume = snap.get("day_volume")
+        last_price = _safe_float(snap.get("last_price"))
+        prev_close = _safe_float(snap.get("prev_close"))
+        raw_change_pct = _safe_float(snap.get("change_percent"))
+        volume = snap.get("day_volume")
 
-    if last_price is None or last_price < _MIN_PRICE:
-        return None
-    if change_pct is None:
-        return None
+        if last_price is None or last_price <= 0 or last_price < _MIN_PRICE:
+            return None
+        if prev_close is None or prev_close <= 0:
+            return None
+        if raw_change_pct is None:
+            return None
 
-    return {
-        "symbol": symbol,
-        "last_price": round(float(last_price), 4),
-        "prev_close": round(float(prev_close), 4) if prev_close is not None else None,
-        "change_percent": round(float(change_pct), 4),
-        "day_volume": int(volume) if volume is not None else None,
-        "as_of": snap.get("as_of"),
-    }
+        gap_percent = ((last_price - prev_close) / prev_close) * 100
+
+        day_volume: int | None = None
+        if volume is not None:
+            try:
+                day_volume = int(volume)
+            except (TypeError, ValueError):
+                day_volume = None
+
+        return {
+            "symbol": symbol,
+            "last_price": round(last_price, 4),
+            "previous_close": round(prev_close, 4),
+            "gap_percent": round(gap_percent, 4),
+            "raw_change_percent": round(raw_change_pct, 4),
+            "day_volume": day_volume,
+            "as_of": snap.get("as_of"),
+        }
+    except Exception:
+        return None
 
 
 # ── Core refresh ──────────────────────────────────────────────────────────────
@@ -122,9 +161,9 @@ async def fetch_and_refresh() -> dict[str, Any]:
                 if mover:
                     movers.append(mover)
 
-            movers.sort(key=lambda x: abs(x["change_percent"]), reverse=True)
-            gainers = [m for m in movers if m["change_percent"] > 0][:_TOP_N]
-            losers = [m for m in movers if m["change_percent"] < 0][:_TOP_N]
+            movers.sort(key=lambda x: abs(x["gap_percent"]), reverse=True)
+            gainers = [m for m in movers if m["gap_percent"] > 0][:_TOP_N]
+            losers  = [m for m in movers if m["gap_percent"] < 0][:_TOP_N]
 
             _snapshot = {
                 "ok": True,
