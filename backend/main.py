@@ -45,6 +45,13 @@ async def lifespan(app: FastAPI):
     await reddit_intel.ensure_loaded()
     reddit_intel.start_background_loop()
 
+    # Full-universe premarket scanner warm-up + background loop (Phase I3-B)
+    # Read-only intelligence only. No broker, no live trading, no real orders.
+    if settings.PREMARKET_SCANNER_ENABLED:
+        from intelligence import full_premarket as full_premarket_intel
+        await full_premarket_intel.ensure_loaded()
+        full_premarket_intel.start_background_loop()
+
     yield
 
     # Graceful shutdown of collector

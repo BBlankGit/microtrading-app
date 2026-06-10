@@ -133,6 +133,21 @@ class Settings(BaseSettings):
     def polygon_configured(self) -> bool:
         return bool(self.POLYGON_API_KEY)
 
+    # ── Full-universe premarket scanner (Phase I3-B — read-only, no broker, no live trading) ─
+    PREMARKET_SCANNER_ENABLED: bool = True
+    PREMARKET_SCANNER_CHUNK_SIZE: int = 200
+    PREMARKET_SCANNER_MAX_CONCURRENT_CHUNKS: int = 5
+    PREMARKET_SCANNER_INTERVAL_PREMARKET_SECONDS: int = 60
+    PREMARKET_SCANNER_INTERVAL_REGULAR_SECONDS: int = 180
+    PREMARKET_SCANNER_MIN_PRICE: float = 3.0
+    PREMARKET_SCANNER_TOP_N: int = 50
+    PREMARKET_SCANNER_TOP_MOVERS_N: int = 100
+    PREMARKET_SCANNER_UNIVERSE_TTL_SECONDS: int = 86400
+    PREMARKET_SCANNER_RESULT_TTL_SECONDS: int = 90
+    PREMARKET_SCANNER_REQUEST_TIMEOUT_SECONDS: float = 15.0
+    PREMARKET_SCANNER_SAFETY_COOLDOWN_SECONDS: int = 30
+    PREMARKET_SCANNER_MAX_UNIVERSE_SIZE: int = 10000
+
     # ── Market data collector (Phase D1 — read-only, no broker, no live trading) ─
     MARKETDATA_COLLECTOR_ENABLED: bool = False
     MARKETDATA_BASE_SYMBOLS: str = "AMD,NVDA,TSLA,SMCI,AAPL,MSFT,QQQ,SPY,IWM"

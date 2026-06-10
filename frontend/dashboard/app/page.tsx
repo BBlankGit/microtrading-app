@@ -292,25 +292,39 @@ interface RedditSnapshot {
 }
 
 interface PremarketMover {
+  rank: number;
   symbol: string;
   last_price: number;
   previous_close: number | null;
   gap_percent: number;
   raw_change_percent: number | null;
   day_volume: number | null;
-  as_of: string | null;
+  dollar_volume: number | null;
+  source: string;
 }
 
 interface PremarketSnapshot {
   ok: boolean;
+  mode: string;
   session: string;
-  symbol_count: number;
-  gainers: PremarketMover[];
-  losers: PremarketMover[];
+  // Full-universe fields
+  universe_count?: number;
+  symbols_returned?: number;
+  valid_movers_count?: number;
+  scan_duration_ms?: number | null;
+  top_gainers?: PremarketMover[];
+  top_losers?: PremarketMover[];
+  top_movers?: PremarketMover[];
+  // Active-universe fallback fields (still present on fallback path)
+  symbol_count?: number;
+  gainers?: PremarketMover[];
+  losers?: PremarketMover[];
+  // Common
   fetched_at: number | null;
   age_seconds: number | null;
   ttl_seconds: number | null;
   error: string | null;
+  warnings?: string[];
 }
 
 // ── Journal types ─────────────────────────────────────────────────────────────
@@ -2502,11 +2516,19 @@ function IntelligenceSection({
     const age = premarket.age_seconds;
     const ageLabel = age == null ? "—" : age < 60 ? `${age}s` : `${Math.floor(age / 60)}m ${age % 60}s`;
 
+    const isFullUniverse = premarket.mode === "full_universe";
+    const gainers = premarket.top_gainers ?? premarket.gainers ?? [];
+    const losers  = premarket.top_losers  ?? premarket.losers  ?? [];
+    const universeCount = premarket.universe_count ?? premarket.symbol_count ?? 0;
+
     function MoverRow({ m }: { m: PremarketMover }) {
       const gap = m.gap_percent;
       const isPos = gap >= 0;
       const gapStr = `${isPos ? "+" : ""}${gap.toFixed(2)}%`;
       const vol = m.day_volume != null ? m.day_volume.toLocaleString() : "—";
+      const dvol = m.dollar_volume != null
+        ? `$${(m.dollar_volume / 1_000_000).toFixed(1)}M`
+        : null;
       return (
         <div className="flex items-center justify-between px-3 py-2 rounded bg-gray-900 border border-gray-800 text-sm">
           <span className="font-bold text-white w-16">{m.symbol}</span>
@@ -2517,7 +2539,9 @@ function IntelligenceSection({
           <span className="text-gray-400 w-20 text-right text-xs">
             prev ${m.previous_close != null ? m.previous_close.toFixed(2) : "—"}
           </span>
-          <span className="text-gray-500 w-24 text-right text-xs">{vol}</span>
+          <span className="text-gray-500 w-24 text-right text-xs">
+            {dvol ?? vol}
+          </span>
         </div>
       );
     }
@@ -2527,9 +2551,24 @@ function IntelligenceSection({
         {/* Header row */}
         <div className="flex flex-wrap items-center gap-3 mb-4 text-xs text-gray-500">
           <span className={`font-semibold text-sm ${sessionColor}`}>{sessionLabel}</span>
-          <span>{premarket.symbol_count} symbols tracked</span>
+          {isFullUniverse ? (
+            <span className="rounded px-1.5 py-0.5 bg-indigo-900 text-indigo-300 font-mono text-xs">
+              FULL UNIVERSE
+            </span>
+          ) : (
+            <span className="rounded px-1.5 py-0.5 bg-gray-800 text-gray-400 font-mono text-xs">
+              ACTIVE UNIVERSE
+            </span>
+          )}
+          <span>{universeCount.toLocaleString()} symbols scanned</span>
+          {premarket.valid_movers_count != null && (
+            <span>{premarket.valid_movers_count.toLocaleString()} valid movers</span>
+          )}
           <span>age: {ageLabel}</span>
           {premarket.ttl_seconds != null && <span>ttl: {premarket.ttl_seconds}s</span>}
+          {premarket.scan_duration_ms != null && (
+            <span>scan: {premarket.scan_duration_ms}ms</span>
+          )}
           {premarket.fetched_at && (
             <span>fetched: {new Date(premarket.fetched_at * 1000).toLocaleTimeString()}</span>
           )}
@@ -2541,49 +2580,58 @@ function IntelligenceSection({
           </div>
         )}
 
-        {premarket.gainers.length === 0 && premarket.losers.length === 0 ? (
+        {(premarket.warnings ?? []).filter(w => w).length > 0 && (
+          <div className="rounded border border-gray-700 bg-gray-900 text-gray-400 px-3 py-2 text-xs mb-4">
+            {(premarket.warnings ?? []).map((w, i) => <div key={i}>{w}</div>)}
+          </div>
+        )}
+
+        {gainers.length === 0 && losers.length === 0 ? (
           <div className="text-center py-8 text-gray-500 text-sm">
-            No movers available — collector may not have run yet.
+            No movers available — scanner may not have run yet.
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             {/* Gainers */}
             <div>
               <h4 className="text-xs font-semibold text-green-500 uppercase tracking-wide mb-2">
-                Top Gainers ({premarket.gainers.length})
+                Top Gainers ({gainers.length})
               </h4>
               <div className="flex items-center justify-between px-3 py-1 text-xs text-gray-600 mb-1">
                 <span className="w-16">Symbol</span>
                 <span className="w-20 text-right">Last</span>
                 <span className="w-20 text-right">Gap%</span>
                 <span className="w-20 text-right">Prev Close</span>
-                <span className="w-24 text-right">Volume</span>
+                <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Volume"}</span>
               </div>
               <div className="space-y-1">
-                {premarket.gainers.map((m) => <MoverRow key={m.symbol} m={m} />)}
+                {gainers.map((m) => <MoverRow key={m.symbol} m={m} />)}
               </div>
             </div>
             {/* Losers */}
             <div>
               <h4 className="text-xs font-semibold text-red-500 uppercase tracking-wide mb-2">
-                Top Losers ({premarket.losers.length})
+                Top Losers ({losers.length})
               </h4>
               <div className="flex items-center justify-between px-3 py-1 text-xs text-gray-600 mb-1">
                 <span className="w-16">Symbol</span>
                 <span className="w-20 text-right">Last</span>
                 <span className="w-20 text-right">Gap%</span>
                 <span className="w-20 text-right">Prev Close</span>
-                <span className="w-24 text-right">Volume</span>
+                <span className="w-24 text-right">{isFullUniverse ? "$ Vol" : "Volume"}</span>
               </div>
               <div className="space-y-1">
-                {premarket.losers.map((m) => <MoverRow key={m.symbol} m={m} />)}
+                {losers.map((m) => <MoverRow key={m.symbol} m={m} />)}
               </div>
             </div>
           </div>
         )}
 
         <p className="text-xs text-gray-600 mt-4">
-          Source: marketdata collector cache · price ≥ $3 · sorted by |gap%| · read-only · no trading integration
+          {isFullUniverse
+            ? `Source: Polygon bulk snapshot · ~${universeCount.toLocaleString()} CS tickers · price ≥ $3 · sorted by |gap%| · read-only · no trading integration`
+            : "Source: marketdata collector cache · price ≥ $3 · sorted by |gap%| · read-only · no trading integration"
+          }
         </p>
       </div>
     );

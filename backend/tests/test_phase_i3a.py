@@ -345,7 +345,11 @@ def test_endpoint_refreshes_on_ttl_expiry():
     from fastapi.testclient import TestClient
     from main import app
 
-    with patch("marketdata.cache.read_active_symbols", side_effect=fake_read_symbols), \
+    # I3-B: stub full-universe scanner as unavailable so active-universe path runs
+    with patch("intelligence.full_premarket.get_snapshot", return_value={}), \
+         patch("intelligence.full_premarket.fetch_and_refresh",
+               new_callable=AsyncMock, return_value={"ok": False}), \
+         patch("marketdata.cache.read_active_symbols", side_effect=fake_read_symbols), \
          patch("marketdata.cache.read_symbol",
                new_callable=AsyncMock, side_effect=lambda s: snapshots.get(s)):
         client = TestClient(app)
@@ -370,7 +374,11 @@ def test_get_premarket_endpoint():
         "TSLA": _make_snap("TSLA", 200.0, 210.0, -4.76),
     }
 
-    with patch("marketdata.cache.read_active_symbols",
+    # I3-B: stub full-universe scanner as unavailable so active-universe path runs
+    with patch("intelligence.full_premarket.get_snapshot", return_value={}), \
+         patch("intelligence.full_premarket.fetch_and_refresh",
+               new_callable=AsyncMock, return_value={"ok": False}), \
+         patch("marketdata.cache.read_active_symbols",
                new_callable=AsyncMock, return_value=symbols), \
          patch("marketdata.cache.read_symbol",
                new_callable=AsyncMock, side_effect=lambda s: snapshots.get(s)):

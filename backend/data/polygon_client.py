@@ -1,4 +1,5 @@
 import re
+import urllib.parse
 from typing import Any
 
 import httpx
@@ -141,6 +142,45 @@ async def get_bulk_ticker_snapshots(
         timeout=timeout,
     )
     return raw.get("tickers", [])
+
+
+async def get_reference_tickers(
+    ticker_type: str = "CS",
+    max_results: int = 10000,
+    timeout: float = 30.0,
+) -> list[str]:
+    """
+    Fetch US common-stock ticker list from /v3/reference/tickers (paginated).
+    Returns list of ticker strings (uppercase). Used for daily universe refresh only.
+    Not called during per-scan bulk fetches — no per-ticker REST calls.
+    Phase I3-B.
+    """
+    _assert_configured()
+    results: list[str] = []
+    params: dict[str, Any] = {
+        "market": "stocks",
+        "type": ticker_type,
+        "active": "true",
+        "limit": 1000,
+    }
+
+    while len(results) < max_results:
+        page = await _get("/v3/reference/tickers", params=params, timeout=timeout)
+        for item in page.get("results") or []:
+            ticker = (item.get("ticker") or "").upper().strip()
+            if ticker:
+                results.append(ticker)
+        next_url = page.get("next_url")
+        if not next_url:
+            break
+        # Extract cursor from next_url for the subsequent request
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(next_url).query)
+        cursor = (qs.get("cursor") or [None])[0]
+        if not cursor:
+            break
+        params = {"cursor": cursor}
+
+    return results[:max_results]
 
 
 async def get_ticker_news(symbol: str, limit: int = 10) -> list[dict[str, Any]]:
