@@ -19,13 +19,23 @@ services:
     working_dir: /app
     volumes:
       - ../../frontend/dashboard:/app
+      - frontend_next:/app/.next          # named volume: host .next cannot pollute container
+      - frontend_modules:/app/node_modules  # named volume: linux-native node_modules
     ports:
       - "3000:3000"
-    command: sh -c "rm -rf /app/.next && npm install && npm run dev"
+    command: >
+      sh -c "
+        find /app/.next -mindepth 1 -delete 2>/dev/null || true &&
+        npm ci --include=dev &&
+        npm run build &&
+        npx next start -H 0.0.0.0 -p 3000
+      "
     environment:
-      - NODE_ENV=development
+      - NODE_ENV=production
       - BACKEND_URL=http://backend:8000
     restart: unless-stopped
+    depends_on:
+      - backend
 
   postgres:
     image: postgres:16-alpine
@@ -46,3 +56,5 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  frontend_next:
+  frontend_modules:
