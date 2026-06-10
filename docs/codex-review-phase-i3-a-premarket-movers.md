@@ -1,126 +1,108 @@
 # Codex Review — Phase I3-A PRE Market Movers Read-Only Tab
 
-**Repository:** `BBlankGit/microtrading-app`  
-**Review date:** 2026-06-10  
-**Reviewed branch/HEAD:** `work` at `5862322` (`Merge pull request #58 from BBlankGit/codex/review-phase-i2-h1-reddit-resilience-patch`)  
-**Scope requested:** latest Phase I3-A patch only; do not change code.
+Review date: 2026-06-10  
+Reviewed patch: `812c321 Add premarket movers intelligence tab`  
+Scope: latest Phase I3-A patch only (`backend/api/intelligence.py`, `backend/intelligence/premarket.py`, `backend/tests/test_phase_i3a.py`, `frontend/dashboard/app/page.tsx`).
 
-## Verdict
+## Executive verdict
 
-**Blocking / not accepted for Phase I3-A as reviewed.**
+Phase I3-A is broadly aligned with a read-only, fake-money monitoring feature: it adds `GET /api/intelligence/premarket`, a dashboard-only PRE Market Movers tab, Redis-cache-based data access, no direct Polygon calls, no broker/order integrations, and focused tests that pass.
 
-I could not find an implemented Phase I3-A PRE Market Movers patch in the checked-out repository state. The current intelligence API only exposes the Phase I2 Reddit endpoints, and the dashboard still renders the PRE/POST intelligence tab as a generic “Coming soon” placeholder rather than a PRE Market Movers read-only view.
+However, I found two review concerns that should be addressed before treating the tab as a reliable premarket signal display:
 
-This is safe in the narrow sense that no new trading, broker, AI/LLM, hardcoded-key, full-universe, or direct Polygon risk was introduced by Phase I3-A in this checkout; however, Phase I3-A itself is **not functionally present**, so it is not ready to accept as a completed fake-money monitoring feature.
+1. **Stale-cache refresh gap:** the endpoint only refreshes on cold start (`fetched_at` missing), not when the in-memory snapshot is older than the session TTL. The `fetch_and_refresh()` function has TTL logic, but `GET /api/intelligence/premarket` does not invoke it after the first successful fetch.
+2. **Previous-close validation gap:** `_compute_mover()` excludes missing `last_price` and missing `change_percent`, but it does not require valid `prev_close`. The response may include movers with `prev_close: null`, and malformed numeric values can fail the whole refresh instead of excluding only the bad symbol.
+
+These issues do **not** appear to affect trading decisions because the feature is read-only and isolated from scoring/entry/exit logic, but they reduce data-quality confidence for the tab itself.
+
+## Review matrix
+
+| # | Check | Result | Notes |
+|---|---|---|---|
+| 1 | `GET /api/intelligence/premarket` exists and returns a safe structured response | **Pass with caveat** | Route exists and returns a stable shape with `ok`, `session`, `symbol_count`, `gainers`, `losers`, `error`, `fetched_at`, `age_seconds`, and `ttl_seconds`. Caveat: endpoint refreshes only on cold start, not TTL expiry. |
+| 2 | PRE Market Movers tab is read-only and clearly marked as not integrated into trading decisions | **Pass** | Frontend only fetches via GET and displays read-only copy: `read-only · no trading integration`; no buttons/actions for trading were added. |
+| 3 | Top movers are ranked correctly by premarket gap percent | **Pass with terminology caveat** | Movers are sorted by `abs(change_percent)` descending before splitting gainers/losers. For positive gainers and negative losers this yields largest absolute gaps first. Caveat: the field used is collector `change_percent`; the patch does not compute a separate explicit `premarket_gap_percent` from `last_price` and `prev_close`. |
+| 4 | Invalid/missing price and previous-close data are excluded safely | **Partial / needs follow-up** | Missing `last_price` and missing `change_percent` are excluded. Missing `prev_close` is **not** excluded; it is returned as `null`. Invalid numeric types can raise during per-symbol computation and cause the refresh to fall into the global error path rather than skipping only that bad symbol. |
+| 5 | Implementation avoids scanning the full 5,000+ universe | **Pass** | Uses `marketdata.cache.read_active_symbols()`, whose active list is produced by the marketdata collector. The collector universe is capped by existing settings (`MARKETDATA_MAX_SYMBOLS_PER_CYCLE`, currently 100), not the full universe. |
+| 6 | Direct Polygon calls added; if yes, limited/cache-backed/timeout-protected | **Pass** | No direct Polygon calls were added in the Phase I3-A files. The premarket module reads Redis cache keys only. |
+| 7 | Endpoint uses existing microtrading universe/cache/collector data where possible | **Pass** | Uses `read_active_symbols()` and `read_symbol()` from `marketdata.cache`, reading existing `market:symbols:active` and `market:snapshot:{symbol}` data. |
+| 8 | POST/after-hours is not implemented as a separate priority tab | **Pass** | No POST premarket refresh endpoint was added. The UI has one PRE Market Movers tab; `afterhours` is only a session label in the same tab. |
+| 9 | No V6 hardcoded keys/auth/test endpoints were copied | **Pass** | No hardcoded API keys, auth bypasses, or test endpoints are present in the Phase I3-A diff. |
+| 10 | Trading/scoring/entry/exit/catalyst/no-catalyst logic was not changed | **Pass** | Changed files are limited to intelligence API/module/tests and dashboard display. No paper simulator, scoring, entry, exit, catalyst, or no-catalyst modules were changed. |
+| 11 | Marketdata collector architecture was not changed in a risky way | **Pass** | No collector/source/config architecture files were changed by this patch. Existing cache readers are reused. |
+| 12 | No broker/live trading/real orders/AI/LLM/Ollama were added | **Pass** | Patch contains read-only disclaimers and does not add broker/order/AI/LLM/Ollama code paths. |
+| 13 | Frontend build and backend tests pass | **Pass** | `pytest tests/test_phase_i3a.py` passed: 12 passed, 1 warning. `npm run build` passed for the dashboard. |
+| 14 | Phase I3-A is safe for fake-money monitoring | **Pass with follow-up recommended** | Safe in the sense that it does not drive trading decisions and does not add live-order paths. Follow-up recommended for stale-cache refresh and previous-close/invalid-data validation before relying on tab accuracy. |
+
+## Detailed findings
+
+### Finding 1 — Endpoint does not refresh on TTL expiry
+
+Severity: **Medium**  
+Area: backend endpoint freshness
+
+`fetch_and_refresh()` has a TTL guard and can refresh stale snapshots, but `GET /api/intelligence/premarket` only calls it when `snap["fetched_at"]` is missing. After the first successful fetch, the endpoint can continue returning an expired in-memory snapshot indefinitely until another caller invokes `fetch_and_refresh()` or process state resets.
+
+Recommended follow-up:
+
+- Have the endpoint call `fetch_and_refresh()` when `fetched_at` is missing **or** when `age_seconds >= ttl_seconds` / TTL has expired.
+- Add an endpoint test that seeds stale `_fetched_at` and verifies a refresh occurs.
+
+### Finding 2 — Previous-close / invalid-number exclusion is incomplete
+
+Severity: **Medium**  
+Area: data quality and safe exclusion
+
+`_compute_mover()` excludes symbols with missing `last_price` or missing `change_percent`, and filters sub-$3 symbols. It does not require valid `prev_close`, even though the review criterion asks for invalid/missing price and previous-close data to be excluded safely. It also compares `last_price < _MIN_PRICE` before coercion and then rounds/coerces later, so malformed numeric fields can raise and send the whole refresh into the global error handler.
+
+Recommended follow-up:
+
+- Parse `last_price`, `prev_close`, `change_percent`, and optionally `day_volume` inside a per-symbol try/except.
+- Exclude symbols when `last_price`, `prev_close`, or `change_percent` is missing, non-numeric, non-finite, or when `prev_close <= 0`.
+- Add tests for `prev_close is None`, `prev_close <= 0`, string/invalid numeric payloads, and one malformed symbol among otherwise valid symbols.
+
+### Finding 3 — Ranking uses collector `change_percent`, not an explicit premarket gap field
+
+Severity: **Low / clarification**  
+Area: naming / semantics
+
+The ranking implementation sorts by `abs(change_percent)` and displays `%` as the mover value. This is acceptable if the collector `change_percent` represents premarket gap from previous close for the snapshot source. The patch does not independently compute `premarket_gap_percent = (last_price - prev_close) / prev_close * 100`, so the endpoint is coupled to the collector's interpretation of `change_percent`.
+
+Recommended follow-up:
+
+- Either document that collector `change_percent` is the authoritative gap field, or compute a dedicated `gap_percent` from validated `last_price` and `prev_close` in this module.
+- If a dedicated field is added later, rank by that field and expose it clearly in the API/UI.
 
 ## Evidence reviewed
 
-- `backend/api/intelligence.py`
-  - Router prefix is `/api/intelligence`.
-  - Only `GET /reddit` and admin-protected `POST /reddit/refresh` are defined.
-  - No `GET /premarket` route exists in the current file.
-- `frontend/dashboard/app/page.tsx`
-  - Intelligence tab list contains `reddit`, `prepost`, `earnings`, `insiders`, `news`, `heatmap`, and `llm`.
-  - `prepost` renders `<ComingSoon name="PRE/POST Gap Scanner" />`.
-  - Frontend polling fetches only `/api/intelligence/reddit` for the intelligence section.
-- `backend/main.py`
-  - The intelligence router is included, but startup comments and behavior are still Phase I2 Reddit-only.
-- Repository search
-  - No route or frontend call for `/api/intelligence/premarket` was found.
-  - No PRE Market Movers model/type/table/ranking code was found in the current checked-out source.
-
-## Checklist findings
-
-| # | Review focus | Finding |
-|---|---|---|
-| 1 | Whether `GET /api/intelligence/premarket` exists and returns a safe structured response. | **Fail / not implemented.** `backend/api/intelligence.py` currently defines only `/reddit` and `/reddit/refresh`; there is no `/premarket` route to validate. |
-| 2 | Whether the PRE Market Movers tab is read-only and clearly marked as not integrated into trading decisions. | **Fail / not implemented.** The broader intelligence section has a read-only disclaimer, but the PRE tab is still a `ComingSoon` placeholder, not a PRE Market Movers tab. |
-| 3 | Whether top movers are ranked correctly by premarket gap percent. | **Not verifiable / not implemented.** No premarket mover list or gap-percent sort exists in the reviewed source. |
-| 4 | Whether invalid/missing price and previous-close data are excluded safely. | **Not verifiable / not implemented.** No Phase I3-A filtering logic exists to review. |
-| 5 | Whether the implementation avoids scanning the full 5,000+ universe. | **Safe by absence, but not functionally satisfied.** No Phase I3-A scanner exists, so no new full-universe scan was added; however, no bounded PRE movers implementation exists either. |
-| 6 | Whether any direct Polygon calls were added; if yes, whether they are limited/cache-backed/timeout-protected. | **No new Phase I3-A direct Polygon calls found.** Existing Polygon usage remains in pre-existing market data, readiness, and paper-discovery code. |
-| 7 | Whether the endpoint uses existing microtrading universe/cache/collector data where possible. | **Fail / not implemented.** No endpoint exists, so there is no reuse of the existing universe/cache/collector architecture for PRE movers. |
-| 8 | Whether POST/after-hours is not implemented as a separate priority tab. | **Pass with caveat.** No separate after-hours priority tab was added. The existing placeholder label remains `PRE/POST`, which is not a Phase I3-A PRE Market Movers implementation. |
-| 9 | Whether no V6 hardcoded keys/auth/test endpoints were copied. | **Pass.** No new hardcoded V6 keys/auth/test endpoints related to Phase I3-A were found in the current source. The V6 material remains documentation-only in `docs/intelligence/v6-intelligence-audit-2026-06-10.md`. |
-| 10 | Whether trading/scoring/entry/exit/catalyst/no-catalyst logic was not changed. | **Pass for this review state.** No Phase I3-A code changes were present in those areas. Existing backend tests covering paper, scoring, catalysts, exits, and safety passed. |
-| 11 | Whether marketdata collector architecture was not changed in a risky way. | **Pass for this review state.** No Phase I3-A marketdata collector changes were found. Existing collector-related tests passed. |
-| 12 | Whether no broker/live trading/real orders/AI/LLM/Ollama were added. | **Pass.** No Phase I3-A broker, live trading, real-order, AI, LLM, or Ollama implementation was found. |
-| 13 | Whether frontend build and backend tests pass. | **Pass.** `cd backend && pytest` passed with 952 passed, 2 skipped, 1 warning. `cd frontend/dashboard && npm run build` passed; npm emitted a non-fatal unknown `http-proxy` env-config warning. |
-| 14 | Whether Phase I3-A is safe for fake-money monitoring. | **Not accepted as completed.** It appears safe by absence of risky changes, but it is not usable as a PRE Market Movers monitoring feature because the API endpoint and tab are missing. |
-
-## Specific blocking issues
-
-### 1. Missing `GET /api/intelligence/premarket`
-
-Phase I3-A requires a safe structured response for PRE Market Movers. The current API router only contains Reddit endpoints:
-
-- `GET /api/intelligence/reddit`
-- `POST /api/intelligence/reddit/refresh` with admin-token protection
-
-There is no `GET /api/intelligence/premarket`, no premarket response schema, and no safe empty/error fallback to inspect.
-
-### 2. PRE Market Movers UI is not implemented
-
-The dashboard intelligence tabs still include the older `🌗 PRE/POST` tab. Selecting it renders the generic `ComingSoon` component with the name `PRE/POST Gap Scanner`. There is no PRE Market Movers table, no ranking display, no gap-percent column, and no explicit PRE-tab-level note that these movers are excluded from trading decisions beyond the broader intelligence disclaimer.
-
-### 3. Ranking and invalid-data filtering cannot be validated
-
-Because no premarket mover computation exists, the review cannot validate:
-
-- descending rank by premarket gap percent,
-- exclusion of missing/invalid premarket price,
-- exclusion of missing/zero/invalid previous close,
-- finite numeric gap handling,
-- stable capped response size,
-- cache age/source/error metadata.
-
-### 4. Data-source architecture cannot be validated
-
-The requested design preference is to use existing microtrading universe/cache/collector data where possible and avoid scanning the full 5,000+ universe. Since the endpoint is absent, there is no implementation to validate for bounded symbol selection, cache reuse, collector reuse, or timeout behavior.
-
-## Safety assessment
-
-The reviewed checkout does not introduce new unsafe behavior for fake-money monitoring:
-
-- No live trading or broker functionality was added.
-- No real order placement was added.
-- No AI/LLM/Ollama path was added.
-- No V6 hardcoded secrets or V6 test endpoints were copied into runnable code.
-- No risky marketdata collector architecture change was found.
-- Existing backend and frontend checks pass.
-
-However, the feature is not complete. A future Phase I3-A implementation should be re-reviewed once it adds the `/api/intelligence/premarket` endpoint and a true PRE Market Movers tab.
-
-## Recommended acceptance criteria for the next Phase I3-A patch
-
-Before acceptance, the next patch should demonstrate all of the following:
-
-1. `GET /api/intelligence/premarket` returns a structured response such as:
-   - `ok`, `source`, `fetched_at`, `age_seconds`, `ttl_seconds`, `result_count`, `results`, `errors`/`warnings`.
-2. Results are explicitly read-only and not consumed by scoring, entry, exit, catalyst, or no-catalyst code.
-3. Results are ranked by premarket gap percent in descending order, with deterministic tie handling.
-4. Rows with missing, non-positive, or non-finite premarket price / previous close are excluded.
-5. The implementation uses a bounded symbol set and avoids scanning the full 5,000+ universe.
-6. Any direct Polygon calls are limited, cache-backed, timeout-protected, and use existing `data.polygon_client` helpers rather than raw URLs.
-7. Existing marketdata cache/collector/universe data is reused where practical.
-8. The UI tab is PRE-specific, not a separate after-hours priority tab.
-9. Tests cover route shape, sorting, invalid-data filtering, bounded universe behavior, no trading integration, and safety invariants.
+- `backend/api/intelligence.py` adds `@router.get("/premarket")` and calls the premarket intelligence module.
+- `backend/intelligence/premarket.py` reads `marketdata.cache.read_active_symbols` and `marketdata.cache.read_symbol`, computes movers, applies TTL state, and returns a structured snapshot.
+- `frontend/dashboard/app/page.tsx` adds the PRE Market Movers tab, `fetchPremarket()`, display-only mover rows, and read-only/no-trading copy.
+- `backend/tests/test_phase_i3a.py` covers session labels, TTL helper, mover filtering for missing price/change percent and sub-$3 prices, fetch sorting, TTL guard, error cache preservation, and endpoint smoke shape.
+- Existing `backend/marketdata/cache.py` provides Redis cache readers for active symbols and per-symbol snapshots.
+- Existing `backend/marketdata/universe_builder.py` caps the collector universe via `MARKETDATA_MAX_SYMBOLS_PER_CYCLE`.
 
 ## Commands run
 
 ```bash
-git status --short
-git log --oneline -5
-git fetch --all --prune
-git log --oneline --decorate --all -30
-rg -n "premarket|PRE Market|pre-market|after-hours|after hours|Market Movers|movers" .
-rg -n "INTEL_TABS|fetchReddit|RedditSnapshot|function IntelligenceSection|ComingSoon|PRE/POST|/api/intelligence" frontend/dashboard/app/page.tsx backend/main.py backend/api/*.py
-rg -n "api/intelligence/premarket|premarket|PRE Market|Pre Market|after-hours|after hours|POST|polygon|Polygon|ollama|openai|broker|order" backend frontend/dashboard/app -g '!backend/tests/**'
-cd backend && pytest
-cd frontend/dashboard && npm run build
+git show --stat --oneline HEAD
+git show --name-only --format='' HEAD
+git diff --name-only HEAD^ HEAD
+git diff --stat HEAD^ HEAD
+rg -n "Premarket|premarket|PRE Market|Pre-market|Market Movers" frontend/dashboard/app/page.tsx backend/tests/test_phase_i3a.py backend/api/intelligence.py
+rg -n "def read_active_symbols|async def read_active_symbols|market:snapshot|active_symbols|ACTIVE" backend/marketdata backend -g'*.py'
+rg -n "polygon|POLYGON|OLLAMA|llm|broker|alpaca|order|score|catalyst|entry|exit" backend/api/intelligence.py backend/intelligence/premarket.py backend/tests/test_phase_i3a.py frontend/dashboard/app/page.tsx
+pytest tests/test_phase_i3a.py
+npm run build
 ```
 
 ## Test results
 
-- `cd backend && pytest` — **passed**: 952 passed, 2 skipped, 1 warning.
-- `cd frontend/dashboard && npm run build` — **passed**: production build completed successfully. npm emitted a non-fatal warning: `Unknown env config "http-proxy"`.
+- `pytest tests/test_phase_i3a.py` from `backend/`: **passed** — 12 passed, 1 warning (`StarletteDeprecationWarning` from FastAPI/TestClient dependency stack).
+- `npm run build` from `frontend/dashboard/`: **passed** — Next.js production build completed successfully. npm emitted a non-fatal warning: `Unknown env config "http-proxy"`.
+
+## Final safety assessment
+
+Phase I3-A is safe for fake-money monitoring from an execution-risk perspective because it is read-only, dashboard-scoped, cache-backed, and not connected to broker/live-order/scoring/entry/exit paths.
+
+Data-quality follow-up is still recommended before the tab is treated as an accurate premarket mover source: refresh stale snapshots through the endpoint and harden per-symbol validation around previous close and malformed numeric payloads.
