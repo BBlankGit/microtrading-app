@@ -1387,7 +1387,7 @@ const DAILY_LOSS_NUMERIC_FIELDS: Array<{
   { key: "PAPER_DAILY_MAX_LOSS_USD",     label: "Max Daily Loss USD",  type: "float", min: 0,   max: 1_000_000, step: 1 },
 ];
 
-// Momentum mode fields (Phase 2M — disabled by default)
+// Momentum mode fields (Phase 2M — disabled by default, legacy fallback)
 const MOMENTUM_NUMERIC_FIELDS: Array<{
   key: string; label: string; type: string; min?: number; max?: number; step?: number;
 }> = [
@@ -1398,6 +1398,21 @@ const MOMENTUM_NUMERIC_FIELDS: Array<{
   { key: "PAPER_MOMENTUM_MIN_MARKET_RISK_SCORE",    label: "Min Regime Risk Score",     type: "int",   min: 0,   max: 100 },
   { key: "PAPER_MOMENTUM_POSITION_SIZE_MULTIPLIER", label: "Position Size Multiplier",  type: "float", min: 0.1, max: 1,   step: 0.05 },
   { key: "PAPER_MOMENTUM_MAX_TRADES_PER_DAY",       label: "Momentum Max Trades/Day",   type: "int",   min: 0,   max: 100 },
+];
+
+// No-Catalyst Momentum Entry fields (Phase 2N/2O — read-only display, currently active path)
+const NO_CATALYST_FIELDS: Array<{ key: string; label: string; type: "bool" | "int" | "float" }> = [
+  { key: "PAPER_NO_CATALYST_ENTRY_ENABLED",            label: "Entry Enabled",            type: "bool" },
+  { key: "PAPER_NO_CATALYST_REQUIRE_RISK_ON",          label: "Require Risk-On Regime",   type: "bool" },
+  { key: "PAPER_NO_CATALYST_BLOCK_IF_ANY_BEARISH",     label: "Block If Any Bearish",     type: "bool" },
+  { key: "PAPER_NO_CATALYST_MIN_SCORE",                label: "Min Score",                type: "int" },
+  { key: "PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE",       label: "Min Momentum Score",       type: "int" },
+  { key: "PAPER_NO_CATALYST_MIN_RISK_SCORE",           label: "Min Risk Score",           type: "int" },
+  { key: "PAPER_NO_CATALYST_MIN_CHANGE_PERCENT",       label: "Min Change %",             type: "float" },
+  { key: "PAPER_NO_CATALYST_MIN_VOLUME_RATIO",         label: "Min Volume Ratio",         type: "float" },
+  { key: "PAPER_NO_CATALYST_MAX_SPREAD_PERCENT",       label: "Max Spread %",             type: "float" },
+  { key: "PAPER_NO_CATALYST_POSITION_SIZE_MULTIPLIER", label: "Position Size Multiplier", type: "float" },
+  { key: "PAPER_NO_CATALYST_MAX_TRADES_PER_DAY",       label: "Max Trades/Day",           type: "int" },
 ];
 
 function StrategySettingsPanel({
@@ -1709,22 +1724,21 @@ function StrategySettingsPanel({
         </div>
       </div>
 
-      {/* Momentum Mode section (Phase 2M — disabled by default) */}
+      {/* Legacy Momentum Fallback section (Phase 2M — disabled by default, separate from No-Catalyst Entry) */}
       <div className="border border-purple-800 rounded p-3 bg-gray-950">
         <div className="flex items-center gap-2 mb-2">
-          <span className="text-sm font-semibold text-purple-300">Momentum Mode</span>
+          <span className="text-sm font-semibold text-purple-300">Legacy Momentum Fallback</span>
           <span className={`text-xs px-2 py-0.5 rounded border font-semibold ${
             drafts["PAPER_MOMENTUM_MODE_ENABLED"]
               ? "bg-orange-900 text-orange-300 border-orange-700"
               : "bg-gray-800 text-gray-500 border-gray-600"
           }`}>
-            {drafts["PAPER_MOMENTUM_MODE_ENABLED"] ? "ENABLED" : "DISABLED (default)"}
+            {drafts["PAPER_MOMENTUM_MODE_ENABLED"] ? "ENABLED (legacy)" : "DISABLED (legacy/default)"}
           </span>
         </div>
         <p className="text-xs text-gray-500 italic mb-3">
-          Fake-money simulation only. No broker. No live trading. No real orders.
-          Momentum mode is a secondary entry path for candidates with no catalyst
-          but strong price/volume signals. Disabled by default. Only enable for explicit research testing.
+          Legacy secondary momentum fallback path. Separate from the newer No-Catalyst Momentum Entry
+          settings below. Fake-money simulation only. No broker. No real orders.
         </p>
         {/* Enable toggle */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
@@ -1791,6 +1805,61 @@ function StrategySettingsPanel({
           })}
         </div>
       </div>
+
+      {/* No-Catalyst Momentum Entry panel — read-only display of currently active path */}
+      {config && (() => {
+        const ncOverrideCount = Object.keys(config.runtime_overrides).filter(k => k.startsWith("PAPER_NO_CATALYST_")).length;
+        const ncEnabled = config.effective_config["PAPER_NO_CATALYST_ENTRY_ENABLED"];
+        return (
+          <div className="border border-blue-800 rounded p-3 bg-gray-950">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <span className="text-sm font-semibold text-blue-300">No-Catalyst Momentum Entry</span>
+              <span className={`text-xs px-2 py-0.5 rounded border font-semibold ${
+                ncEnabled
+                  ? "bg-green-900 text-green-300 border-green-700"
+                  : "bg-gray-800 text-gray-500 border-gray-600"
+              }`}>
+                {ncEnabled ? "ENABLED" : "DISABLED"}
+              </span>
+              {ncOverrideCount > 0 && (
+                <span className="text-xs px-2 py-0.5 rounded border bg-orange-900 text-orange-300 border-orange-700">
+                  {ncOverrideCount} active override{ncOverrideCount > 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-gray-500 italic mb-3">
+              This is the currently active no-catalyst entry path when PAPER_NO_CATALYST_ENTRY_ENABLED is true.
+              It is separate from Legacy Momentum Fallback. Fake-money simulation only. No broker. No real orders.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {NO_CATALYST_FIELDS.map((f) => {
+                const base = config.base_config[f.key];
+                const override = config.runtime_overrides[f.key];
+                const effective = config.effective_config[f.key];
+                const hasOverride = f.key in config.runtime_overrides;
+                return (
+                  <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+                    hasOverride ? "border-orange-700" : "border-gray-700"
+                  }`}>
+                    <div className="text-xs text-gray-400 mb-1">{f.label}</div>
+                    <div className={`text-sm font-mono font-semibold ${
+                      f.type === "bool"
+                        ? (effective ? "text-green-400" : "text-gray-500")
+                        : hasOverride ? "text-orange-300" : "text-white"
+                    }`}>
+                      {effective !== null && effective !== undefined ? String(effective) : "—"}
+                    </div>
+                    <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
+                      <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
+                      {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Action buttons */}
       <div className="flex flex-wrap gap-3 items-center mt-2">
