@@ -631,9 +631,17 @@ async def run_tick() -> dict[str, Any]:
             cat_type = cats[0].get("classified_event_type") if cats else None
 
             # ── Catalyst-type block (Phase 2T — fake-money only, no broker, no real orders) ──
-            if hard_rejection is None and cat_type is not None and cat_type in _blocked_cat_types:
-                hard_rejection = f"catalyst_type_blocked:{cat_type}"
-                is_no_catalyst_rejection = False
+            # Scan all accepted catalysts; block on the first match in order.
+            _blocked_cat_type: str | None = None
+            if hard_rejection is None and _blocked_cat_types:
+                for _c in cats:
+                    _ct = _c.get("classified_event_type")
+                    if _ct and _ct in _blocked_cat_types:
+                        _blocked_cat_type = _ct
+                        break
+                if _blocked_cat_type is not None:
+                    hard_rejection = f"catalyst_type_blocked:{_blocked_cat_type}"
+                    is_no_catalyst_rejection = False
 
             # ── Momentum evaluation (always computed when mode enabled) ────────
             momentum_eval: dict | None = None
@@ -662,7 +670,8 @@ async def run_tick() -> dict[str, Any]:
                 "volume_ratio": q.get("volume_ratio"),
                 "catalyst_count": len(cats),
                 "catalyst_type": cat_type,
-                "catalyst_type_blocked": bool(cat_type and cat_type in _blocked_cat_types),
+                "catalyst_type_blocked": _blocked_cat_type is not None,
+                "blocked_catalyst_type": _blocked_cat_type,
                 "catalyst_type_weight": None,
                 # Scoring fields
                 "total_score": scoring["total_score"],

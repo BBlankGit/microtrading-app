@@ -97,6 +97,9 @@ interface Candidate {
   bearish_flags: string[] | null;
   strongest_catalyst_title: string | null;
   strongest_catalyst_sentiment: string | null;
+  // Phase 2T catalyst type guard fields
+  catalyst_type_blocked?: boolean;
+  blocked_catalyst_type?: string | null;
   // Phase 2M momentum fields
   entry_mode: string | null;
   momentum_eligible: boolean | null;
@@ -766,8 +769,15 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                   <span className="text-gray-600 text-xs ml-1">{fmt(c.catalyst_materiality_score, 2)}</span>
                 )}
               </td>
-              <td className="py-2 pr-4 text-gray-400 text-xs max-w-xs truncate">
-                {c.decision_reason || c.rejection_reason || "—"}
+              <td className="py-2 pr-4 text-xs max-w-xs truncate">
+                {c.catalyst_type_blocked && (
+                  <span className="mr-1 px-1 py-0.5 rounded text-xs font-semibold bg-orange-900 text-orange-300">
+                    BLOCKED
+                  </span>
+                )}
+                <span className={c.catalyst_type_blocked ? "text-orange-400" : "text-gray-400"}>
+                  {c.rejection_reason || c.decision_reason || "—"}
+                </span>
               </td>
             </tr>
           ))}
@@ -2429,17 +2439,17 @@ export default function Home() {
               )}
             </div>
           )}
-          {s.catalyst_type_guard && !s.catalyst_type_guard.error && (
+          {monitoring?.catalyst_type_guard && !monitoring.catalyst_type_guard.error && (
             <div className={`mt-2 flex flex-wrap gap-3 text-xs font-mono px-1 py-1 rounded border ${
-              s.catalyst_type_guard.enabled && s.catalyst_type_guard.blocked_candidates_last_tick > 0
+              monitoring.catalyst_type_guard.enabled && monitoring.catalyst_type_guard.blocked_candidates_last_tick > 0
                 ? "border-yellow-700 bg-yellow-950 text-yellow-300"
                 : "border-gray-700 bg-gray-900 text-gray-400"
             }`}>
-              <span>Cat Type Guard: {s.catalyst_type_guard.enabled ? "active" : "disabled"}</span>
-              {s.catalyst_type_guard.enabled && (
+              <span>Cat Type Guard: {monitoring.catalyst_type_guard.enabled ? "active" : "disabled"}</span>
+              {monitoring.catalyst_type_guard.enabled && (
                 <>
-                  <span>Blocked types: {s.catalyst_type_guard.blocked_catalyst_types.length > 0 ? s.catalyst_type_guard.blocked_catalyst_types.join(", ") : "none"}</span>
-                  <span>Blocked last tick: {s.catalyst_type_guard.blocked_candidates_last_tick}</span>
+                  <span>Blocked types: {monitoring.catalyst_type_guard.blocked_catalyst_types.length > 0 ? monitoring.catalyst_type_guard.blocked_catalyst_types.join(", ") : "none"}</span>
+                  <span>Blocked last tick: {monitoring.catalyst_type_guard.blocked_candidates_last_tick}</span>
                 </>
               )}
             </div>

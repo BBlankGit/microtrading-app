@@ -579,3 +579,297 @@ def test_simulator_mode_is_research_paper():
     import paper.simulator as sim
     status = sim.get_status()
     assert status.get("mode") == "research_paper_simulation"
+
+
+# ── Phase 2T-H1: multi-catalyst and validation tests ─────────────────────────
+
+def _run_tick_with_cat_list(
+    symbol: str,
+    cat_type_list: list[str],
+    overrides: dict | None = None,
+    score_override: dict | None = None,
+) -> dict:
+    """Run one tick with a symbol and a list of catalyst types. Returns candidate dict."""
+    import paper.simulator as sim
+    from paper.account import PaperAccount
+    from paper import runtime_config as rc
+
+    ovr = overrides if overrides is not None else _base_overrides()
+    quality = _quality_passing()
+    cats = [{"symbol": symbol, "classified_event_type": ct,
+             "title": f"Test {ct}", "sentiment": "bullish"}
+            for ct in cat_type_list]
+    score = score_override if score_override is not None else _score_passing()
+
+    old_account = sim._account
+    old_prices = dict(sim._last_prices)
+    old_overrides = dict(rc._runtime_overrides)
+
+    sim._account = PaperAccount(1000.0)
+    sim._last_prices.clear()
+    rc._runtime_overrides.update(ovr)
+
+    try:
+        with (
+            patch("paper.simulator.get_active_paper_universe", new_callable=AsyncMock,
+                  return_value={"active_symbols": [symbol], "active_count": 1,
+                                "last_refreshed_at": None, "refresh_reason": "test",
+                                "discovery": {"enabled": False, "discovered_count": 0, "errors": []}}),
+            patch("paper.simulator.polygon_client.get_ticker_snapshot",
+                  new_callable=AsyncMock, return_value=quality),
+            patch("paper.simulator.polygon_client.get_previous_close",
+                  new_callable=AsyncMock, return_value={}),
+            patch("paper.simulator.evaluate_market_quality", return_value=quality),
+            patch("paper.simulator.collect_news_for_symbols", new_callable=AsyncMock,
+                  return_value={"filter": {"accepted": cats}}),
+            patch("paper.simulator.score_candidate", return_value=score),
+            patch("paper.simulator._persist_journal_tick", new_callable=AsyncMock,
+                  return_value={"ok": True}),
+            patch("paper.simulator.get_cached_universe", return_value=None),
+            patch("paper.simulator._save_state", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(sim.run_tick())
+    finally:
+        sim._account = old_account
+        sim._last_prices.clear()
+        sim._last_prices.update(old_prices)
+        rc._runtime_overrides = old_overrides
+
+    assert len(result.get("candidates", [])) == 1
+    return result["candidates"][0]
+
+
+# ── H1-1. Multi-catalyst: blocked when fda_regulatory is second ──────────────
+
+def test_multi_cat_earnings_then_fda_blocked():
+    cand = _run_tick_with_cat_list("AAPL", ["earnings", "fda_regulatory"])
+    assert cand["eligible"] is False
+    assert cand.get("catalyst_type_blocked") is True
+    assert cand.get("blocked_catalyst_type") == "fda_regulatory"
+    assert cand.get("rejection_reason") == "catalyst_type_blocked:fda_regulatory"
+
+
+def test_multi_cat_m_and_a_then_fda_blocked():
+    cand = _run_tick_with_cat_list("AAPL", ["m_and_a", "fda_regulatory"])
+    assert cand["eligible"] is False
+    assert cand.get("catalyst_type_blocked") is True
+    assert cand.get("blocked_catalyst_type") == "fda_regulatory"
+    assert cand.get("rejection_reason") == "catalyst_type_blocked:fda_regulatory"
+
+
+def test_multi_cat_fda_first_then_earnings_blocked():
+    cand = _run_tick_with_cat_list("AAPL", ["fda_regulatory", "earnings"])
+    assert cand["eligible"] is False
+    assert cand.get("catalyst_type_blocked") is True
+    assert cand.get("blocked_catalyst_type") == "fda_regulatory"
+
+
+# ── H1-2. Multi-catalyst: unblocked when none in blocked set ─────────────────
+
+def test_multi_cat_earnings_and_m_and_a_not_blocked():
+    cand = _run_tick_with_cat_list("AAPL", ["earnings", "m_and_a"])
+    assert cand.get("catalyst_type_blocked") is False
+    assert cand.get("blocked_catalyst_type") is None
+    assert cand["eligible"] is True
+
+
+def test_multi_cat_macro_and_sector_news_not_blocked():
+    cand = _run_tick_with_cat_list("AAPL", ["macro", "sector_news"])
+    assert cand.get("catalyst_type_blocked") is False
+    assert cand.get("blocked_catalyst_type") is None
+
+
+# ── H1-3. blocked_catalyst_type field always present ─────────────────────────
+
+def test_blocked_catalyst_type_field_present_when_blocked():
+    cand = _run_tick_for_symbol("AAPL", "fda_regulatory")
+    assert "blocked_catalyst_type" in cand
+    assert cand["blocked_catalyst_type"] == "fda_regulatory"
+
+
+def test_blocked_catalyst_type_field_none_when_not_blocked():
+    cand = _run_tick_for_symbol("AAPL", "earnings")
+    assert "blocked_catalyst_type" in cand
+    assert cand["blocked_catalyst_type"] is None
+
+
+# ── H1-4. Score pass irrelevant when second catalyst is blocked ───────────────
+
+def test_blocked_second_catalyst_score_pass_still_blocked():
+    """[earnings, fda_regulatory] — score passes but fda_regulatory is second → blocked."""
+    score = {**_score_passing(), "score_pass": True, "total_score": 95}
+    cand = _run_tick_with_cat_list("AAPL", ["earnings", "fda_regulatory"],
+                                   score_override=score)
+    assert cand["eligible"] is False
+    assert cand.get("rejection_reason") == "catalyst_type_blocked:fda_regulatory"
+
+
+# ── H1-5. No-catalyst path cannot bypass blocked second catalyst ──────────────
+
+def test_no_catalyst_cannot_bypass_blocked_second_catalyst():
+    """
+    cats=[earnings, fda_regulatory], score_pass=False, no-catalyst enabled.
+    fda_regulatory appears second; block must still fire, no-catalyst path silent.
+    """
+    import paper.simulator as sim
+    from paper.account import PaperAccount
+    from paper import runtime_config as rc
+
+    ovr = _base_overrides()
+    ovr["PAPER_NO_CATALYST_ENTRY_ENABLED"] = True
+    ovr["PAPER_NO_CATALYST_MIN_SCORE"] = 50
+    ovr["PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE"] = 0
+    ovr["PAPER_NO_CATALYST_MIN_CHANGE_PERCENT"] = 0.0
+    ovr["PAPER_NO_CATALYST_MIN_VOLUME_RATIO"] = 0.0
+    ovr["PAPER_NO_CATALYST_MAX_SPREAD_PERCENT"] = 5.0
+    ovr["PAPER_NO_CATALYST_REQUIRE_RISK_ON"] = False
+    ovr["PAPER_NO_CATALYST_MAX_TRADES_PER_DAY"] = 100
+    ovr["PAPER_NO_CATALYST_POSITION_SIZE_MULTIPLIER"] = 0.5
+
+    symbol = "AAPL"
+    quality = _quality_passing()
+    cats = [
+        {"symbol": symbol, "classified_event_type": "earnings", "title": "Earnings", "sentiment": "bullish"},
+        {"symbol": symbol, "classified_event_type": "fda_regulatory", "title": "FDA", "sentiment": "bullish"},
+    ]
+
+    old_account = sim._account
+    old_prices = dict(sim._last_prices)
+    old_overrides = dict(rc._runtime_overrides)
+    sim._account = PaperAccount(1000.0)
+    sim._last_prices.clear()
+    rc._runtime_overrides.update(ovr)
+
+    try:
+        with (
+            patch("paper.simulator.get_active_paper_universe", new_callable=AsyncMock,
+                  return_value={"active_symbols": [symbol], "active_count": 1,
+                                "last_refreshed_at": None, "refresh_reason": "test",
+                                "discovery": {"enabled": False, "discovered_count": 0, "errors": []}}),
+            patch("paper.simulator.polygon_client.get_ticker_snapshot",
+                  new_callable=AsyncMock, return_value=quality),
+            patch("paper.simulator.polygon_client.get_previous_close",
+                  new_callable=AsyncMock, return_value={}),
+            patch("paper.simulator.evaluate_market_quality", return_value=quality),
+            patch("paper.simulator.collect_news_for_symbols", new_callable=AsyncMock,
+                  return_value={"filter": {"accepted": cats}}),
+            patch("paper.simulator.score_candidate", return_value={
+                **_score_passing(), "score_pass": False,
+            }),
+            patch("paper.simulator._persist_journal_tick", new_callable=AsyncMock,
+                  return_value={"ok": True}),
+            patch("paper.simulator.get_cached_universe", return_value=None),
+            patch("paper.simulator._save_state", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(sim.run_tick())
+    finally:
+        sim._account = old_account
+        sim._last_prices.clear()
+        sim._last_prices.update(old_prices)
+        rc._runtime_overrides = old_overrides
+
+    assert result["entries_made"] == 0
+    cand = result["candidates"][0]
+    assert cand["eligible"] is False
+    assert cand.get("rejection_reason") == "catalyst_type_blocked:fda_regulatory"
+    assert cand.get("blocked_catalyst_type") == "fda_regulatory"
+
+
+# ── H1-6. Runtime validation: accepts mixed-case with normalization ───────────
+
+def test_runtime_validation_accepts_mixed_case():
+    from paper.runtime_config import validate_runtime_config
+    ok, errors = validate_runtime_config({"PAPER_BLOCKED_CATALYST_TYPES": " FDA_REGULATORY , m_and_a "})
+    assert ok, f"Validation failed: {errors}"
+
+
+def test_runtime_coerce_normalizes_to_lowercase():
+    """update_runtime_config must lowercase and strip tokens."""
+    import asyncio as _aio
+    from unittest.mock import patch as _patch
+    from paper import runtime_config as rc
+    old = dict(rc._runtime_overrides)
+    try:
+        with _patch.object(rc, "_persist_to_db", new=AsyncMock()):
+            _aio.run(rc.update_runtime_config(
+                {"PAPER_BLOCKED_CATALYST_TYPES": " FDA_REGULATORY , M_AND_A "},
+                updated_by="test",
+            ))
+        stored = rc._runtime_overrides.get("PAPER_BLOCKED_CATALYST_TYPES", "")
+        assert stored == "fda_regulatory,m_and_a", f"Expected normalized, got {stored!r}"
+    finally:
+        rc._runtime_overrides = old
+
+
+def test_runtime_coerce_deduplicates():
+    import asyncio as _aio
+    from unittest.mock import patch as _patch
+    from paper import runtime_config as rc
+    old = dict(rc._runtime_overrides)
+    try:
+        with _patch.object(rc, "_persist_to_db", new=AsyncMock()):
+            _aio.run(rc.update_runtime_config(
+                {"PAPER_BLOCKED_CATALYST_TYPES": "fda_regulatory,fda_regulatory,earnings"},
+                updated_by="test",
+            ))
+        stored = rc._runtime_overrides.get("PAPER_BLOCKED_CATALYST_TYPES", "")
+        assert stored == "fda_regulatory,earnings", f"Expected deduped, got {stored!r}"
+    finally:
+        rc._runtime_overrides = old
+
+
+# ── H1-7. Runtime validation: rejects invalid token characters ───────────────
+
+def test_runtime_rejects_hyphen_in_token():
+    from paper.runtime_config import validate_runtime_config
+    ok, errors = validate_runtime_config({"PAPER_BLOCKED_CATALYST_TYPES": "fda-regulatory"})
+    assert not ok
+    assert any("invalid token" in e.lower() for e in errors)
+
+
+def test_runtime_rejects_space_inside_token():
+    from paper.runtime_config import validate_runtime_config
+    ok, errors = validate_runtime_config({"PAPER_BLOCKED_CATALYST_TYPES": "fda regulatory"})
+    assert not ok
+    assert any("invalid token" in e.lower() for e in errors)
+
+
+def test_runtime_rejects_special_chars():
+    from paper.runtime_config import validate_runtime_config
+    ok, errors = validate_runtime_config({"PAPER_BLOCKED_CATALYST_TYPES": "fda!regulatory"})
+    assert not ok
+    assert any("invalid token" in e.lower() for e in errors)
+
+
+# ── H1-8. Runtime validation: empty string allowed ────────────────────────────
+
+def test_runtime_accepts_empty_string_to_disable():
+    from paper.runtime_config import validate_runtime_config
+    ok, errors = validate_runtime_config({"PAPER_BLOCKED_CATALYST_TYPES": ""})
+    assert ok, f"Empty string should be allowed to disable blocking: {errors}"
+
+
+# ── H1-9. Frontend: rejection_reason rendered before decision_reason ─────────
+
+def test_frontend_renders_rejection_reason_before_decision_reason():
+    """Fix 2: page.tsx must prioritize rejection_reason over decision_reason."""
+    frontend_path = BACKEND_ROOT.parent / "frontend" / "dashboard" / "app" / "page.tsx"
+    if not frontend_path.exists():
+        pytest.skip("frontend not mounted in this build context")
+    text = frontend_path.read_text()
+    # rejection_reason must appear before decision_reason in the render expression
+    idx_rejection = text.find("c.rejection_reason || c.decision_reason")
+    idx_wrong = text.find("c.decision_reason || c.rejection_reason")
+    assert idx_rejection != -1, "rejection_reason || decision_reason not found in page.tsx"
+    assert idx_wrong == -1, "Old decision_reason || rejection_reason order still present"
+
+
+# ── H1-10. No restore/session integrity logic changes ────────────────────────
+
+def test_no_session_restore_logic_changes():
+    """Phase 2T must not touch session_restore.py."""
+    restore_path = BACKEND_ROOT / "paper" / "session_restore.py"
+    text = restore_path.read_text()
+    assert "catalyst_type_blocked" not in text
+    assert "blocked_catalyst" not in text
+    assert "fda_regulatory" not in text

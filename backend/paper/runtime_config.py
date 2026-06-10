@@ -14,6 +14,7 @@ All changes are admin-protected, bounded, and auditable.
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -485,6 +486,15 @@ def validate_runtime_config(updates: dict) -> tuple[bool, list[str]]:
         elif expected_type == "str":
             if not isinstance(value, str):
                 errors.append(f"{key}: expected str, got {type(value).__name__}")
+            elif key == "PAPER_BLOCKED_CATALYST_TYPES" and value.strip():
+                # Validate each comma-separated token: letters, digits, underscores only.
+                tokens = [t.strip() for t in value.split(",") if t.strip()]
+                invalid = [t for t in tokens if not re.match(r'^[a-zA-Z0-9_]+$', t)]
+                if invalid:
+                    errors.append(
+                        f"{key}: invalid token(s) {invalid!r} — "
+                        "only letters, digits, and underscores are allowed per token"
+                    )
 
     # Cross-field: discovery price min < max
     min_price = updates.get("PAPER_MARKET_DISCOVERY_MIN_PRICE",
@@ -539,6 +549,16 @@ async def update_runtime_config(
             value = int(value)
         elif spec["type"] == "float" and isinstance(value, int) and not isinstance(value, bool):
             value = float(value)
+        elif key == "PAPER_BLOCKED_CATALYST_TYPES" and isinstance(value, str):
+            # Normalize: lowercase, strip whitespace, deduplicate, preserve order.
+            tokens = [t.strip().lower() for t in value.split(",") if t.strip()]
+            seen: set[str] = set()
+            deduped: list[str] = []
+            for t in tokens:
+                if t not in seen:
+                    seen.add(t)
+                    deduped.append(t)
+            value = ",".join(deduped)
         coerced[key] = value
 
     old_overrides = dict(_runtime_overrides)
