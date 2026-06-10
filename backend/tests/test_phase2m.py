@@ -642,6 +642,7 @@ def test_simulator_momentum_fallback_entry_mode():
     quality = {
         "tradable": True, "bid": 100.0, "ask": 100.1, "last_trade_price": 100.05,
         "spread_percent": 0.10, "change_percent": 3.0, "volume_ratio": 4.0,
+        "day_volume": 4_000_000, "previous_day_volume": 1_000_000,
         "has_valid_quote": True, "has_valid_trade": True,
         "has_sufficient_volume": True, "has_acceptable_spread": True,
         "rejection_reasons": [],

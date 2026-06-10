@@ -77,6 +77,8 @@ def _quality_passing() -> dict:
         "spread_percent": 0.10,
         "change_percent": 3.5,
         "volume_ratio": 2.0,
+        "day_volume": 2_000_000,
+        "previous_day_volume": 1_000_000,
         "rejection_reasons": [],
     }
 

@@ -393,6 +393,9 @@ def _quality_pass(symbol: str, ask: float = 100.0, bid: float = 99.9,
         "spread_percent": spread_pct,
         "change_percent": change_pct,
         "volume_ratio": volume_ratio,
+        # day/prev volumes so time-adjusted gate passes (ta_ratio = 3x prev, always >= min 0.8)
+        "day_volume": 3_000_000,
+        "previous_day_volume": 1_000_000,
         "rejection_reasons": [],
     }
 
@@ -744,6 +747,7 @@ async def test_tick_score_below_threshold_does_not_enter(reset_simulator_state):
     # vol_ratio 0.85 (≥0.8 → hard gate ok, but volume_score=5)
     # mid-value catalyst → catalyst_score=12
     # market_quality=25, risk_penalty=0 → total=57 < 70
+    # day/prev volumes: ta_ratio = 0.85 at session end; always < 1.0 so volume_score ≤ 5
     q = {
         "tradable": True,
         "ask": 100.10,
@@ -752,6 +756,8 @@ async def test_tick_score_below_threshold_does_not_enter(reset_simulator_state):
         "spread_percent": 0.40,
         "change_percent": 0.30,
         "volume_ratio": 0.85,
+        "day_volume": 850_000,
+        "previous_day_volume": 1_000_000,
         "rejection_reasons": [],
     }
     cat = {"symbol": sym, "classified_event_type": "management_change"}
@@ -802,6 +808,8 @@ async def test_tick_score_above_threshold_enters_position(reset_simulator_state)
         "spread_percent": 0.03,
         "change_percent": 2.5,
         "volume_ratio": 1.6,
+        "day_volume": 1_600_000,
+        "previous_day_volume": 1_000_000,
         "rejection_reasons": [],
     }
     cat = {"symbol": sym, "classified_event_type": "earnings"}

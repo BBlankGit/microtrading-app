@@ -351,6 +351,7 @@ def test_simulator_no_catalyst_path_c_entry_mode():
     quality = {
         "tradable": True, "bid": 100.0, "ask": 100.10, "last_trade_price": 100.05,
         "spread_percent": 0.10, "change_percent": 2.5, "volume_ratio": 1.0,
+        "day_volume": 1_000_000, "previous_day_volume": 1_000_000,
         "has_valid_quote": True, "has_valid_trade": True,
         "has_sufficient_volume": True, "has_acceptable_spread": True,
         "rejection_reasons": [],

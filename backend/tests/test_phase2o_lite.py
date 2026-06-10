@@ -96,6 +96,7 @@ def test_default_rejects_volume_ratio_below_0_8():
 
     rc._runtime_overrides.update({
         "PAPER_MIN_VOLUME_RATIO": 0.8,
+        "PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO": False,
         "PAPER_DAILY_MAX_LOSS_ENABLED": False,
         "PAPER_MOMENTUM_MODE_ENABLED": False,
         "PAPER_ENTRY_SCORE_THRESHOLD": 70,
@@ -183,6 +184,7 @@ def test_override_to_0_1_allows_low_volume_candidate():
 
     rc._runtime_overrides.update({
         "PAPER_MIN_VOLUME_RATIO": 0.1,
+        "PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO": False,
         "PAPER_DAILY_MAX_LOSS_ENABLED": False,
         "PAPER_MOMENTUM_MODE_ENABLED": False,
         "PAPER_ENTRY_SCORE_THRESHOLD": 70,
@@ -270,6 +272,7 @@ def test_rejection_reason_shows_configured_threshold():
 
     rc._runtime_overrides.update({
         "PAPER_MIN_VOLUME_RATIO": 0.15,
+        "PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO": False,
         "PAPER_DAILY_MAX_LOSS_ENABLED": False,
         "PAPER_MOMENTUM_MODE_ENABLED": False,
         "PAPER_ENTRY_SCORE_THRESHOLD": 70,

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from typing import Any
 
@@ -194,6 +195,29 @@ def get_snapshot(error: str | None = None) -> dict[str, Any]:
     }
 
 
+# ── Cache validation ──────────────────────────────────────────────────────────
+
+_TEST_NAME_RE = re.compile(r'^Company\s+\d+$', re.IGNORECASE)
+_VALID_TICKER_RE = re.compile(r'^[A-Z][A-Z0-9]{0,9}$')
+
+
+def _is_valid_cached_row(row: dict) -> bool:
+    """
+    Return True if a Redis-cached row looks like real ApeWisdom data.
+    Rejects test-fixture rows (name "Company N"), missing tickers, and
+    rows without numeric rank/mentions.
+    """
+    ticker = (row.get("ticker") or "").upper().strip()
+    if not ticker or not _VALID_TICKER_RE.match(ticker):
+        return False
+    name = (row.get("name") or "").strip()
+    if _TEST_NAME_RE.match(name):
+        return False
+    if row.get("rank") is None or row.get("mentions") is None:
+        return False
+    return True
+
+
 # ── Startup loader ────────────────────────────────────────────────────────────
 
 async def ensure_loaded() -> None:
@@ -201,7 +225,7 @@ async def ensure_loaded() -> None:
     Called at app startup: populate cache from Redis if available,
     otherwise fetch fresh. Never raises.
     """
-    global _current, _previous, _fetched_at
+    global _current, _previous, _fetched_at, _fetch_error
 
     if _current:
         return  # already loaded
@@ -209,11 +233,20 @@ async def ensure_loaded() -> None:
     # Try Redis first (faster — avoids a cold-start HTTP call)
     cached, prev = await _redis_load()
     if cached:
-        _current = cached
-        _previous = prev
+        valid = [r for r in cached if _is_valid_cached_row(r)]
+        if not valid:
+            logger.warning(
+                "Reddit intel: Redis cache rejected (%d rows) — failed validation "
+                "(possible test fixture data). Fetching fresh.", len(cached)
+            )
+            _fetch_error = "redis_cache_invalid"
+            await fetch_and_refresh()
+            return
+        _current = valid
+        _previous = [r for r in prev if _is_valid_cached_row(r)]
         # Treat cached data as half-expired so we refresh soon
         _fetched_at = time.time() - (_CACHE_TTL // 2)
-        logger.info("Reddit intel: loaded %d tickers from Redis cache", len(_current))
+        logger.info("Reddit intel: loaded %d/%d tickers from Redis cache", len(_current), len(cached))
         return
 
     # No Redis cache — fetch fresh

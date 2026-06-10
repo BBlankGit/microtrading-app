@@ -221,6 +221,7 @@ async def reset_simulator() -> None:
         _state["desired_running"] = False
         _state["auto_resumed"] = False
         _state["auto_resumed_at"] = None
+        _state["auto_resume_attempted"] = False
         _state["auto_resume_source"] = None
         _state["auto_resume_warning"] = None
     await _save_state()
@@ -853,12 +854,11 @@ async def run_tick() -> dict[str, Any]:
                 continue
             cats = catalyst_map.get(sym, [])
 
-            # Score every candidate (transparent, always computed)
-            scoring = score_candidate(sym, q, cats)
-
             # S1-V1: per-symbol time-adjusted volume computation
             _ta_ratio: float | None = None
             _expected_volume_now: int | None = None
+            # True when TA vol is configured for this session but inputs are missing/invalid
+            _ta_vol_missing: bool = False
             if bool(_cfg("PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO")) and _tick_session_type == "regular":
                 _min_floor = float(_cfg("PAPER_TIME_ADJUSTED_VOLUME_MIN_FLOOR"))
                 _ta_ratio = _tv_ratio(
@@ -870,11 +870,16 @@ async def run_tick() -> dict[str, Any]:
                 if _ta_ratio is not None and q.get("previous_day_volume"):
                     _eff = max(_tick_session_elapsed_ratio, _min_floor)
                     _expected_volume_now = int(q["previous_day_volume"] * _eff)
+                else:
+                    _ta_vol_missing = True
 
-            # S1-V1: when time-adjusted volume is active, build a modified quality view
-            # for downstream evaluators so they use the same adjusted ratio
+            # S1-V1: when time-adjusted volume is active and computable, replace
+            # volume_ratio in quality view so all downstream evaluators use it.
             _use_ta_vol = bool(_cfg("PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO")) and _tick_session_type == "regular" and _ta_ratio is not None
             _q_for_paths = dict(q, volume_ratio=_ta_ratio) if _use_ta_vol else q
+
+            # Score using adjusted quality view so scoring volume component also uses TA ratio.
+            scoring = score_candidate(sym, _q_for_paths, cats)
 
             # ── Hard safety gates shared by both entry paths ───────────────────
             # These gates hard-reject regardless of mode.
@@ -889,6 +894,8 @@ async def run_tick() -> dict[str, Any]:
                 hard_rejection = f"spread {q.get('spread_percent')}% > 0.50%"
             elif (q.get("change_percent") or 0) <= 0:
                 hard_rejection = f"change_percent {q.get('change_percent')} not positive"
+            elif _ta_vol_missing:
+                hard_rejection = "missing_time_adjusted_volume"
             elif _use_ta_vol and _ta_ratio < float(_cfg("PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN")):
                 hard_rejection = f"ta_volume_ratio {_ta_ratio} < {_cfg('PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN')}"
             elif not _use_ta_vol and q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < _cfg("PAPER_MIN_VOLUME_RATIO"):

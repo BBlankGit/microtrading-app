@@ -1505,7 +1505,7 @@ const STRATEGY_FIELDS: Array<{
   { key: "PAPER_MAX_OPEN_POSITIONS",                label: "Max Open Positions",          type: "int",   min: 1,    max: 50 },
   { key: "PAPER_MAX_TRADES_PER_DAY",                label: "Max Trades / Day",            type: "int",   min: 1,    max: 500 },
   { key: "PAPER_POSITION_SIZE_PERCENT",             label: "Position Size %",             type: "float", min: 1,    max: 100, step: 1 },
-  { key: "PAPER_MIN_VOLUME_RATIO",                  label: "Min Volume Ratio",            type: "float", min: 0,    max: 5,   step: 0.05 },
+  { key: "PAPER_MIN_VOLUME_RATIO",                  label: "Min Vol Ratio (Catalyst/Standard)", type: "float", min: 0,    max: 5,   step: 0.05 },
   { key: "PAPER_BEARISH_CATALYST_REJECT_MATERIALITY", label: "Bearish Reject Materiality",type: "float", min: 0,    max: 1,   step: 0.05 },
   { key: "PAPER_MAX_SYMBOLS_PER_TICK",              label: "Max Symbols / Tick",          type: "int",   min: 1,    max: 300 },
 ];
@@ -1554,7 +1554,7 @@ const NO_CATALYST_FIELDS: Array<{ key: string; label: string; type: "bool" | "in
   { key: "PAPER_NO_CATALYST_MIN_MOMENTUM_SCORE",       label: "Min Momentum Score",       type: "int" },
   { key: "PAPER_NO_CATALYST_MIN_RISK_SCORE",           label: "Min Risk Score",           type: "int" },
   { key: "PAPER_NO_CATALYST_MIN_CHANGE_PERCENT",       label: "Min Change %",             type: "float" },
-  { key: "PAPER_NO_CATALYST_MIN_VOLUME_RATIO",         label: "Min Volume Ratio",         type: "float" },
+  { key: "PAPER_NO_CATALYST_MIN_VOLUME_RATIO",         label: "Min Vol Ratio (No-Catalyst)", type: "float" },
   { key: "PAPER_NO_CATALYST_MAX_SPREAD_PERCENT",       label: "Max Spread %",             type: "float" },
   { key: "PAPER_NO_CATALYST_POSITION_SIZE_MULTIPLIER", label: "Position Size Multiplier", type: "float" },
   { key: "PAPER_NO_CATALYST_MAX_TRADES_PER_DAY",       label: "Max Trades/Day",           type: "int" },
@@ -1699,6 +1699,10 @@ function StrategySettingsPanel({
   }
 
   const overrideCount = Object.keys(config.runtime_overrides).length;
+  const changedOverrideCount = Object.keys(config.runtime_overrides).filter(
+    k => String(config.runtime_overrides[k]) !== String(config.base_config[k])
+  ).length;
+  const sameOverrideCount = overrideCount - changedOverrideCount;
 
   return (
     <div className="space-y-4">
@@ -1707,15 +1711,26 @@ function StrategySettingsPanel({
         No broker, no live trading, no real orders.
         Changes take effect on the next tick and do not retroactively affect existing open positions.
       </p>
+      {sameOverrideCount > 0 && (
+        <p className="text-xs text-yellow-700 italic">
+          Note: {sameOverrideCount} stored override{sameOverrideCount > 1 ? "s" : ""} equal to base value — these do not change behavior.
+        </p>
+      )}
 
       {/* Status row */}
       <div className="flex flex-wrap gap-2 items-center text-xs">
         <span className={`font-semibold px-2 py-0.5 rounded border ${
-          overrideCount > 0
+          changedOverrideCount > 0
             ? "bg-orange-900 text-orange-300 border-orange-700"
+            : overrideCount > 0
+            ? "bg-yellow-900 text-yellow-400 border-yellow-800"
             : "bg-gray-800 text-gray-400 border-gray-600"
         }`}>
-          {overrideCount > 0 ? `${overrideCount} override(s) active` : "No overrides — using base config"}
+          {changedOverrideCount > 0
+            ? `${changedOverrideCount} changed override(s)${sameOverrideCount > 0 ? ` · ${sameOverrideCount} = base` : ""}`
+            : overrideCount > 0
+            ? `${overrideCount} stored override(s) = base (no behavior change)`
+            : "No overrides — using base config"}
         </span>
         <span className={`px-2 py-0.5 rounded border ${
           config.persistent
@@ -1736,9 +1751,11 @@ function StrategySettingsPanel({
           const override = config.runtime_overrides[f.key];
           const effective = config.effective_config[f.key];
           const hasOverride = f.key in config.runtime_overrides;
+          const isChanged = hasOverride && String(override) !== String(base);
+          const isSameAsBase = hasOverride && !isChanged;
           return (
             <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-              hasOverride ? "border-orange-700" : "border-gray-700"
+              isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
             }`}>
               <label className="block text-xs text-gray-400 mb-1">{f.label}</label>
               <input
@@ -1750,10 +1767,11 @@ function StrategySettingsPanel({
                 onChange={(e) => setDrafts((d) => ({ ...d, [f.key]: e.target.value }))}
                 className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm font-mono text-white focus:outline-none focus:border-blue-500"
               />
-              <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono">
+              <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono flex-wrap">
                 <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
-                {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
-                <span className={hasOverride ? "text-orange-300 font-semibold" : "text-gray-400"}>
+                {isChanged && <span className="text-orange-400">override: {String(override)}</span>}
+                {isSameAsBase && <span className="text-yellow-700">stored: {String(override)} (= base)</span>}
+                <span className={isChanged ? "text-orange-300 font-semibold" : "text-gray-400"}>
                   eff: {effective !== null && effective !== undefined ? String(effective) : "—"}
                 </span>
               </div>
@@ -1766,11 +1784,14 @@ function StrategySettingsPanel({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {STRATEGY_BOOL_FIELDS.map((f) => {
           const base = config.base_config[f.key];
+          const override = config.runtime_overrides[f.key];
           const hasOverride = f.key in config.runtime_overrides;
           const effective = config.effective_config[f.key];
+          const isChanged = hasOverride && String(override) !== String(base);
+          const isSameAsBase = hasOverride && !isChanged;
           return (
             <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-              hasOverride ? "border-orange-700" : "border-gray-700"
+              isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
             }`}>
               <label className="block text-xs text-gray-400 mb-2">{f.label}</label>
               <button
@@ -1785,7 +1806,8 @@ function StrategySettingsPanel({
               </button>
               <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
                 <span>base: {String(base)}</span>
-                {hasOverride && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                {isChanged && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                {isSameAsBase && <span className="text-yellow-700">stored (= base)</span>}
               </div>
             </div>
           );
@@ -1811,11 +1833,14 @@ function StrategySettingsPanel({
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3">
           {[{ key: "PAPER_DAILY_MAX_LOSS_ENABLED", label: "Guard Enabled" }].map((f) => {
             const base = config.base_config[f.key];
+            const override = config.runtime_overrides[f.key];
             const hasOverride = f.key in config.runtime_overrides;
             const effective = config.effective_config[f.key];
+            const isChanged = hasOverride && String(override) !== String(base);
+            const isSameAsBase = hasOverride && !isChanged;
             return (
               <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-                hasOverride ? "border-orange-700" : "border-gray-700"
+                isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
               }`}>
                 <label className="block text-xs text-gray-400 mb-2">{f.label}</label>
                 <button
@@ -1830,7 +1855,8 @@ function StrategySettingsPanel({
                 </button>
                 <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
                   <span>base: {String(base)}</span>
-                  {hasOverride && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                  {isChanged && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                  {isSameAsBase && <span className="text-yellow-700">stored (= base)</span>}
                 </div>
               </div>
             );
@@ -1842,9 +1868,11 @@ function StrategySettingsPanel({
             const override = config.runtime_overrides[f.key];
             const effective = config.effective_config[f.key];
             const hasOverride = f.key in config.runtime_overrides;
+            const isChanged = hasOverride && String(override) !== String(base);
+            const isSameAsBase = hasOverride && !isChanged;
             return (
               <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-                hasOverride ? "border-orange-700" : "border-gray-700"
+                isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
               }`}>
                 <label className="block text-xs text-gray-400 mb-1">{f.label}</label>
                 <input
@@ -1856,10 +1884,11 @@ function StrategySettingsPanel({
                   onChange={(e) => setDrafts((d) => ({ ...d, [f.key]: e.target.value }))}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm font-mono text-white focus:outline-none focus:border-red-500"
                 />
-                <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono">
+                <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono flex-wrap">
                   <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
-                  {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
-                  <span className={hasOverride ? "text-orange-300 font-semibold" : "text-gray-400"}>
+                  {isChanged && <span className="text-orange-400">override: {String(override)}</span>}
+                  {isSameAsBase && <span className="text-yellow-700">stored: {String(override)} (= base)</span>}
+                  <span className={isChanged ? "text-orange-300 font-semibold" : "text-gray-400"}>
                     eff: {effective !== null && effective !== undefined ? String(effective) : "—"}
                   </span>
                 </div>
@@ -1892,11 +1921,14 @@ function StrategySettingsPanel({
             { key: "PAPER_MOMENTUM_REQUIRE_MARKET_RISK_ON", label: "Require Risk-On Regime" },
           ].map((f) => {
             const base = config.base_config[f.key];
+            const override = config.runtime_overrides[f.key];
             const hasOverride = f.key in config.runtime_overrides;
             const effective = config.effective_config[f.key];
+            const isChanged = hasOverride && String(override) !== String(base);
+            const isSameAsBase = hasOverride && !isChanged;
             return (
               <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-                hasOverride ? "border-orange-700" : "border-gray-700"
+                isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
               }`}>
                 <label className="block text-xs text-gray-400 mb-2">{f.label}</label>
                 <button
@@ -1911,7 +1943,8 @@ function StrategySettingsPanel({
                 </button>
                 <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
                   <span>base: {String(base)}</span>
-                  {hasOverride && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                  {isChanged && <span className="text-orange-400">ovr: {String(effective)}</span>}
+                  {isSameAsBase && <span className="text-yellow-700">stored (= base)</span>}
                 </div>
               </div>
             );
@@ -1924,9 +1957,11 @@ function StrategySettingsPanel({
             const override = config.runtime_overrides[f.key];
             const effective = config.effective_config[f.key];
             const hasOverride = f.key in config.runtime_overrides;
+            const isChanged = hasOverride && String(override) !== String(base);
+            const isSameAsBase = hasOverride && !isChanged;
             return (
               <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-                hasOverride ? "border-orange-700" : "border-gray-700"
+                isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
               }`}>
                 <label className="block text-xs text-gray-400 mb-1">{f.label}</label>
                 <input
@@ -1938,10 +1973,11 @@ function StrategySettingsPanel({
                   onChange={(e) => setDrafts((d) => ({ ...d, [f.key]: e.target.value }))}
                   className="w-full bg-gray-800 border border-gray-600 rounded px-2 py-1 text-sm font-mono text-white focus:outline-none focus:border-purple-500"
                 />
-                <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono">
+                <div className="mt-1 flex gap-3 text-xs text-gray-500 font-mono flex-wrap">
                   <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
-                  {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
-                  <span className={hasOverride ? "text-orange-300 font-semibold" : "text-gray-400"}>
+                  {isChanged && <span className="text-orange-400">override: {String(override)}</span>}
+                  {isSameAsBase && <span className="text-yellow-700">stored: {String(override)} (= base)</span>}
+                  <span className={isChanged ? "text-orange-300 font-semibold" : "text-gray-400"}>
                     eff: {effective !== null && effective !== undefined ? String(effective) : "—"}
                   </span>
                 </div>
@@ -1953,7 +1989,9 @@ function StrategySettingsPanel({
 
       {/* No-Catalyst Momentum Entry panel — read-only display of currently active path */}
       {config && (() => {
-        const ncOverrideCount = Object.keys(config.runtime_overrides).filter(k => k.startsWith("PAPER_NO_CATALYST_")).length;
+        const ncChangedCount = Object.keys(config.runtime_overrides).filter(k =>
+          k.startsWith("PAPER_NO_CATALYST_") && String(config.runtime_overrides[k]) !== String(config.base_config[k])
+        ).length;
         const ncEnabled = config.effective_config["PAPER_NO_CATALYST_ENTRY_ENABLED"];
         return (
           <div className="border border-blue-800 rounded p-3 bg-gray-950">
@@ -1966,9 +2004,9 @@ function StrategySettingsPanel({
               }`}>
                 {ncEnabled ? "ENABLED" : "DISABLED"}
               </span>
-              {ncOverrideCount > 0 && (
+              {ncChangedCount > 0 && (
                 <span className="text-xs px-2 py-0.5 rounded border bg-orange-900 text-orange-300 border-orange-700">
-                  {ncOverrideCount} active override{ncOverrideCount > 1 ? "s" : ""}
+                  {ncChangedCount} changed override{ncChangedCount > 1 ? "s" : ""}
                 </span>
               )}
             </div>
@@ -1982,21 +2020,24 @@ function StrategySettingsPanel({
                 const override = config.runtime_overrides[f.key];
                 const effective = config.effective_config[f.key];
                 const hasOverride = f.key in config.runtime_overrides;
+                const isChanged = hasOverride && String(override) !== String(base);
+                const isSameAsBase = hasOverride && !isChanged;
                 return (
                   <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-                    hasOverride ? "border-orange-700" : "border-gray-700"
+                    isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
                   }`}>
                     <div className="text-xs text-gray-400 mb-1">{f.label}</div>
                     <div className={`text-sm font-mono font-semibold ${
                       f.type === "bool"
                         ? (effective ? "text-green-400" : "text-gray-500")
-                        : hasOverride ? "text-orange-300" : "text-white"
+                        : isChanged ? "text-orange-300" : "text-white"
                     }`}>
                       {effective !== null && effective !== undefined ? String(effective) : "—"}
                     </div>
                     <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
                       <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
-                      {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
+                      {isChanged && <span className="text-orange-400">override: {String(override)}</span>}
+                      {isSameAsBase && <span className="text-yellow-700">stored (= base)</span>}
                     </div>
                   </div>
                 );
@@ -2022,9 +2063,15 @@ function StrategySettingsPanel({
               </span>
               <span className="text-xs text-gray-500">volume_gate_mode</span>
             </div>
-            <p className="text-xs text-gray-500 italic mb-3">
+            <p className="text-xs text-gray-500 italic mb-2">
               When enabled and in regular session (9:30–16:00 ET), the volume gate uses time-adjusted
               relative volume instead of raw full-day volume ratio. Fake-money simulation only. No broker. No real orders.
+            </p>
+            <p className="text-xs text-gray-600 mb-3">
+              <span className="font-semibold text-gray-500">Separate gates for separate entry paths:</span>{" "}
+              Catalyst/Standard path uses <span className="font-mono text-gray-400">PAPER_MIN_VOLUME_RATIO</span> (raw, default 0.8) ·
+              No-Catalyst path uses <span className="font-mono text-gray-400">PAPER_NO_CATALYST_MIN_VOLUME_RATIO</span> (raw, default 1.5) ·
+              Time-Adjusted gate uses <span className="font-mono text-gray-400">PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN</span> (adjusted, default 0.8, regular session only).
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {TA_VOLUME_FIELDS.map((f) => {
@@ -2032,21 +2079,24 @@ function StrategySettingsPanel({
                 const override = config.runtime_overrides[f.key];
                 const effective = config.effective_config[f.key];
                 const hasOverride = f.key in config.runtime_overrides;
+                const isChanged = hasOverride && String(override) !== String(base);
+                const isSameAsBase = hasOverride && !isChanged;
                 return (
                   <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
-                    hasOverride ? "border-orange-700" : "border-gray-700"
+                    isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
                   }`}>
                     <div className="text-xs text-gray-400 mb-1">{f.label}</div>
                     <div className={`text-sm font-mono font-semibold ${
                       f.type === "bool"
                         ? (effective ? "text-indigo-400" : "text-gray-500")
-                        : hasOverride ? "text-orange-300" : "text-white"
+                        : isChanged ? "text-orange-300" : "text-white"
                     }`}>
                       {effective !== null && effective !== undefined ? String(effective) : "—"}
                     </div>
                     <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
                       <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
-                      {hasOverride && <span className="text-orange-400">override: {String(override)}</span>}
+                      {isChanged && <span className="text-orange-400">override: {String(override)}</span>}
+                      {isSameAsBase && <span className="text-yellow-700">stored (= base)</span>}
                     </div>
                   </div>
                 );
