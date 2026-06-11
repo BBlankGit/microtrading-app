@@ -387,10 +387,17 @@ interface NewsSnapshot {
   source: string;
   analysis_mode?: string;
   fetched_at: string | null;
-  age_seconds: number | null;
-  fetch_duration_ms?: number;
+  cache_age_seconds?: number | null;
+  ttl_seconds?: number | null;
+  stale?: boolean;
+  total_count?: number;
+  returned_count?: number;
+  limit?: number;
+  offset?: number;
+  filters_applied?: Record<string, unknown>;
+  sort_by?: string;
+  sort_dir?: string;
   symbols_requested?: string[];
-  total_results: number;
   results: NewsCatalystItem[];
   errors?: { symbol: string; error: string }[];
   warning: string | null;
@@ -2994,7 +3001,6 @@ type IntelTab = typeof INTEL_TABS[number]["key"];
 function IntelligenceSection({
   reddit,
   premarket,
-  news,
   earnings,
   insiders,
   token,
@@ -3002,7 +3008,6 @@ function IntelligenceSection({
 }: {
   reddit: RedditSnapshot | null;
   premarket: PremarketSnapshot | null;
-  news: NewsSnapshot | null;
   earnings: PlaceholderFeed | null;
   insiders: PlaceholderFeed | null;
   token: string;
@@ -3408,7 +3413,7 @@ function IntelligenceSection({
       {/* Tab content */}
       {activeTab === "reddit"    && <RedditTab />}
       {activeTab === "premarket" && <PremarketTab />}
-      {activeTab === "news"      && <NewsTab data={news} />}
+      {activeTab === "news"      && <NewsTab token={token} />}
       {activeTab === "earnings"  && <NotImplementedFeed name="Earnings Calendar" data={earnings} />}
       {activeTab === "insiders"  && <NotImplementedFeed name="Insider Transactions" data={insiders} />}
       {activeTab === "heatmap"   && <ComingSoon name="Sector Heatmap" />}
@@ -3419,29 +3424,203 @@ function IntelligenceSection({
 
 // ── News / Earnings / Insiders / LLM tabs (Phase I5) ──────────────────────────
 
-function NewsTab({ data }: { data: NewsSnapshot | null }) {
-  if (!data) {
+function NewsTab({ token }: { token: string }) {
+  const [data, setData] = useState<NewsSnapshot | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [q, setQ] = useState("");
+  const [ticker, setTicker] = useState("");
+  const [eventType, setEventType] = useState("");
+  const [sentiment, setSentiment] = useState("");
+  const [sortBy, setSortBy] = useState("published_at");
+  const [sortDir, setSortDir] = useState("desc");
+  const [limit, setLimit] = useState(100);
+  const [refreshMsg, setRefreshMsg] = useState("");
+
+  const fetchNewsLocal = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (q.trim()) params.set("q", q.trim());
+    if (ticker.trim()) params.set("ticker", ticker.trim());
+    if (eventType) params.set("event_type", eventType);
+    if (sentiment) params.set("sentiment", sentiment);
+    params.set("sort_by", sortBy);
+    params.set("sort_dir", sortDir);
+    params.set("limit", String(limit));
+    setLoading(true);
+    try {
+      const r = await fetch(`/api/intelligence/news?${params.toString()}`);
+      if (r.ok) setData(await r.json());
+    } catch {
+      /* ignore */
+    } finally {
+      setLoading(false);
+    }
+  }, [q, ticker, eventType, sentiment, sortBy, sortDir, limit]);
+
+  // Debounce filter changes so typing doesn't fire on every keystroke.
+  useEffect(() => {
+    const id = setTimeout(() => { fetchNewsLocal(); }, 300);
+    return () => clearTimeout(id);
+  }, [fetchNewsLocal]);
+
+  // Periodic poll for cache_age display (cache-first backend; no Polygon pressure).
+  useEffect(() => {
+    const id = setInterval(() => { fetchNewsLocal(); }, 30_000);
+    return () => clearInterval(id);
+  }, [fetchNewsLocal]);
+
+  async function handleManualRefresh() {
+    if (!token) {
+      setRefreshMsg("Enter ADMIN_API_TOKEN in the Controls section to refresh the news cache.");
+      return;
+    }
+    setRefreshMsg("Refreshing news cache…");
+    try {
+      const r = await fetch("/api/intelligence/news/refresh", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await r.json();
+      if (r.ok && body.ok) {
+        setRefreshMsg(`Cache refreshed — ${body.total_count ?? 0} items in ${body.fetch_duration_ms ?? "?"}ms`);
+        await fetchNewsLocal();
+      } else {
+        setRefreshMsg(`Refresh failed: ${body.error ?? body.detail ?? JSON.stringify(body)}`);
+      }
+    } catch (e) {
+      setRefreshMsg(`Error: ${String(e)}`);
+    }
+  }
+
+  if (!data && loading) {
     return <div className="text-center py-8 text-gray-500 text-sm animate-pulse">Loading news/catalyst feed…</div>;
+  }
+  if (!data) {
+    return <div className="text-center py-8 text-gray-500 text-sm">No news data.</div>;
   }
   const items = data.results ?? [];
   const fetchedAt = data.fetched_at ? new Date(data.fetched_at).toUTCString().replace(" GMT", " UTC") : "—";
+  const cacheAge = data.cache_age_seconds;
+  const cacheAgeLabel = cacheAge == null ? "—"
+    : cacheAge < 60 ? `${cacheAge}s ago`
+    : cacheAge < 3600 ? `${Math.round(cacheAge / 60)}m ago`
+    : `${Math.round(cacheAge / 3600)}h ago`;
 
   return (
     <div>
       <div className="mb-3 rounded border border-blue-800 bg-blue-950 px-3 py-2 text-xs text-blue-300">
         <span className="font-semibold">Rule-based analysis.</span> News/catalyst scoring is deterministic
         (event-type classification + keyword/structured sentiment + materiality). No AI/LLM analysis yet.
+        Backend is cache-first (TTL {data.ttl_seconds ?? 300}s) — GET does not call Polygon on each refresh.
       </div>
 
+      {/* Filter / search / sort controls */}
+      <div className="mb-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
+        <input
+          type="text"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search ticker, company, keyword, source, catalyst…"
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        />
+        <input
+          type="text"
+          value={ticker}
+          onChange={(e) => setTicker(e.target.value.toUpperCase())}
+          placeholder="Ticker (exact, e.g. NVDA)"
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-500"
+        />
+        <select
+          value={eventType}
+          onChange={(e) => setEventType(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="">Event type: any</option>
+          <option value="generic_news">generic_news</option>
+          <option value="earnings">earnings</option>
+          <option value="fda_regulatory">fda_regulatory</option>
+          <option value="product_launch">product_launch</option>
+          <option value="offering">offering</option>
+          <option value="legal_regulatory">legal_regulatory</option>
+          <option value="macro">macro</option>
+          <option value="sector_news">sector_news</option>
+        </select>
+        <select
+          value={sentiment}
+          onChange={(e) => setSentiment(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="">Sentiment: any</option>
+          <option value="bullish">bullish</option>
+          <option value="bearish">bearish</option>
+          <option value="mixed">mixed</option>
+          <option value="neutral">neutral</option>
+          <option value="unknown">unknown</option>
+        </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="published_at">Sort: Date</option>
+          <option value="ticker">Sort: Ticker</option>
+          <option value="event_type">Sort: Event Type</option>
+          <option value="materiality_score">Sort: Materiality</option>
+          <option value="sentiment_score">Sort: Sentiment Score</option>
+          <option value="fetched_at">Sort: Fetched</option>
+        </select>
+        <select
+          value={sortDir}
+          onChange={(e) => setSortDir(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="desc">Newest / High → Low</option>
+          <option value="asc">Oldest / Low → High</option>
+        </select>
+        <select
+          value={limit}
+          onChange={(e) => setLimit(parseInt(e.target.value, 10))}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value={50}>Limit: 50</option>
+          <option value={100}>Limit: 100</option>
+          <option value={250}>Limit: 250</option>
+          <option value={500}>Limit: 500</option>
+        </select>
+        <div className="flex gap-2">
+          <button
+            onClick={() => { setQ(""); setTicker(""); setEventType(""); setSentiment(""); setSortBy("published_at"); setSortDir("desc"); setLimit(100); }}
+            className="flex-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm font-semibold transition-colors"
+          >
+            Clear
+          </button>
+          <button
+            onClick={handleManualRefresh}
+            disabled={!token}
+            title={token ? "Force fresh Polygon fetch (admin)" : "Enter ADMIN_API_TOKEN in Controls to enable"}
+            className={`flex-1 px-3 py-1.5 rounded text-sm font-semibold transition-colors ${
+              token ? "bg-blue-700 hover:bg-blue-600" : "bg-gray-800 text-gray-500 cursor-not-allowed"
+            }`}
+          >
+            ↺ Refresh
+          </button>
+        </div>
+      </div>
+
+      {refreshMsg && (
+        <p className="text-xs text-yellow-300 font-mono mb-3">{refreshMsg}</p>
+      )}
+
       <div className="flex flex-wrap items-center gap-3 mb-4 text-xs text-gray-400">
-        <span className="bg-gray-700 px-2 py-0.5 rounded font-mono">source: {data.source}</span>
-        <span>Fetched: {fetchedAt}</span>
-        <span>{items.length} items</span>
+        <span className="bg-gray-700 px-2 py-0.5 rounded font-mono">source: cache-first</span>
+        <span>Cache: {fetchedAt}</span>
+        <span>Age: {cacheAgeLabel}</span>
+        {data.ttl_seconds != null && <span>TTL: {data.ttl_seconds}s</span>}
+        <span>Showing <span className="text-gray-200 font-semibold">{data.returned_count ?? items.length}</span> of <span className="text-gray-200 font-semibold">{data.total_count ?? "?"}</span> matched</span>
         {data.symbols_requested && (
-          <span>{data.symbols_requested.length} symbols</span>
+          <span>{data.symbols_requested.length} symbols cached</span>
         )}
-        {data.fetch_duration_ms != null && (
-          <span>fetch: {data.fetch_duration_ms}ms</span>
+        {data.stale && (
+          <span className="text-yellow-400">⚠ stale</span>
         )}
       </div>
 
@@ -3452,7 +3631,7 @@ function NewsTab({ data }: { data: NewsSnapshot | null }) {
       )}
 
       {items.length === 0 ? (
-        <p className="text-gray-500 text-sm py-4 text-center">No news items returned.</p>
+        <p className="text-gray-500 text-sm py-4 text-center">No news items match the current filters.</p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -3569,17 +3748,20 @@ export default function Home() {
   const [lastRefresh, setLastRefresh] = useState("");
   const [reddit, setReddit] = useState<RedditSnapshot | null>(null);
   const [premarket, setPremarket] = useState<PremarketSnapshot | null>(null);
-  const [news, setNews] = useState<NewsSnapshot | null>(null);
   const [earnings, setEarnings] = useState<PlaceholderFeed | null>(null);
   const [insiders, setInsiders] = useState<PlaceholderFeed | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigState | null>(null);
   const [topTab, setTopTab] = useState<"main" | "intelligence" | "strategy">("main");
 
+  // Note: NewsTab manages its own fetching with filters (cache-first backend).
+  // It is intentionally not part of the global 30s refresh loop to avoid
+  // recurring fetches when the Intelligence tab is not open.
+
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, newsdata, erndata, insdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, erndata, insdata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
       fetchReddit(), fetchPremarket(), fetchRuntimeConfig(),
-      fetchNews(), fetchEarnings(), fetchInsiders(),
+      fetchEarnings(), fetchInsiders(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -3589,7 +3771,6 @@ export default function Home() {
     setReddit(rddata);
     setPremarket(pmdata);
     setRuntimeConfig(rcfgdata);
-    setNews(newsdata);
     setEarnings(erndata);
     setInsiders(insdata);
     setLoading(false);
@@ -3917,7 +4098,6 @@ export default function Home() {
           <IntelligenceSection
             reddit={reddit}
             premarket={premarket}
-            news={news}
             earnings={earnings}
             insiders={insiders}
             token={token}

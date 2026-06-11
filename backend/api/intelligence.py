@@ -2,7 +2,10 @@
 Intelligence API — read-only data layer, no broker, no live trading, no real orders.
 Phase I2: Reddit ranking. Phase I3-A: Pre-market movers. Phase I3-B: Full-universe scanner.
 Phase I5: News/Earnings/Insiders intelligence feed surface (read-only display).
+Phase I5-H1: Cache-first news GET + search/filter/sort + admin-protected refresh.
 """
+import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 
@@ -16,7 +19,15 @@ from intelligence import full_premarket as full_premarket_intel
 from intelligence import premarket as premarket_intel
 from intelligence import reddit as reddit_intel
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/intelligence", tags=["intelligence"])
+
+# ── Phase I5-H1: News cache (module-level, no external call on every GET) ─────
+_news_cache: dict | None = None
+_news_cache_time: float | None = None
+_news_fetch_lock = asyncio.Lock()
+_NEWS_TTL_SECONDS = 300  # 5 minutes
 
 
 @router.get("/reddit")
@@ -213,60 +224,240 @@ async def premarket_status():
 # ── Phase I5: News / Earnings / Insiders feeds (read-only display) ────────────
 
 
+def _cache_age_seconds() -> float | None:
+    if _news_cache_time is None:
+        return None
+    return max(0.0, time.monotonic() - _news_cache_time)
+
+
+def _cache_is_fresh() -> bool:
+    age = _cache_age_seconds()
+    return age is not None and age < _NEWS_TTL_SECONDS
+
+
+async def _fetch_news_into_cache(force: bool = False) -> dict:
+    """
+    Single-flight refresh: only one task touches Polygon at a time.
+    Skips fetch if cache is already fresh (unless force=True).
+    """
+    global _news_cache, _news_cache_time
+    async with _news_fetch_lock:
+        if not force and _cache_is_fresh():
+            return {"refreshed": False, "reason": "cache_fresh"}
+
+        started = time.monotonic()
+        raw = await collect_news_for_symbols(
+            list(DEFAULT_UNIVERSE),
+            limit_per_symbol=20,
+            apply_filter=False,
+            max_age_hours=72,
+            classify_events=True,
+            analyze_sentiment=True,
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        catalysts = raw.get("catalysts", []) or []
+
+        _news_cache = {
+            "results": catalysts,
+            "errors": raw.get("errors", []),
+            "symbols_requested": raw.get("symbols_requested", []),
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fetch_duration_ms": elapsed_ms,
+        }
+        _news_cache_time = time.monotonic()
+        return {"refreshed": True, "duration_ms": elapsed_ms, "result_count": len(catalysts)}
+
+
+def _haystack(it: dict) -> str:
+    parts = [
+        it.get("title") or "",
+        it.get("description") or "",
+        it.get("source") or "",
+        it.get("publisher") or "",
+        it.get("event_type") or "",
+        it.get("classified_event_type") or "",
+        it.get("sentiment") or "",
+        it.get("symbol") or "",
+        " ".join(it.get("tickers") or []),
+        it.get("article_url") or "",
+        " ".join(it.get("bullish_flags") or []),
+        " ".join(it.get("bearish_flags") or []),
+        " ".join(it.get("keywords") or []),
+        " ".join(it.get("sentiment_reasons") or []),
+    ]
+    return " ".join(parts).lower()
+
+
+_SORT_KEYS = {
+    "published_at":     lambda it: it.get("published_utc") or "",
+    "fetched_at":       lambda it: it.get("collected_at") or "",
+    "ticker":           lambda it: (it.get("symbol") or "").upper(),
+    "event_type":       lambda it: (it.get("classified_event_type") or it.get("event_type") or "").lower(),
+    "materiality_score": lambda it: it.get("materiality_score") if it.get("materiality_score") is not None else -1,
+    "sentiment_score":  lambda it: it.get("sentiment_score") if it.get("sentiment_score") is not None else 0,
+}
+
+
 @router.get("/news")
 async def get_intelligence_news(
-    symbols: str | None = Query(
-        default=None,
-        description="Comma-separated tickers; defaults to DEFAULT_UNIVERSE when omitted.",
-    ),
-    limit_per_symbol: int = Query(default=5, ge=1, le=20),
-    max_age_hours: int = Query(default=24, ge=1, le=168),
+    q: str | None = Query(default=None, description="Free-text search over title/source/url/event/flags."),
+    ticker: str | None = Query(default=None, description="Exact ticker filter (case-insensitive)."),
+    symbol: str | None = Query(default=None, description="Alias for ticker."),
+    event_type: str | None = Query(default=None, description="Catalyst/event type filter."),
+    sentiment: str | None = Query(default=None, description="bullish/bearish/mixed/neutral/unknown."),
+    min_materiality: float | None = Query(default=None, description="Materiality score floor."),
+    sort_by: str = Query(default="published_at"),
+    sort_dir: str = Query(default="desc"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ):
     """
-    Recent news catalysts surfaced for the Intelligence dashboard.
+    Cache-first news/catalyst feed for the Intelligence dashboard.
 
-    Wraps catalysts.news_collector with classify_events + analyze_sentiment
-    so each item carries deterministic event-type / sentiment / materiality
-    flags. Rule-based — NOT AI/LLM analysis. Read-only display feed; does not
-    affect trading decisions on its own (the engine uses its own catalyst
-    scoring path via paper.simulator).
+    Reads from a module-level cache (TTL 5 min). Does NOT call Polygon on
+    every GET — dashboard auto-refresh polls only the local cache. To force
+    a fresh collection, use POST /api/intelligence/news/refresh (admin).
+
+    The cold start (cache empty) triggers one single-flight initial fetch
+    so the page is not empty on first load; subsequent requests in the
+    same TTL window read the in-memory cache.
+
+    Rule-based — NO AI/LLM. Engine's catalyst scoring uses its own path
+    (catalysts.scoring); this endpoint is a display feed only.
     """
-    if symbols:
-        parts = [s.strip().upper() for s in symbols.split(",")]
-        syms = [s for s in parts if s][:25]
-    else:
-        syms = list(DEFAULT_UNIVERSE)
+    # Cold-start: one initial fetch (single-flight via lock)
+    if _news_cache is None:
+        try:
+            await _fetch_news_into_cache()
+        except Exception as exc:
+            logger.warning("News cache cold-start fetch failed: %s", exc)
 
-    started = time.monotonic()
-    raw = await collect_news_for_symbols(
-        syms,
-        limit_per_symbol=limit_per_symbol,
-        apply_filter=False,
-        max_age_hours=max_age_hours,
-        classify_events=True,
-        analyze_sentiment=True,
-    )
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-    catalysts = raw.get("catalysts", []) or []
+    cache_present = _news_cache is not None
+    age = _cache_age_seconds()
+    stale = bool(age is not None and age >= _NEWS_TTL_SECONDS)
+
+    if not cache_present:
+        return {
+            "ok": True,
+            "enabled": True,
+            "implemented": True,
+            "source": "polygon_news + deterministic rule-based classify/sentiment (cache-first)",
+            "analysis_mode": "rule-based (no AI/LLM)",
+            "fetched_at": None,
+            "cache_age_seconds": None,
+            "ttl_seconds": _NEWS_TTL_SECONDS,
+            "stale": False,
+            "total_count": 0,
+            "returned_count": 0,
+            "limit": limit,
+            "offset": offset,
+            "filters_applied": {},
+            "sort_by": sort_by,
+            "sort_dir": sort_dir.lower(),
+            "symbols_requested": [],
+            "results": [],
+            "errors": [],
+            "warning": "News cache is empty — POST /api/intelligence/news/refresh to populate.",
+            "note": "Cache-first display feed. No external calls per GET.",
+        }
+
+    items = list(_news_cache.get("results") or [])
+    filters_applied: dict = {}
+
+    tkr_filter = (ticker or symbol or "").strip().upper()
+    if tkr_filter:
+        def _matches_ticker(it: dict) -> bool:
+            if (it.get("symbol") or "").upper() == tkr_filter:
+                return True
+            tickers = [str(t).upper() for t in (it.get("tickers") or [])]
+            return tkr_filter in tickers
+        items = [it for it in items if _matches_ticker(it)]
+        filters_applied["ticker"] = tkr_filter
+
+    if event_type:
+        et = event_type.strip().lower()
+        items = [
+            it for it in items
+            if (it.get("classified_event_type") or it.get("event_type") or "").lower() == et
+        ]
+        filters_applied["event_type"] = et
+
+    if sentiment:
+        s = sentiment.strip().lower()
+        items = [it for it in items if (it.get("sentiment") or "").lower() == s]
+        filters_applied["sentiment"] = s
+
+    if min_materiality is not None:
+        items = [
+            it for it in items
+            if (it.get("materiality_score") if it.get("materiality_score") is not None else 0) >= min_materiality
+        ]
+        filters_applied["min_materiality"] = min_materiality
+
+    if q:
+        ql = q.strip().lower()
+        items = [it for it in items if ql in _haystack(it)]
+        filters_applied["q"] = q
+
+    key_fn = _SORT_KEYS.get(sort_by, _SORT_KEYS["published_at"])
+    reverse = (sort_dir or "desc").lower() != "asc"
+    try:
+        items.sort(key=key_fn, reverse=reverse)
+    except TypeError:
+        items.sort(key=lambda it: str(key_fn(it)), reverse=reverse)
+
+    total = len(items)
+    paged = items[offset:offset + limit]
 
     return {
         "ok": True,
         "enabled": True,
         "implemented": True,
-        "source": "polygon_news + deterministic rule-based classify/sentiment",
+        "source": "polygon_news + deterministic rule-based classify/sentiment (cache-first)",
         "analysis_mode": "rule-based (no AI/LLM)",
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "age_seconds": 0,
-        "fetch_duration_ms": elapsed_ms,
-        "symbols_requested": raw.get("symbols_requested", []),
-        "total_results": len(catalysts),
-        "results": catalysts,
-        "errors": raw.get("errors", []),
-        "warning": None,
+        "fetched_at": _news_cache.get("fetched_at"),
+        "cache_age_seconds": int(age) if age is not None else None,
+        "ttl_seconds": _NEWS_TTL_SECONDS,
+        "stale": stale,
+        "total_count": total,
+        "returned_count": len(paged),
+        "limit": limit,
+        "offset": offset,
+        "filters_applied": filters_applied,
+        "sort_by": sort_by,
+        "sort_dir": (sort_dir or "desc").lower(),
+        "symbols_requested": _news_cache.get("symbols_requested", []),
+        "results": paged,
+        "errors": _news_cache.get("errors", []),
+        "warning": ("Cache is stale; POST /api/intelligence/news/refresh to update." if stale else None),
         "note": (
             "Used by engine via catalysts.scoring (deterministic rules). "
             "Display feed only — no live orders, no AI/LLM."
         ),
+    }
+
+
+@router.post("/news/refresh", dependencies=[Depends(require_admin_token)])
+async def refresh_intelligence_news():
+    """
+    Admin: force a fresh Polygon news collection and update the news cache.
+    Single-flight via lock; concurrent calls coalesce.
+    """
+    try:
+        info = await _fetch_news_into_cache(force=True)
+    except Exception as exc:
+        logger.warning("News refresh failed: %s", exc)
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "fetched_at": _news_cache.get("fetched_at") if _news_cache else None,
+        }
+    return {
+        "ok": True,
+        "refreshed": info.get("refreshed", True),
+        "fetched_at": _news_cache.get("fetched_at") if _news_cache else None,
+        "total_count": len(_news_cache.get("results", [])) if _news_cache else 0,
+        "fetch_duration_ms": info.get("duration_ms"),
     }
 
 
