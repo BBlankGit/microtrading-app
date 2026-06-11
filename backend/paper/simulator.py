@@ -41,6 +41,66 @@ _DESIRED_RUNNING_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:desired_running"
 _MM_SAFE_SESSIONS: frozenset[str] = frozenset({"premarket", "regular"})
 
 
+# ── Phase M1-H4: pure helper for trend telemetry per actual selected branch ──
+# Called only AFTER the entry-decision branch chain assigns _final_selected_path.
+# Never infers from broad predicates or candidate source metadata.
+_VALID_TREND_PATHS: frozenset[str] = frozenset({
+    "catalyst",
+    "market_mover_no_catalyst",
+    "no_catalyst",
+    "legacy_momentum",
+    "rejected_before_path",
+})
+
+
+def _trend_usage_for_path(
+    path_name: str,
+    tick_regime: dict | None,
+    tick_regime_adjusted: dict | None,
+    *,
+    apply_legacy: bool,
+    apply_no_cat: bool,
+    apply_mm: bool,
+    apply_catalyst: bool,
+) -> dict:
+    """
+    Compute trend telemetry strictly from the final entry branch selected.
+
+    Args:
+      path_name: one of catalyst | market_mover_no_catalyst | no_catalyst |
+                 legacy_momentum | rejected_before_path
+      tick_regime: raw regime dict (or None)
+      tick_regime_adjusted: trend-adjusted regime dict (or None when trend
+                            isn't computed)
+      apply_*: per-consumer config flags
+
+    Returns dict with: path_name, consumed, regime_used, regime_label_used.
+    """
+    if path_name not in _VALID_TREND_PATHS:
+        path_name = "rejected_before_path"
+    apply_for: dict[str, bool] = {
+        "catalyst":                 apply_catalyst,
+        "market_mover_no_catalyst": apply_mm,
+        "no_catalyst":              apply_no_cat,
+        "legacy_momentum":          apply_legacy,
+        "rejected_before_path":     False,
+    }
+    apply_flag = apply_for[path_name]
+    consumed = bool(apply_flag and tick_regime_adjusted is not None)
+    regime_used = "trend_adjusted" if consumed else "raw"
+    regime_label_used = (
+        (tick_regime_adjusted or {}).get("regime")
+        if consumed
+        else (tick_regime or {}).get("regime")
+    )
+    return {
+        "path_name": path_name,
+        "consumed": consumed,
+        "regime_used": regime_used,
+        "regime_label_used": regime_label_used,
+    }
+
+
 def _ny_trading_date() -> str:
     """Return current calendar date in America/New_York as YYYY-MM-DD."""
     try:
@@ -1262,45 +1322,25 @@ async def run_tick() -> dict[str, Any]:
                     "size_multiplier": _mm_entry_size_mult,
                 }
 
-            # ── Phase M1-H2: determine the actual evaluation path that drove
-            # the regime input for THIS candidate. Telemetry must match the
-            # evaluator that actually consumed regime, not the source metadata.
-            #
-            # Order matches the simulator's own decision precedence:
-            #   1. Hard-rejected before any path → rejected_before_path
-            #      (unless the rejection was "no accepted catalysts" / "only
-            #       generic_news catalysts" — those go through the no_catalyst
-            #       / market_mover_no_catalyst evaluators below.)
-            #   2. No-catalyst rejection + market mover eligible → market_mover_no_catalyst
-            #   3. No-catalyst rejection (no MM eligibility) → no_catalyst
-            #   4. Catalyst-eligible with momentum entry_mode → legacy_momentum
-            #   5. Catalyst-eligible otherwise → catalyst
-            if hard_rejection is not None and not is_no_catalyst_rejection:
-                _trend_path_name = "rejected_before_path"
-                _trend_path_consumed = False
-                _trend_path_regime_used = "raw"
-            elif is_no_catalyst_rejection and _mm_meta is not None and _mm_entry_eligible:
-                _trend_path_name = "market_mover_no_catalyst"
-                _trend_path_consumed = _trend_apply_mm and _tick_regime_adjusted is not None
-                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
-            elif is_no_catalyst_rejection:
-                _trend_path_name = "no_catalyst"
-                _trend_path_consumed = _trend_apply_no_cat and _tick_regime_adjusted is not None
-                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
-            elif momentum_eval and momentum_eval.get("eligible"):
-                _trend_path_name = "legacy_momentum"
-                _trend_path_consumed = _trend_apply_legacy and _tick_regime_adjusted is not None
-                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
-            else:
-                _trend_path_name = "catalyst"
-                _trend_path_consumed = _trend_apply_catalyst and _tick_regime_adjusted is not None
-                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
-
-            _trend_path_regime_label_used = (
-                (_tick_regime_adjusted or {}).get("regime")
-                if _trend_path_regime_used == "trend_adjusted"
-                else (_tick_regime or {}).get("regime")
+            # ── Phase M1-H4: market-trend telemetry is now set ONLY from the
+            # actual selected entry branch (see _final_selected_path below).
+            # These four variables are initialized to the conservative
+            # rejected_before_path defaults so the candidate dict can be
+            # constructed; the real values are written after the branch chain
+            # runs, via _trend_usage_for_path(_final_selected_path, …).
+            _initial_trend_usage = _trend_usage_for_path(
+                "rejected_before_path",
+                _tick_regime,
+                _tick_regime_adjusted,
+                apply_legacy=_trend_apply_legacy,
+                apply_no_cat=_trend_apply_no_cat,
+                apply_mm=_trend_apply_mm,
+                apply_catalyst=_trend_apply_catalyst,
             )
+            _trend_path_name = _initial_trend_usage["path_name"]
+            _trend_path_consumed = _initial_trend_usage["consumed"]
+            _trend_path_regime_used = _initial_trend_usage["regime_used"]
+            _trend_path_regime_label_used = _initial_trend_usage["regime_label_used"]
 
             candidate: dict[str, Any] = {
                 "symbol": sym,
@@ -1447,8 +1487,15 @@ async def run_tick() -> dict[str, Any]:
             }
 
             # ── Entry decision ────────────────────────────────────────────────
+            # Phase M1-H4: track which entry branch is actually selected for
+            # THIS candidate. Updated INSIDE each branch (not before). After
+            # the branch chain, _trend_usage_for_path() writes the final
+            # market-trend telemetry. No pre-branch inference.
+            _final_selected_path = "rejected_before_path"
+
             # Path A: Catalyst entry (existing logic, unchanged)
             if hard_rejection is None and scoring["score_pass"]:
+                _final_selected_path = "catalyst"
                 candidate["eligible"] = True
                 candidate["entry_mode"] = "catalyst"
                 if _guard["triggered"]:
@@ -1502,6 +1549,7 @@ async def run_tick() -> dict[str, Any]:
                 and _mm_eval is not None
                 and _mm_eval["eligible"]
             ):
+                _final_selected_path = "market_mover_no_catalyst"
                 # Market mover daily limit gate
                 _mm_day_max = int(_cfg("PAPER_MARKET_MOVER_MAX_TRADES_PER_DAY"))
                 if today_market_mover_count >= _mm_day_max:
@@ -1569,6 +1617,7 @@ async def run_tick() -> dict[str, Any]:
                 and nc_eval is not None
                 and nc_eval["eligible"]
             ):
+                _final_selected_path = "no_catalyst"
                 # No-catalyst daily limit gate
                 no_catalyst_max = _cfg("PAPER_NO_CATALYST_MAX_TRADES_PER_DAY")
                 if today_no_catalyst_count >= no_catalyst_max:
@@ -1635,6 +1684,7 @@ async def run_tick() -> dict[str, Any]:
                 and momentum_eval is not None
                 and momentum_eval["eligible"]
             ):
+                _final_selected_path = "legacy_momentum"
                 # Momentum daily limit gate
                 momentum_max = _cfg("PAPER_MOMENTUM_MAX_TRADES_PER_DAY")
                 if today_momentum_count >= momentum_max:
@@ -1697,6 +1747,27 @@ async def run_tick() -> dict[str, Any]:
                 # Catalyst score failed
                 candidate["action"] = "score_rejected"
                 candidate["rejection_reason"] = scoring["decision_reason"]
+
+            # ── Phase M1-H4: write final market-trend telemetry from the
+            # actual selected entry branch. No pre-branch inference: a
+            # catalyst-eligible candidate that is also momentum-eligible
+            # reports "catalyst" (Path A wins). A no-catalyst candidate that
+            # ultimately enters via legacy momentum fallback reports
+            # "legacy_momentum" (Path B wins). When no branch was selected,
+            # _final_selected_path stays "rejected_before_path".
+            _final_trend_usage = _trend_usage_for_path(
+                _final_selected_path,
+                _tick_regime,
+                _tick_regime_adjusted,
+                apply_legacy=_trend_apply_legacy,
+                apply_no_cat=_trend_apply_no_cat,
+                apply_mm=_trend_apply_mm,
+                apply_catalyst=_trend_apply_catalyst,
+            )
+            candidate["market_trend_path_name"]        = _final_trend_usage["path_name"]
+            candidate["market_trend_consumed_by_path"] = _final_trend_usage["consumed"]
+            candidate["market_trend_regime_used"]      = _final_trend_usage["regime_used"]
+            candidate["market_trend_regime_label_used"] = _final_trend_usage["regime_label_used"]
 
             # ── Phase I4-A: Enhanced shadow scoring (diagnostic only) ────────
             # Shadow fields are appended after all real decisions are finalized.
