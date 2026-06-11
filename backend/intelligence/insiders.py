@@ -35,7 +35,11 @@ logger = logging.getLogger(__name__)
 
 # ── In-memory cache ───────────────────────────────────────────────────────────
 _cache: dict | None = None
-_cache_time: float | None = None
+_cache_time: float | None = None  # monotonic time of most recent successful fetch
+_last_attempt_iso: str | None = None
+_last_successful_iso: str | None = None
+_last_refresh_status: str = "never"
+_last_refresh_error: str | None = None
 _fetch_lock = asyncio.Lock()
 
 
@@ -329,6 +333,9 @@ async def fetch_and_refresh(force: bool = False) -> dict:
             return _cache
 
         # status == "active": run wired fetcher
+        global _last_attempt_iso, _last_successful_iso, _last_refresh_status, _last_refresh_error
+        now_iso = datetime.now(timezone.utc).isoformat()
+        _last_attempt_iso = now_iso
         try:
             if prov == "finnhub":
                 results_raw, errors, warning, eff_status = await _fetch_finnhub_insiders()
@@ -338,13 +345,46 @@ async def fetch_and_refresh(force: bool = False) -> dict:
             today = date.today()
             results = [_normalize_row(r, today) for r in results_raw]
 
-            # Rate-limit / error: keep prior cache rows if available.
-            if eff_status in ("rate_limited", "error") and _cache and _cache.get("results"):
-                _cache["provider_status"] = eff_status
-                _cache["warning"] = warning
-                _cache["errors"] = (_cache.get("errors") or []) + errors
+            # ── Rate-limit / error path ──────────────────────────────────────
+            if eff_status in ("rate_limited", "error"):
+                _last_refresh_status = eff_status
+                _last_refresh_error = warning or eff_status
+
+                if _cache and _cache.get("results"):
+                    # Preserve prior cache rows AND prior cache age.
+                    _cache["provider_status"] = eff_status
+                    _cache["warning"] = (warning or eff_status) + " Serving previous successful cache."
+                    _cache["errors"] = (_cache.get("errors") or []) + errors
+                    _cache["last_attempted_at"] = now_iso
+                    _cache["last_refresh_status"] = eff_status
+                    _cache["last_refresh_error"] = warning or eff_status
+                    _cache["serving_stale_cache"] = True
+                    # _cache_time intentionally NOT updated.
+                    return _cache
+
+                _cache = {
+                    "enabled": True,
+                    "available": False,
+                    "implemented": True,
+                    "provider_status": eff_status,
+                    "source": prov,
+                    "fetched_at": None,
+                    "results": [],
+                    "errors": errors,
+                    "warning": warning,
+                    "last_attempted_at": now_iso,
+                    "last_successful_fetched_at": _last_successful_iso,
+                    "serving_stale_cache": False,
+                    "last_refresh_status": eff_status,
+                    "last_refresh_error": warning or eff_status,
+                }
                 _cache_time = time.monotonic()
                 return _cache
+
+            # ── Success path ────────────────────────────────────────────────
+            _last_successful_iso = now_iso
+            _last_refresh_status = "success"
+            _last_refresh_error = None
 
             _cache = {
                 "enabled": True,
@@ -352,30 +392,51 @@ async def fetch_and_refresh(force: bool = False) -> dict:
                 "implemented": True,
                 "provider_status": eff_status,
                 "source": prov,
-                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "fetched_at": now_iso,
                 "results": results,
                 "errors": errors,
                 "warning": warning,
+                "last_attempted_at": now_iso,
+                "last_successful_fetched_at": now_iso,
+                "serving_stale_cache": False,
+                "last_refresh_status": "success",
+                "last_refresh_error": None,
             }
             _cache_time = time.monotonic()
             return _cache
         except Exception as exc:
             logger.warning("Insider fetch failed: %s", type(exc).__name__)
-            keep = _cache or {
+            err_str = f"{type(exc).__name__}: {exc}"
+            _last_refresh_status = "error"
+            _last_refresh_error = err_str
+
+            if _cache and _cache.get("results"):
+                _cache["provider_status"] = "error"
+                _cache["errors"] = (_cache.get("errors") or []) + [{"error": err_str}]
+                _cache["warning"] = "Last fetch failed; serving previous successful cache."
+                _cache["last_attempted_at"] = now_iso
+                _cache["last_refresh_status"] = "error"
+                _cache["last_refresh_error"] = err_str
+                _cache["serving_stale_cache"] = True
+                # _cache_time intentionally NOT updated.
+                return _cache
+
+            _cache = {
                 "enabled": True,
-                "available": True,
+                "available": False,
                 "implemented": True,
                 "provider_status": "error",
                 "source": prov,
                 "fetched_at": None,
                 "results": [],
-                "errors": [],
-                "warning": None,
+                "errors": [{"error": err_str}],
+                "warning": "Last fetch failed; no cache available.",
+                "last_attempted_at": now_iso,
+                "last_successful_fetched_at": _last_successful_iso,
+                "serving_stale_cache": False,
+                "last_refresh_status": "error",
+                "last_refresh_error": err_str,
             }
-            keep["provider_status"] = "error"
-            keep["errors"] = (keep.get("errors") or []) + [{"error": f"{type(exc).__name__}: {exc}"}]
-            keep["warning"] = "Last fetch failed; serving previous cache (if any)."
-            _cache = keep
             _cache_time = time.monotonic()
             return _cache
 

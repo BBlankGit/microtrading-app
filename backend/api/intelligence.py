@@ -577,7 +577,13 @@ async def get_intelligence_earnings(
 
     snap = earnings_intel.get_snapshot() or {}
     age = earnings_intel.cache_age_seconds()
-    stale = bool(age is not None and age >= settings.EARNINGS_CACHE_TTL_SECONDS)
+    # stale=true when: serving preserved cache after failure, OR no usable
+    # cache, OR cache age exceeds TTL. Successful + within-TTL → stale=false.
+    stale = bool(
+        snap.get("serving_stale_cache")
+        or (snap and not snap.get("available", False))
+        or (age is not None and age >= settings.EARNINGS_CACHE_TTL_SECONDS)
+    )
 
     items = list(snap.get("results") or [])
     filters_applied: dict = {}
@@ -630,6 +636,11 @@ async def get_intelligence_earnings(
         "results": paged,
         "errors": snap.get("errors") or [],
         "warning": snap.get("warning"),
+        "last_attempted_at": snap.get("last_attempted_at"),
+        "last_successful_fetched_at": snap.get("last_successful_fetched_at"),
+        "serving_stale_cache": bool(snap.get("serving_stale_cache", False)),
+        "last_refresh_status": snap.get("last_refresh_status"),
+        "last_refresh_error": snap.get("last_refresh_error"),
         "note": "Display feed + scoring proximity input. Earnings alone does not create an entry.",
     }
 
@@ -685,7 +696,11 @@ async def get_intelligence_insiders(
 
     snap = insiders_intel.get_snapshot() or {}
     age = insiders_intel.cache_age_seconds()
-    stale = bool(age is not None and age >= settings.INSIDER_CACHE_TTL_SECONDS)
+    stale = bool(
+        snap.get("serving_stale_cache")
+        or (snap and not snap.get("available", False))
+        or (age is not None and age >= settings.INSIDER_CACHE_TTL_SECONDS)
+    )
 
     items = list(snap.get("results") or [])
     filters_applied: dict = {}
@@ -741,6 +756,11 @@ async def get_intelligence_insiders(
         "results": paged,
         "errors": snap.get("errors") or [],
         "warning": snap.get("warning"),
+        "last_attempted_at": snap.get("last_attempted_at"),
+        "last_successful_fetched_at": snap.get("last_successful_fetched_at"),
+        "serving_stale_cache": bool(snap.get("serving_stale_cache", False)),
+        "last_refresh_status": snap.get("last_refresh_status"),
+        "last_refresh_error": snap.get("last_refresh_error"),
         "note": (
             "Only recent open-market purchases (code P) are treated as bullish. "
             "Sales, awards, tax withholding, and option exercises are cautious / informational."
