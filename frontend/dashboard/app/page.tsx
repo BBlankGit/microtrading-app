@@ -2427,6 +2427,9 @@ function checkStatusClass(status: ReadinessCheck["status"]): string {
 }
 
 function ReadinessPanel({ readiness, config }: { readiness: ReadinessData | null; config?: RuntimeConfigState | null }) {
+  const [rcOpen, setRcOpen] = useState(false);
+  const [rcPinned, setRcPinned] = useState(false);
+
   if (!readiness)
     return <p className="text-gray-500 text-sm">Readiness data unavailable.</p>;
 
@@ -2438,6 +2441,15 @@ function ReadinessPanel({ readiness, config }: { readiness: ReadinessData | null
   const rcSameKeys = config
     ? Object.keys(config.runtime_overrides).filter(k => !isOverrideChanged(k, config.runtime_overrides, config.base_config))
     : [];
+
+  function rcCardMsg(c: ReadinessCheck): string {
+    if (c.name !== "runtime_config") return c.message;
+    if (!config) return "Runtime config: loading…";
+    const parts: string[] = [];
+    if (rcChangedKeys.length > 0) parts.push(`${rcChangedKeys.length} changed`);
+    if (rcSameKeys.length > 0) parts.push(`${rcSameKeys.length} stored same as base`);
+    return `Runtime config: ${parts.length > 0 ? parts.join(", ") : "no overrides"}`;
+  }
 
   return (
     <div className="space-y-4">
@@ -2461,52 +2473,71 @@ function ReadinessPanel({ readiness, config }: { readiness: ReadinessData | null
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
         {checks.map((c) => {
           const isRcCheck = c.name === "runtime_config";
-          const hasTooltip = isRcCheck && config && (rcChangedKeys.length > 0 || rcSameKeys.length > 0);
-          const rcMsg = isRcCheck && config
-            ? [
-                rcChangedKeys.length > 0 ? `${rcChangedKeys.length} changed override${rcChangedKeys.length > 1 ? "s" : ""}` : "",
-                rcSameKeys.length > 0 ? `${rcSameKeys.length} stored same as base` : "",
-              ].filter(Boolean).join(", ") || c.message
-            : c.message;
+          const showPopover = isRcCheck && (rcOpen || rcPinned);
           return (
             <div
               key={c.name}
-              className={`rounded border px-3 py-2 text-xs relative ${hasTooltip ? "group cursor-default" : ""} ${
+              className={`rounded border px-3 py-2 text-xs relative overflow-visible ${isRcCheck ? "cursor-pointer select-none" : ""} ${
                 c.status === "pass"
                   ? "bg-gray-900 border-gray-700"
                   : c.status === "warn"
                   ? "bg-yellow-950 border-yellow-800"
                   : "bg-red-950 border-red-800"
               }`}
+              onMouseEnter={isRcCheck ? () => setRcOpen(true) : undefined}
+              onMouseLeave={isRcCheck ? () => { if (!rcPinned) setRcOpen(false); } : undefined}
+              onClick={isRcCheck ? () => { const next = !rcPinned; setRcPinned(next); setRcOpen(next); } : undefined}
             >
               <div className="flex items-center gap-1.5 mb-0.5">
                 <span className={`font-bold ${checkStatusClass(c.status)}`}>
                   {checkStatusIcon(c.status)}
                 </span>
                 <span className="font-mono text-gray-300 font-semibold">{c.name}</span>
-                {hasTooltip && (
-                  <span className="text-gray-600 ml-auto" title="">ⓘ</span>
+                {isRcCheck && (
+                  <span className={`ml-auto text-xs leading-none ${rcPinned ? "text-blue-400" : "text-gray-500"}`}>
+                    {rcPinned ? "📌" : "ⓘ"}
+                  </span>
                 )}
               </div>
-              <p className="text-gray-400 leading-snug">{rcMsg}</p>
+              <p className="text-gray-400 leading-snug">{rcCardMsg(c)}</p>
 
-              {/* Hover tooltip for runtime_config check */}
-              {hasTooltip && (
-                <div className="absolute z-50 left-0 top-full mt-1 w-80 hidden group-hover:block bg-gray-900 border border-gray-600 rounded shadow-xl p-3 text-xs">
-                  <div className="max-h-56 overflow-y-auto space-y-2">
-                    {rcChangedKeys.length > 0 && (
+              {/* Runtime config popover — React-state controlled, z-[9999] to avoid clipping */}
+              {showPopover && (
+                <div
+                  className="absolute z-[9999] left-0 top-full mt-1 w-96 bg-gray-900 border border-gray-500 rounded-lg shadow-2xl p-3 text-xs"
+                  onClick={(e) => e.stopPropagation()}
+                  onMouseEnter={() => setRcOpen(true)}
+                  onMouseLeave={() => { if (!rcPinned) setRcOpen(false); }}
+                >
+                  <div className="flex items-center justify-between mb-2 pb-1 border-b border-gray-700">
+                    <span className="font-semibold text-gray-200">Runtime Overrides</span>
+                    <button
+                      className="text-gray-500 hover:text-gray-200 text-xs px-1 rounded"
+                      onClick={(e) => { e.stopPropagation(); setRcPinned(false); setRcOpen(false); }}
+                    >
+                      ✕ close
+                    </button>
+                  </div>
+                  <div className="max-h-64 overflow-y-auto space-y-2">
+                    {!config && (
+                      <p className="text-gray-500 italic py-1">Loading runtime config…</p>
+                    )}
+                    {config && rcChangedKeys.length === 0 && rcSameKeys.length === 0 && (
+                      <p className="text-gray-500 italic py-1">No runtime overrides.</p>
+                    )}
+                    {config && rcChangedKeys.length > 0 && (
                       <div>
-                        <p className="font-semibold text-orange-400 mb-1">
+                        <p className="font-semibold text-orange-400 mb-1 uppercase tracking-wide">
                           Changed overrides ({rcChangedKeys.length})
                         </p>
                         <div className="space-y-1">
                           {rcChangedKeys.map(k => (
-                            <div key={k} className="bg-gray-800 rounded px-2 py-1 border border-orange-900">
-                              <span className="font-mono text-orange-300 text-xs break-all">{k}</span>
-                              <div className="flex flex-wrap gap-x-3 mt-0.5 text-gray-400 font-mono">
-                                <span>base: {normalizeConfigValue(config!.base_config[k])}</span>
-                                <span className="text-orange-400">ovr: {normalizeConfigValue(config!.runtime_overrides[k])}</span>
-                                <span className="text-orange-300">eff: {normalizeConfigValue(config!.effective_config[k])}</span>
+                            <div key={k} className="bg-gray-800 rounded px-2 py-1.5 border border-orange-900">
+                              <div className="font-mono text-orange-300 break-all mb-0.5">{k}</div>
+                              <div className="flex flex-wrap gap-x-3 text-gray-400 font-mono">
+                                <span>base: {normalizeConfigValue(config.base_config[k])}</span>
+                                <span className="text-orange-400">ovr: {normalizeConfigValue(config.runtime_overrides[k])}</span>
+                                <span className="text-orange-300 font-semibold">eff: {normalizeConfigValue(config.effective_config[k])}</span>
                                 <span className="text-gray-600">[{getFieldCategory(k)}]</span>
                               </div>
                             </div>
@@ -2514,17 +2545,17 @@ function ReadinessPanel({ readiness, config }: { readiness: ReadinessData | null
                         </div>
                       </div>
                     )}
-                    {rcSameKeys.length > 0 && (
+                    {config && rcSameKeys.length > 0 && (
                       <div>
-                        <p className="font-semibold text-gray-500 mb-1">
+                        <p className="font-semibold text-gray-500 mb-1 uppercase tracking-wide">
                           Stored same as base ({rcSameKeys.length}) — no behavior change
                         </p>
                         <div className="space-y-1">
                           {rcSameKeys.map(k => (
-                            <div key={k} className="bg-gray-800 rounded px-2 py-1 border border-gray-700">
-                              <span className="font-mono text-gray-500 text-xs break-all">{k}</span>
-                              <div className="flex flex-wrap gap-x-3 mt-0.5 text-gray-600 font-mono">
-                                <span>base: {normalizeConfigValue(config!.base_config[k])}</span>
+                            <div key={k} className="bg-gray-800 rounded px-2 py-1.5 border border-gray-700">
+                              <div className="font-mono text-gray-500 break-all mb-0.5">{k}</div>
+                              <div className="flex flex-wrap gap-x-3 text-gray-600 font-mono">
+                                <span>value: {normalizeConfigValue(config.base_config[k])}</span>
                                 <span>[{getFieldCategory(k)}]</span>
                               </div>
                             </div>
