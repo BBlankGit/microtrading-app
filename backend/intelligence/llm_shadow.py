@@ -62,20 +62,77 @@ _cache_lock = asyncio.Lock()
 
 # ── Provider helpers ─────────────────────────────────────────────────────────
 
-# Patterns used to redact accidental key/secret echoes in logged strings.
-_KEY_PATTERNS = [
+# ── Secret redaction (Phase L1-H2) ────────────────────────────────────────────
+#
+# Three pattern groups defend against accidental key echoes in:
+#   - LLM packet `marketdata_error` (Polygon errors can echo URL params)
+#   - llm_status.last_error / llm_error
+#   - any exception text persisted in module telemetry
+#
+# 1. Standalone secret patterns — match the whole credential and replace it
+#    with <redacted>.
+_BARE_SECRET_PATTERNS = [
+    # OpenAI-style "sk-…" keys (≥ 16 chars after the prefix)
     re.compile(r"sk-[A-Za-z0-9_\-]{16,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9_\-]+", re.IGNORECASE),
+    # HTTP Authorization "Bearer <token>" — full match replaced.
+    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.]+", re.IGNORECASE),
 ]
+
+# 2. Known secret-bearing key names. Listed longest-first so that
+#    "OPENAI_API_KEY" is matched before plain "API_KEY".
+_SECRET_KEY_NAMES = (
+    r"OPENAI_API_KEY|POLYGON_API_KEY|FINNHUB_API_KEY|"
+    r"ANTHROPIC_API_KEY|NEWSAPI_KEY|NEWS_API_KEY|"
+    r"access[_-]?token|access[_-]?key|"
+    r"refresh[_-]?token|"
+    r"secret[_-]?key|"
+    r"api[_-]?key|"
+    r"API_KEY|TOKEN|token|key"
+)
+
+# 3. key=value, key:"value", or "key": "value" — both `=` and `:` separators,
+#    with optional quotes around BOTH the key name and the value. Requires a
+#    minimum value length of 6 alphanumeric chars to avoid over-redacting
+#    natural phrases like "key=true" / "token=null" / "sort_key=42".
+_SECRET_ASSIGN_PATTERN = re.compile(
+    rf"\b(?P<name>{_SECRET_KEY_NAMES})"
+    rf"(?P<close_kq>['\"]?)"        # optional closing quote on the key name (JSON)
+    rf"(?P<sep>\s*[:=]\s*)"
+    rf"(?P<vq>['\"]?)"              # optional opening quote on the value
+    rf"(?P<val>[A-Za-z0-9_\-]{{6,}})"
+    rf"(?P=vq)",
+    re.IGNORECASE,
+)
+
+
+def _replace_secret_assign(match: "re.Match[str]") -> str:
+    """Preserve key + separator + matched quotes; replace the value only."""
+    name = match.group("name")
+    close_kq = match.group("close_kq")
+    sep = match.group("sep")
+    vq = match.group("vq")
+    return f"{name}{close_kq}{sep}{vq}<redacted>{vq}"
 
 
 def _redact(text: str | None) -> str:
-    """Best-effort redaction of API-key-like substrings for safe logging."""
+    """
+    Best-effort redaction of credential-like substrings for safe logging.
+
+    Handles:
+      - OpenAI-style `sk-…` keys
+      - HTTP `Bearer <token>` headers
+      - `key=value` / `key:"value"` forms for a curated list of secret-
+        bearing key names (apiKey, api_key, access_token, refresh_token,
+        secret_key, OPENAI_API_KEY, POLYGON_API_KEY, FINNHUB_API_KEY,
+        NEWSAPI_KEY, NEWS_API_KEY, ANTHROPIC_API_KEY, API_KEY, TOKEN, key, token)
+      - URL query strings with any of the above as a parameter name
+    """
     if not text:
         return ""
     out = text
-    for pat in _KEY_PATTERNS:
+    for pat in _BARE_SECRET_PATTERNS:
         out = pat.sub("<redacted>", out)
+    out = _SECRET_ASSIGN_PATTERN.sub(_replace_secret_assign, out)
     return out
 
 
