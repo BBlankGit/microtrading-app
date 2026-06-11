@@ -697,6 +697,31 @@ async def run_tick() -> dict[str, Any]:
         pass
     result["market_regime"] = _tick_regime
 
+    # ── 2c. Phase I6: snapshot earnings + insider caches once per tick ──────────
+    # Cache-first reads only; no external API calls inside the tick loop.
+    _earnings_by_symbol: dict[str, dict] = {}
+    _insider_txns_by_symbol: dict[str, list[dict]] = {}
+    try:
+        from intelligence import earnings as _earnings_intel
+        if _earnings_intel.get_snapshot() is None:
+            try:
+                await _earnings_intel.fetch_and_refresh()
+            except Exception:
+                pass
+        _earnings_by_symbol = _earnings_intel.get_results_by_symbol()
+    except Exception:
+        _earnings_by_symbol = {}
+    try:
+        from intelligence import insiders as _insiders_intel
+        if _insiders_intel.get_snapshot() is None:
+            try:
+                await _insiders_intel.fetch_and_refresh()
+            except Exception:
+                pass
+        _insider_txns_by_symbol = _insiders_intel.get_results_grouped_by_symbol()
+    except Exception:
+        _insider_txns_by_symbol = {}
+
     # ── 2d. Shadow scoring: snapshot premarket + reddit caches once per tick ──
     # Read-only from already-fetched in-memory caches. No new Polygon/ApeWisdom calls.
     # Phase I4-A: shadow/diagnostic only. Does not affect entries, exits, or decisions.
@@ -904,8 +929,26 @@ async def run_tick() -> dict[str, Any]:
             _use_ta_vol = bool(_cfg("PAPER_USE_TIME_ADJUSTED_VOLUME_RATIO")) and _tick_session_type == "regular" and _ta_ratio is not None
             _q_for_paths = dict(q, volume_ratio=_ta_ratio) if _use_ta_vol else q
 
+            # Phase I6: per-symbol earnings + insider info from pre-fetched caches.
+            try:
+                from intelligence.earnings import score_earnings_proximity as _score_earnings
+                _earn_info = _score_earnings(sym, _earnings_by_symbol)
+            except Exception:
+                _earn_info = None
+            try:
+                from intelligence.insiders import score_insiders as _score_insiders
+                _ins_info = _score_insiders(sym, _insider_txns_by_symbol)
+            except Exception:
+                _ins_info = None
+
             # Score using adjusted quality view so scoring volume component also uses TA ratio.
-            scoring = score_candidate(sym, _q_for_paths, cats)
+            scoring = score_candidate(
+                sym,
+                _q_for_paths,
+                cats,
+                earnings_info=_earn_info,
+                insider_info=_ins_info,
+            )
 
             # ── Hard safety gates shared by all entry paths ────────────────────
             # These gates hard-reject regardless of mode.
@@ -1195,6 +1238,23 @@ async def run_tick() -> dict[str, Any]:
                 "bearish_flags": scoring.get("bearish_flags"),
                 "strongest_catalyst_title": scoring.get("strongest_catalyst_title"),
                 "strongest_catalyst_sentiment": scoring.get("strongest_catalyst_sentiment"),
+                # Intelligence adjustments (Phase I6 — fake-money only, transparent)
+                "base_score_before_intelligence_adjustments": scoring.get("base_score_before_intelligence_adjustments"),
+                "intelligence_score_adjustment": scoring.get("intelligence_score_adjustment"),
+                "final_score_after_intelligence_adjustments": scoring.get("final_score_after_intelligence_adjustments"),
+                "earnings_scoring_enabled": scoring.get("earnings_scoring_enabled"),
+                "earnings_next_date": scoring.get("earnings_next_date"),
+                "earnings_days_until": scoring.get("earnings_days_until"),
+                "earnings_score_adjustment": scoring.get("earnings_score_adjustment"),
+                "earnings_reason": scoring.get("earnings_reason"),
+                "earnings_blocked": scoring.get("earnings_blocked"),
+                "insider_scoring_enabled": scoring.get("insider_scoring_enabled"),
+                "insider_recent_buy_count": scoring.get("insider_recent_buy_count"),
+                "insider_recent_buy_value": scoring.get("insider_recent_buy_value"),
+                "insider_score_adjustment": scoring.get("insider_score_adjustment"),
+                "insider_reason": scoring.get("insider_reason"),
+                "insider_latest_transaction_date": scoring.get("insider_latest_transaction_date"),
+                "insider_transaction_codes": scoring.get("insider_transaction_codes"),
                 # Momentum fields (Phase 2M)
                 "entry_mode": None,
                 "momentum_eligible": momentum_eval["eligible"] if momentum_eval else False,

@@ -5,6 +5,8 @@ No broker. No live trading. No real orders. No AI/LLM calls.
 All scoring is deterministic rule-based logic for research purposes only.
 """
 
+from typing import Any
+
 from core.config import settings
 from paper.runtime_config import effective_value as _cfg
 
@@ -33,12 +35,19 @@ def score_candidate(
     symbol: str,
     quality: dict,
     catalysts: list[dict],
+    earnings_info: dict[str, Any] | None = None,
+    insider_info: dict[str, Any] | None = None,
 ) -> dict:
     """
     Score a candidate ticker for paper simulator entry evaluation.
 
     Returns a transparent scoring dict with components, reasons, and
     a pass/fail decision against the configured threshold.
+
+    Phase I6 adds optional earnings_info / insider_info inputs that produce
+    transparent score adjustments applied on top of the base 0..100 score.
+    Both are no-ops when None or when their respective enabled flags are
+    false, so this is safe to call without intelligence wiring.
 
     No buy/sell recommendation. No AI. No broker. Research-only.
     """
@@ -209,8 +218,8 @@ def score_candidate(
     risk_penalty += bearish_catalyst_penalty
     risk_penalty = max(risk_penalty, -20)
 
-    # ── Total score ───────────────────────────────────────────────────────────
-    raw_total = (
+    # ── Base score (before intelligence adjustments) ──────────────────────────
+    raw_base = (
         market_quality_score
         + spread_score
         + momentum_score
@@ -218,12 +227,63 @@ def score_candidate(
         + catalyst_score
         + risk_penalty
     )
-    total_score = max(0, min(100, raw_total))
+    base_score_before_intelligence_adjustments = max(0, min(100, raw_base))
+
+    # ── G. Earnings proximity (Phase I6) ──────────────────────────────────────
+    earnings_adj = 0
+    earnings_blocked = False
+    earnings_next_date = None
+    earnings_days_until = None
+    earnings_reason = "earnings scoring disabled"
+    earnings_scoring_enabled = False
+    if earnings_info is not None:
+        earnings_scoring_enabled = bool(earnings_info.get("enabled"))
+        earnings_adj = int(earnings_info.get("earnings_score_adjustment") or 0)
+        earnings_blocked = bool(earnings_info.get("earnings_blocked"))
+        earnings_next_date = earnings_info.get("earnings_next_date")
+        earnings_days_until = earnings_info.get("earnings_days_until")
+        earnings_reason = earnings_info.get("earnings_reason") or earnings_reason
+        if earnings_adj < 0:
+            negative_reasons.append(f"earnings adj {earnings_adj}: {earnings_reason}")
+
+    # ── H. Insider activity (Phase I6) ────────────────────────────────────────
+    insider_adj = 0
+    insider_reason = "insider scoring disabled"
+    insider_recent_buy_count = 0
+    insider_recent_buy_value = 0.0
+    insider_latest_transaction_date = None
+    insider_transaction_codes: list[str] = []
+    insider_scoring_enabled = False
+    if insider_info is not None:
+        insider_scoring_enabled = bool(insider_info.get("enabled"))
+        insider_adj = int(insider_info.get("insider_score_adjustment") or 0)
+        insider_reason = insider_info.get("insider_reason") or insider_reason
+        insider_recent_buy_count = int(insider_info.get("insider_recent_buy_count") or 0)
+        insider_recent_buy_value = float(insider_info.get("insider_recent_buy_value") or 0.0)
+        insider_latest_transaction_date = insider_info.get("insider_latest_transaction_date")
+        insider_transaction_codes = list(insider_info.get("insider_transaction_codes") or [])
+        if insider_adj > 0:
+            positive_reasons.append(f"insider adj +{insider_adj}: {insider_reason}")
+        elif insider_adj < 0:
+            negative_reasons.append(f"insider adj {insider_adj}: {insider_reason}")
+
+    intelligence_score_adjustment = earnings_adj + insider_adj
+    final_score_after_intelligence_adjustments = max(
+        0,
+        min(100, base_score_before_intelligence_adjustments + intelligence_score_adjustment),
+    )
+
+    # ── Total score (final, after adjustments) ────────────────────────────────
+    total_score = final_score_after_intelligence_adjustments
 
     threshold = _cfg("PAPER_ENTRY_SCORE_THRESHOLD")
-    score_pass = total_score >= threshold
+    score_pass = total_score >= threshold and not earnings_blocked
 
-    if score_pass:
+    if earnings_blocked:
+        decision_reason = (
+            f"score {total_score} hard-blocked by earnings proximity: {earnings_reason}"
+        )
+    elif score_pass:
         decision_reason = f"score {total_score} >= threshold {threshold}"
     else:
         top_negative = negative_reasons[0] if negative_reasons else "low composite score"
@@ -253,4 +313,21 @@ def score_candidate(
         "bearish_flags": bearish_flags,
         "strongest_catalyst_title": strongest_catalyst_title,
         "strongest_catalyst_sentiment": strongest_catalyst_sentiment,
+        # Phase I6: transparent intelligence adjustments
+        "base_score_before_intelligence_adjustments": base_score_before_intelligence_adjustments,
+        "intelligence_score_adjustment": intelligence_score_adjustment,
+        "final_score_after_intelligence_adjustments": final_score_after_intelligence_adjustments,
+        "earnings_scoring_enabled": earnings_scoring_enabled,
+        "earnings_next_date": earnings_next_date,
+        "earnings_days_until": earnings_days_until,
+        "earnings_score_adjustment": earnings_adj,
+        "earnings_reason": earnings_reason,
+        "earnings_blocked": earnings_blocked,
+        "insider_scoring_enabled": insider_scoring_enabled,
+        "insider_recent_buy_count": insider_recent_buy_count,
+        "insider_recent_buy_value": insider_recent_buy_value,
+        "insider_score_adjustment": insider_adj,
+        "insider_reason": insider_reason,
+        "insider_latest_transaction_date": insider_latest_transaction_date,
+        "insider_transaction_codes": insider_transaction_codes,
     }

@@ -31,6 +31,31 @@ class Settings(BaseSettings):
     PAPER_DEFAULT_UNIVERSE: str = "AAPL,MSFT,NVDA,TSLA,AMD,META,AMZN,GOOGL,PLTR,SOFI"
     PAPER_ENTRY_SCORE_THRESHOLD: int = 70
 
+    # Phase I6 — Earnings calendar (fake-money scoring only, no broker)
+    PAPER_EARNINGS_SCORING_ENABLED: bool = True
+    PAPER_EARNINGS_BLOCK_WITHIN_DAYS: int = 0  # 0 = penalize only, do not hard-block
+    PAPER_EARNINGS_STRONG_PENALTY_WITHIN_DAYS: int = 1
+    PAPER_EARNINGS_MEDIUM_PENALTY_WITHIN_DAYS: int = 2
+    PAPER_EARNINGS_LIGHT_PENALTY_WITHIN_DAYS: int = 3
+    PAPER_EARNINGS_STRONG_PENALTY_POINTS: int = -10
+    PAPER_EARNINGS_MEDIUM_PENALTY_POINTS: int = -5
+    PAPER_EARNINGS_LIGHT_PENALTY_POINTS: int = -3
+    EARNINGS_DATA_PROVIDER: str = "none"  # "polygon" | "finnhub" | "none"
+    EARNINGS_CACHE_TTL_SECONDS: int = 7200  # 2 hours
+    EARNINGS_LOOKAHEAD_DAYS: int = 30
+
+    # Phase I6 — Insider transactions (fake-money scoring only, no broker)
+    PAPER_INSIDER_SCORING_ENABLED: bool = True
+    PAPER_INSIDER_LOOKBACK_DAYS: int = 7
+    PAPER_INSIDER_MIN_BUY_VALUE: float = 50000.0
+    PAPER_INSIDER_STRONG_BUY_VALUE: float = 250000.0
+    PAPER_INSIDER_BUY_BOOST_POINTS: int = 5
+    PAPER_INSIDER_STRONG_BUY_BOOST_POINTS: int = 10
+    PAPER_INSIDER_SELL_PENALTY_POINTS: int = 0  # 0 = informational only, no penalty
+    PAPER_INSIDER_IGNORE_NON_DISCRETIONARY: bool = True
+    INSIDER_DATA_PROVIDER: str = "none"  # "polygon" | "finnhub" | "none"
+    INSIDER_CACHE_TTL_SECONDS: int = 1800  # 30 minutes
+
     # Dynamic universe (Phase 2C)
     PAPER_BASE_UNIVERSE: str = (
         "AAPL,MSFT,NVDA,TSLA,AMD,META,AMZN,GOOGL,PLTR,SOFI,"

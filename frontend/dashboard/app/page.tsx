@@ -128,6 +128,23 @@ interface Candidate {
   reddit_mentions: number | null;
   reddit_spike_ratio: number | null;
   reddit_boost: number | null;
+  // Phase I6 intelligence adjustments
+  base_score_before_intelligence_adjustments?: number | null;
+  intelligence_score_adjustment?: number | null;
+  final_score_after_intelligence_adjustments?: number | null;
+  earnings_scoring_enabled?: boolean | null;
+  earnings_next_date?: string | null;
+  earnings_days_until?: number | null;
+  earnings_score_adjustment?: number | null;
+  earnings_reason?: string | null;
+  earnings_blocked?: boolean | null;
+  insider_scoring_enabled?: boolean | null;
+  insider_recent_buy_count?: number | null;
+  insider_recent_buy_value?: number | null;
+  insider_score_adjustment?: number | null;
+  insider_reason?: string | null;
+  insider_latest_transaction_date?: string | null;
+  insider_transaction_codes?: string[] | null;
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -1019,11 +1036,13 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
-            {["Symbol","✓","Mode","Action","Score","Components","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
+            {["Symbol","✓","Mode","Action","Score","Components","Earn Adj","Ins Adj","Intel Adj","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
               "Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].map((h) => (
               <th key={h} className={`pb-2 pr-2 font-medium whitespace-nowrap ${
                 ["Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
                   ? "text-emerald-600"
+                  : ["Earn Adj","Ins Adj","Intel Adj"].includes(h)
+                  ? "text-cyan-500"
                   : ""
               }`}>{h}</th>
             ))}
@@ -1055,6 +1074,35 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
               </td>
               <td className="py-2 pr-2 font-mono text-xs text-gray-400 whitespace-nowrap">
                 {fmtComponents(c.score_components)}
+              </td>
+              <td className="py-2 pr-2 font-mono text-xs whitespace-nowrap" title={c.earnings_reason ?? "—"}>
+                {c.earnings_score_adjustment != null && c.earnings_score_adjustment !== 0
+                  ? <span className={c.earnings_score_adjustment < 0 ? "text-orange-400 font-semibold" : "text-green-400 font-semibold"}>
+                      {c.earnings_score_adjustment > 0 ? "+" : ""}{c.earnings_score_adjustment}
+                    </span>
+                  : <span className="text-gray-600">0</span>}
+                {c.earnings_blocked && <span className="ml-1 text-red-400">⛔</span>}
+                {c.earnings_days_until != null && (
+                  <span className="text-gray-600 ml-1">({c.earnings_days_until}d)</span>
+                )}
+              </td>
+              <td className="py-2 pr-2 font-mono text-xs whitespace-nowrap" title={c.insider_reason ?? "—"}>
+                {c.insider_score_adjustment != null && c.insider_score_adjustment !== 0
+                  ? <span className={c.insider_score_adjustment > 0 ? "text-green-400 font-semibold" : "text-red-400 font-semibold"}>
+                      {c.insider_score_adjustment > 0 ? "+" : ""}{c.insider_score_adjustment}
+                    </span>
+                  : <span className="text-gray-600">0</span>}
+                {(c.insider_recent_buy_count ?? 0) > 0 && (
+                  <span className="text-gray-600 ml-1">(×{c.insider_recent_buy_count})</span>
+                )}
+              </td>
+              <td className="py-2 pr-2 font-mono text-xs font-semibold whitespace-nowrap"
+                  title={`base ${c.base_score_before_intelligence_adjustments ?? "—"} → final ${c.final_score_after_intelligence_adjustments ?? "—"}`}>
+                {c.intelligence_score_adjustment != null && c.intelligence_score_adjustment !== 0
+                  ? <span className={c.intelligence_score_adjustment > 0 ? "text-cyan-300" : "text-cyan-500"}>
+                      {c.intelligence_score_adjustment > 0 ? "+" : ""}{c.intelligence_score_adjustment}
+                    </span>
+                  : <span className="text-gray-600">0</span>}
               </td>
               <td className="py-2 pr-2 font-mono">{fmt(c.spread_percent, 3)}</td>
               <td className={`py-2 pr-2 font-mono ${c.change_percent != null ? pnlClass(c.change_percent) : ""}`}>
@@ -3022,15 +3070,11 @@ type IntelTab = typeof INTEL_TABS[number]["key"];
 function IntelligenceSection({
   reddit,
   premarket,
-  earnings,
-  insiders,
   token,
   onRefresh,
 }: {
   reddit: RedditSnapshot | null;
   premarket: PremarketSnapshot | null;
-  earnings: PlaceholderFeed | null;
-  insiders: PlaceholderFeed | null;
   token: string;
   onRefresh: () => void;
 }) {
@@ -3435,8 +3479,8 @@ function IntelligenceSection({
       {activeTab === "reddit"    && <RedditTab />}
       {activeTab === "premarket" && <PremarketTab />}
       {activeTab === "news"      && <NewsTab token={token} />}
-      {activeTab === "earnings"  && <NotImplementedFeed name="Earnings Calendar" data={earnings} />}
-      {activeTab === "insiders"  && <NotImplementedFeed name="Insider Transactions" data={insiders} />}
+      {activeTab === "earnings"  && <EarningsTab token={token} />}
+      {activeTab === "insiders"  && <InsidersTab token={token} />}
       {activeTab === "heatmap"   && <ComingSoon name="Sector Heatmap" />}
       {activeTab === "llm"       && <LLMPlaceholderTab />}
     </div>
@@ -3843,6 +3887,480 @@ function NotImplementedFeed({ name, data }: { name: string; data: PlaceholderFee
   );
 }
 
+// ── Earnings tab (Phase I6) ──────────────────────────────────────────────────
+
+interface EarningsRow {
+  ticker: string;
+  report_date: string | null;
+  report_time: string | null;
+  eps_estimate: number | null;
+  revenue_estimate: number | null;
+  eps_actual?: number | null;
+  revenue_actual?: number | null;
+  surprise?: number | null;
+  confirmed: boolean | string | null;
+  days_until: number | null;
+  source: string | null;
+  fetched_at: string | null;
+}
+
+interface EarningsSnapshot {
+  ok: boolean;
+  enabled: boolean;
+  implemented: boolean;
+  source: string | null;
+  fetched_at: string | null;
+  cache_age_seconds: number | null;
+  ttl_seconds: number | null;
+  stale: boolean;
+  total_count: number;
+  returned_count: number;
+  limit: number;
+  offset: number;
+  filters_applied?: Record<string, unknown>;
+  sort_by?: string;
+  sort_dir?: string;
+  results: EarningsRow[];
+  errors?: unknown[];
+  warning: string | null;
+  note?: string;
+}
+
+function EarningsTab({ token }: { token: string }) {
+  const [data, setData] = useState<EarningsSnapshot | null>(null);
+  const [ticker, setTicker] = useState("");
+  const [daysAhead, setDaysAhead] = useState(30);
+  const [sortBy, setSortBy] = useState("report_date");
+  const [sortDir, setSortDir] = useState("asc");
+  const [limit, setLimit] = useState(100);
+  const [refreshMsg, setRefreshMsg] = useState("");
+
+  const fetchEarningsLocal = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (ticker.trim()) params.set("ticker", ticker.trim());
+    params.set("days_ahead", String(daysAhead));
+    params.set("sort_by", sortBy);
+    params.set("sort_dir", sortDir);
+    params.set("limit", String(limit));
+    try {
+      const r = await fetch(`/api/intelligence/earnings?${params.toString()}`);
+      if (r.ok) setData(await r.json());
+    } catch { /* ignore */ }
+  }, [ticker, daysAhead, sortBy, sortDir, limit]);
+
+  useEffect(() => {
+    const id = setTimeout(() => { fetchEarningsLocal(); }, 300);
+    return () => clearTimeout(id);
+  }, [fetchEarningsLocal]);
+
+  async function handleRefresh() {
+    if (!token) { setRefreshMsg("Enter ADMIN_API_TOKEN to refresh."); return; }
+    setRefreshMsg("Refreshing earnings cache…");
+    try {
+      const r = await fetch("/api/intelligence/earnings/refresh", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await r.json();
+      if (r.ok && body.ok) {
+        setRefreshMsg(`Refreshed — ${body.total_count ?? 0} items. ${body.warning ?? ""}`);
+        await fetchEarningsLocal();
+      } else {
+        setRefreshMsg(`Failed: ${body.error ?? body.detail ?? JSON.stringify(body)}`);
+      }
+    } catch (e) {
+      setRefreshMsg(`Error: ${String(e)}`);
+    }
+  }
+
+  const items = data?.results ?? [];
+  const cacheAge = data?.cache_age_seconds;
+  const cacheAgeLabel = cacheAge == null ? "—"
+    : cacheAge < 60 ? `${cacheAge}s ago`
+    : cacheAge < 3600 ? `${Math.round(cacheAge / 60)}m ago`
+    : `${Math.round(cacheAge / 3600)}h ago`;
+
+  return (
+    <div>
+      <div className="mb-3 rounded border border-blue-800 bg-blue-950 px-3 py-2 text-xs text-blue-300">
+        <span className="font-semibold">Earnings calendar is used as a risk/proximity input.</span>{" "}
+        Upcoming earnings are not automatically bullish — they apply a deterministic penalty when too close
+        (1d −10, 2d −5, 3d −3; configurable). Earnings alone cannot create an entry.
+      </div>
+
+      {data?.enabled === false && (
+        <div className="mb-3 rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300">
+          ⚠ {data?.warning ?? "Earnings provider not configured. Set EARNINGS_DATA_PROVIDER to enable."}
+        </div>
+      )}
+
+      <div className="mb-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
+        <input
+          type="text"
+          value={ticker}
+          onChange={(e) => setTicker(e.target.value.toUpperCase())}
+          placeholder="Ticker (e.g. NVDA)"
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-500"
+        />
+        <select
+          value={daysAhead}
+          onChange={(e) => setDaysAhead(parseInt(e.target.value, 10))}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value={7}>Next 7 days</option>
+          <option value={14}>Next 14 days</option>
+          <option value={30}>Next 30 days</option>
+          <option value={60}>Next 60 days</option>
+          <option value={90}>Next 90 days</option>
+        </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="report_date">Sort: Date</option>
+          <option value="ticker">Sort: Ticker</option>
+          <option value="days_until">Sort: Days Until</option>
+          <option value="confirmed">Sort: Confirmed</option>
+        </select>
+        <select
+          value={sortDir}
+          onChange={(e) => setSortDir(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="asc">Soonest first</option>
+          <option value="desc">Latest first</option>
+        </select>
+        <select
+          value={limit}
+          onChange={(e) => setLimit(parseInt(e.target.value, 10))}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value={50}>Limit: 50</option>
+          <option value={100}>Limit: 100</option>
+          <option value={250}>Limit: 250</option>
+          <option value={500}>Limit: 500</option>
+        </select>
+        <button
+          onClick={handleRefresh}
+          disabled={!token}
+          title={token ? "Force fresh fetch (admin)" : "Enter ADMIN_API_TOKEN in Controls to enable"}
+          className={`px-3 py-1.5 rounded text-sm font-semibold transition-colors ${
+            token ? "bg-blue-700 hover:bg-blue-600" : "bg-gray-800 text-gray-500 cursor-not-allowed"
+          }`}
+        >
+          ↺ Refresh
+        </button>
+      </div>
+
+      {refreshMsg && <p className="text-xs text-yellow-300 font-mono mb-3">{refreshMsg}</p>}
+
+      <div className="flex flex-wrap items-center gap-3 mb-3 text-xs text-gray-400">
+        <span className="bg-gray-700 px-2 py-0.5 rounded font-mono">source: {data?.source ?? "—"}</span>
+        <span>Cache age: {cacheAgeLabel}</span>
+        {data?.ttl_seconds != null && <span>TTL: {data.ttl_seconds}s</span>}
+        <span>Showing <span className="text-gray-200 font-semibold">{data?.returned_count ?? 0}</span> of <span className="text-gray-200 font-semibold">{data?.total_count ?? 0}</span></span>
+        {data?.stale && <span className="text-yellow-400">⚠ stale</span>}
+      </div>
+
+      {items.length === 0 ? (
+        <p className="text-gray-500 text-sm py-4 text-center">No earnings rows. {data?.warning ?? ""}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-400 border-b border-gray-700">
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Date</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Time</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Ticker</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">Days Until</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">EPS Estimate</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">Revenue Estimate</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Confirmed</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Source</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Last Refreshed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((r, i) => (
+                <tr key={`${r.ticker}-${r.report_date}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40">
+                  <td className="py-1.5 pr-2 font-mono text-xs text-gray-300 whitespace-nowrap">{r.report_date ?? "—"}</td>
+                  <td className="py-1.5 pr-2 text-xs text-gray-400 whitespace-nowrap">{r.report_time ?? "—"}</td>
+                  <td className="py-1.5 pr-2 font-mono font-semibold text-yellow-300 whitespace-nowrap">{r.ticker}</td>
+                  <td className="py-1.5 pr-2 font-mono text-xs text-right whitespace-nowrap">{r.days_until ?? "—"}</td>
+                  <td className="py-1.5 pr-2 font-mono text-xs text-right whitespace-nowrap text-gray-300">{r.eps_estimate ?? "—"}</td>
+                  <td className="py-1.5 pr-2 font-mono text-xs text-right whitespace-nowrap text-gray-300">{r.revenue_estimate ?? "—"}</td>
+                  <td className="py-1.5 pr-2 text-xs text-gray-400 whitespace-nowrap">{String(r.confirmed ?? "unknown")}</td>
+                  <td className="py-1.5 pr-2 text-xs text-gray-500 whitespace-nowrap">{r.source ?? "—"}</td>
+                  <td className="py-1.5 pr-2 text-xs text-gray-600 whitespace-nowrap font-mono">{r.fetched_at?.slice(0, 19) ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Insiders tab (Phase I6) ──────────────────────────────────────────────────
+
+interface InsiderRow {
+  ticker: string;
+  transaction_date: string | null;
+  insider_name: string | null;
+  insider_title?: string | null;
+  transaction_code: string | null;
+  transaction_type: string;
+  buy_sell_label: string;
+  shares: number | null;
+  price: number | null;
+  value: number | null;
+  is_discretionary_buy: boolean | "unknown" | null;
+  is_recent: boolean | null;
+  source: string | null;
+  fetched_at: string | null;
+  warning?: string | null;
+}
+
+interface InsiderSnapshot {
+  ok: boolean;
+  enabled: boolean;
+  implemented: boolean;
+  source: string | null;
+  fetched_at: string | null;
+  cache_age_seconds: number | null;
+  ttl_seconds: number | null;
+  stale: boolean;
+  total_count: number;
+  returned_count: number;
+  limit: number;
+  offset: number;
+  filters_applied?: Record<string, unknown>;
+  sort_by?: string;
+  sort_dir?: string;
+  results: InsiderRow[];
+  errors?: unknown[];
+  warning: string | null;
+  note?: string;
+}
+
+function InsidersTab({ token }: { token: string }) {
+  const [data, setData] = useState<InsiderSnapshot | null>(null);
+  const [ticker, setTicker] = useState("");
+  const [txnType, setTxnType] = useState("");
+  const [minValue, setMinValue] = useState<number | "">("");
+  const [daysBack, setDaysBack] = useState(30);
+  const [sortBy, setSortBy] = useState("transaction_date");
+  const [sortDir, setSortDir] = useState("desc");
+  const [limit, setLimit] = useState(100);
+  const [refreshMsg, setRefreshMsg] = useState("");
+
+  const fetchInsidersLocal = useCallback(async () => {
+    const params = new URLSearchParams();
+    if (ticker.trim()) params.set("ticker", ticker.trim());
+    if (txnType) params.set("transaction_type", txnType);
+    if (minValue !== "" && !Number.isNaN(Number(minValue))) params.set("min_value", String(minValue));
+    params.set("days_back", String(daysBack));
+    params.set("sort_by", sortBy);
+    params.set("sort_dir", sortDir);
+    params.set("limit", String(limit));
+    try {
+      const r = await fetch(`/api/intelligence/insiders?${params.toString()}`);
+      if (r.ok) setData(await r.json());
+    } catch { /* ignore */ }
+  }, [ticker, txnType, minValue, daysBack, sortBy, sortDir, limit]);
+
+  useEffect(() => {
+    const id = setTimeout(() => { fetchInsidersLocal(); }, 300);
+    return () => clearTimeout(id);
+  }, [fetchInsidersLocal]);
+
+  async function handleRefresh() {
+    if (!token) { setRefreshMsg("Enter ADMIN_API_TOKEN to refresh."); return; }
+    setRefreshMsg("Refreshing insider cache…");
+    try {
+      const r = await fetch("/api/intelligence/insiders/refresh", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await r.json();
+      if (r.ok && body.ok) {
+        setRefreshMsg(`Refreshed — ${body.total_count ?? 0} items. ${body.warning ?? ""}`);
+        await fetchInsidersLocal();
+      } else {
+        setRefreshMsg(`Failed: ${body.error ?? body.detail ?? JSON.stringify(body)}`);
+      }
+    } catch (e) {
+      setRefreshMsg(`Error: ${String(e)}`);
+    }
+  }
+
+  const items = data?.results ?? [];
+  const cacheAge = data?.cache_age_seconds;
+  const cacheAgeLabel = cacheAge == null ? "—"
+    : cacheAge < 60 ? `${cacheAge}s ago`
+    : cacheAge < 3600 ? `${Math.round(cacheAge / 60)}m ago`
+    : `${Math.round(cacheAge / 3600)}h ago`;
+
+  return (
+    <div>
+      <div className="mb-3 rounded border border-blue-800 bg-blue-950 px-3 py-2 text-xs text-blue-300">
+        <span className="font-semibold">Only recent open-market purchases are treated as bullish.</span>{" "}
+        Sales, awards, tax withholding, and option exercises are surfaced informationally but do not
+        auto-create bearish penalties.
+      </div>
+
+      {data?.enabled === false && (
+        <div className="mb-3 rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300">
+          ⚠ {data?.warning ?? "Insider provider not configured. Set INSIDER_DATA_PROVIDER to enable."}
+        </div>
+      )}
+
+      <div className="mb-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
+        <input
+          type="text"
+          value={ticker}
+          onChange={(e) => setTicker(e.target.value.toUpperCase())}
+          placeholder="Ticker (e.g. NVDA)"
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-500"
+        />
+        <select
+          value={txnType}
+          onChange={(e) => setTxnType(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="">Type: any</option>
+          <option value="open_market_purchase">open_market_purchase</option>
+          <option value="sale">sale</option>
+          <option value="option_exercise">option_exercise</option>
+          <option value="stock_award">stock_award</option>
+          <option value="tax_withholding">tax_withholding</option>
+          <option value="gift">gift</option>
+          <option value="other">other</option>
+        </select>
+        <input
+          type="number"
+          value={minValue}
+          onChange={(e) => setMinValue(e.target.value === "" ? "" : Number(e.target.value))}
+          placeholder="Min value (USD)"
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono focus:outline-none focus:border-blue-500"
+        />
+        <select
+          value={daysBack}
+          onChange={(e) => setDaysBack(parseInt(e.target.value, 10))}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value={7}>Last 7 days</option>
+          <option value={14}>Last 14 days</option>
+          <option value={30}>Last 30 days</option>
+          <option value={90}>Last 90 days</option>
+        </select>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="transaction_date">Sort: Date</option>
+          <option value="value">Sort: Value</option>
+          <option value="ticker">Sort: Ticker</option>
+          <option value="transaction_type">Sort: Type</option>
+        </select>
+        <select
+          value={sortDir}
+          onChange={(e) => setSortDir(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="desc">Newest / High → Low</option>
+          <option value="asc">Oldest / Low → High</option>
+        </select>
+        <select
+          value={limit}
+          onChange={(e) => setLimit(parseInt(e.target.value, 10))}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value={50}>Limit: 50</option>
+          <option value={100}>Limit: 100</option>
+          <option value={250}>Limit: 250</option>
+          <option value={500}>Limit: 500</option>
+        </select>
+        <button
+          onClick={handleRefresh}
+          disabled={!token}
+          title={token ? "Force fresh fetch (admin)" : "Enter ADMIN_API_TOKEN in Controls to enable"}
+          className={`px-3 py-1.5 rounded text-sm font-semibold transition-colors ${
+            token ? "bg-blue-700 hover:bg-blue-600" : "bg-gray-800 text-gray-500 cursor-not-allowed"
+          }`}
+        >
+          ↺ Refresh
+        </button>
+      </div>
+
+      {refreshMsg && <p className="text-xs text-yellow-300 font-mono mb-3">{refreshMsg}</p>}
+
+      <div className="flex flex-wrap items-center gap-3 mb-3 text-xs text-gray-400">
+        <span className="bg-gray-700 px-2 py-0.5 rounded font-mono">source: {data?.source ?? "—"}</span>
+        <span>Cache age: {cacheAgeLabel}</span>
+        {data?.ttl_seconds != null && <span>TTL: {data.ttl_seconds}s</span>}
+        <span>Showing <span className="text-gray-200 font-semibold">{data?.returned_count ?? 0}</span> of <span className="text-gray-200 font-semibold">{data?.total_count ?? 0}</span></span>
+        {data?.stale && <span className="text-yellow-400">⚠ stale</span>}
+      </div>
+
+      {items.length === 0 ? (
+        <p className="text-gray-500 text-sm py-4 text-center">No insider transactions. {data?.warning ?? ""}</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-400 border-b border-gray-700">
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Date</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Ticker</th>
+                <th className="pb-2 pr-2 text-left">Insider</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Code</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Type</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Label</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">Shares</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">Price</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">Value</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Discretionary?</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Source</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Last Refreshed</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((r, i) => {
+                const labelColor =
+                  r.buy_sell_label === "bullish_buy" ? "text-green-400" :
+                  r.buy_sell_label === "informational_buy" ? "text-emerald-500" :
+                  r.buy_sell_label === "sale" ? "text-red-400" :
+                  r.buy_sell_label === "neutral_compensation" ? "text-gray-400" : "text-gray-500";
+                return (
+                  <tr key={`${r.ticker}-${r.transaction_date}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40">
+                    <td className="py-1.5 pr-2 font-mono text-xs text-gray-300 whitespace-nowrap">{r.transaction_date ?? "—"}</td>
+                    <td className="py-1.5 pr-2 font-mono font-semibold text-yellow-300 whitespace-nowrap">{r.ticker}</td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-300 max-w-[160px] truncate" title={`${r.insider_name ?? ""} ${r.insider_title ? "(" + r.insider_title + ")" : ""}`}>
+                      {r.insider_name ?? "—"}
+                    </td>
+                    <td className="py-1.5 pr-2 font-mono text-xs text-blue-300 whitespace-nowrap">{r.transaction_code ?? "—"}</td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-400 whitespace-nowrap">{r.transaction_type}</td>
+                    <td className={`py-1.5 pr-2 text-xs font-semibold whitespace-nowrap ${labelColor}`}>{r.buy_sell_label}</td>
+                    <td className="py-1.5 pr-2 font-mono text-xs text-right whitespace-nowrap">{r.shares?.toLocaleString() ?? "—"}</td>
+                    <td className="py-1.5 pr-2 font-mono text-xs text-right whitespace-nowrap">{r.price != null ? `$${Number(r.price).toFixed(2)}` : "—"}</td>
+                    <td className="py-1.5 pr-2 font-mono text-xs text-right whitespace-nowrap">{r.value != null ? `$${Number(r.value).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : "—"}</td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-400 whitespace-nowrap">{String(r.is_discretionary_buy ?? "unknown")}</td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-500 whitespace-nowrap">{r.source ?? "—"}</td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-600 whitespace-nowrap font-mono">{r.fetched_at?.slice(0, 19) ?? "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function LLMPlaceholderTab() {
   return (
     <div className="text-center py-10 text-gray-400 border border-dashed border-purple-800 rounded bg-purple-950/30">
@@ -3876,20 +4394,18 @@ export default function Home() {
   const [lastRefresh, setLastRefresh] = useState("");
   const [reddit, setReddit] = useState<RedditSnapshot | null>(null);
   const [premarket, setPremarket] = useState<PremarketSnapshot | null>(null);
-  const [earnings, setEarnings] = useState<PlaceholderFeed | null>(null);
-  const [insiders, setInsiders] = useState<PlaceholderFeed | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigState | null>(null);
   const [topTab, setTopTab] = useState<"main" | "intelligence" | "strategy">("main");
 
-  // Note: NewsTab manages its own fetching with filters (cache-first backend).
-  // It is intentionally not part of the global 30s refresh loop to avoid
-  // recurring fetches when the Intelligence tab is not open.
+  // Note: NewsTab / EarningsTab / InsidersTab manage their own cache-first
+  // fetches with filters. They are not part of the global 30s loop so the
+  // Intelligence feeds incur no recurring external API pressure when the tab
+  // is not open.
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, erndata, insdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
       fetchReddit(), fetchPremarket(), fetchRuntimeConfig(),
-      fetchEarnings(), fetchInsiders(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -3899,8 +4415,6 @@ export default function Home() {
     setReddit(rddata);
     setPremarket(pmdata);
     setRuntimeConfig(rcfgdata);
-    setEarnings(erndata);
-    setInsiders(insdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -4226,8 +4740,6 @@ export default function Home() {
           <IntelligenceSection
             reddit={reddit}
             premarket={premarket}
-            earnings={earnings}
-            insiders={insiders}
             token={token}
             onRefresh={refresh}
           />

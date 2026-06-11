@@ -15,7 +15,9 @@ from api.dependencies import require_admin_token
 from catalysts.news_collector import collect_news_for_symbols
 from core.config import settings
 from data.universe import DEFAULT_UNIVERSE
+from intelligence import earnings as earnings_intel
 from intelligence import full_premarket as full_premarket_intel
+from intelligence import insiders as insiders_intel
 from intelligence import premarket as premarket_intel
 from intelligence import reddit as reddit_intel
 
@@ -536,56 +538,219 @@ async def refresh_intelligence_news():
     }
 
 
-@router.get("/earnings")
-async def get_intelligence_earnings():
-    """
-    Earnings calendar surface. Not yet implemented in microtrading.
+_EARNINGS_SORT_KEYS = {
+    "report_date": lambda r: r.get("report_date") or "",
+    "ticker":      lambda r: (r.get("ticker") or "").upper(),
+    "days_until":  lambda r: r.get("days_until") if r.get("days_until") is not None else 10**9,
+    "confirmed":   lambda r: str(r.get("confirmed") or ""),
+}
 
-    A V6 migration source exists; surfacing an upcoming-earnings calendar
-    here is a future phase. This endpoint returns a stable, well-defined
-    "not implemented" payload so the dashboard can show a clear placeholder
-    rather than fake data or an error.
+
+@router.get("/earnings")
+async def get_intelligence_earnings(
+    ticker: str | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    from_date: str | None = Query(default=None),
+    to_date: str | None = Query(default=None),
+    days_ahead: int = Query(default=30, ge=1, le=365),
+    sort_by: str = Query(default="report_date"),
+    sort_dir: str = Query(default="asc"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
     """
+    Cache-first earnings calendar feed.
+
+    Reads from a module-level cache (TTL settings.EARNINGS_CACHE_TTL_SECONDS,
+    default 2h). GET never calls external APIs on every request — only on
+    cold start and TTL expiry. Use POST /api/intelligence/earnings/refresh
+    (admin) to force a fresh fetch.
+
+    When EARNINGS_DATA_PROVIDER=none (the default), returns enabled=false
+    with a clear warning instead of fake rows.
+    """
+    if earnings_intel.get_snapshot() is None:
+        try:
+            await earnings_intel.fetch_and_refresh()
+        except Exception:
+            pass
+
+    snap = earnings_intel.get_snapshot() or {}
+    age = earnings_intel.cache_age_seconds()
+    stale = bool(age is not None and age >= settings.EARNINGS_CACHE_TTL_SECONDS)
+
+    items = list(snap.get("results") or [])
+    filters_applied: dict = {}
+
+    tkr = (ticker or symbol or "").strip().upper()
+    if tkr:
+        items = [r for r in items if (r.get("ticker") or "").upper() == tkr]
+        filters_applied["ticker"] = tkr
+
+    if from_date:
+        items = [r for r in items if (r.get("report_date") or "") >= from_date]
+        filters_applied["from_date"] = from_date
+
+    if to_date:
+        items = [r for r in items if (r.get("report_date") or "") <= to_date]
+        filters_applied["to_date"] = to_date
+
+    if days_ahead is not None:
+        items = [r for r in items if r.get("days_until") is None or r["days_until"] <= days_ahead]
+        filters_applied["days_ahead"] = days_ahead
+
+    key_fn = _EARNINGS_SORT_KEYS.get(sort_by, _EARNINGS_SORT_KEYS["report_date"])
+    reverse = (sort_dir or "asc").lower() == "desc"
+    try:
+        items.sort(key=key_fn, reverse=reverse)
+    except TypeError:
+        items.sort(key=lambda r: str(key_fn(r)), reverse=reverse)
+
+    total = len(items)
+    paged = items[offset:offset + limit]
+
     return {
         "ok": True,
-        "enabled": False,
-        "implemented": False,
-        "source": None,
-        "fetched_at": None,
-        "age_seconds": None,
-        "total_results": 0,
-        "results": [],
-        "errors": [],
-        "warning": (
-            "Earnings calendar is not yet implemented in microtrading. "
-            "V6 migration source exists; implementation required."
-        ),
-        "note": "Display feed only — would not affect entry/exit logic when added.",
+        "enabled": bool(snap.get("enabled", earnings_intel.is_enabled())),
+        "implemented": True,
+        "source": snap.get("source") or earnings_intel.provider(),
+        "fetched_at": snap.get("fetched_at"),
+        "cache_age_seconds": int(age) if age is not None else None,
+        "ttl_seconds": settings.EARNINGS_CACHE_TTL_SECONDS,
+        "stale": stale,
+        "total_count": total,
+        "returned_count": len(paged),
+        "limit": limit,
+        "offset": offset,
+        "filters_applied": filters_applied,
+        "sort_by": sort_by,
+        "sort_dir": (sort_dir or "asc").lower(),
+        "results": paged,
+        "errors": snap.get("errors") or [],
+        "warning": snap.get("warning"),
+        "note": "Display feed + scoring proximity input. Earnings alone does not create an entry.",
     }
 
 
-@router.get("/insiders")
-async def get_intelligence_insiders():
-    """
-    Insider transactions surface. Not yet implemented in microtrading.
-
-    A V6 migration source exists; surfacing recent Form 4 insider buys/sells
-    here is a future phase. This endpoint returns a stable "not implemented"
-    payload so the dashboard can show a clear placeholder.
-    """
+@router.post("/earnings/refresh", dependencies=[Depends(require_admin_token)])
+async def refresh_intelligence_earnings():
+    """Admin: force a fresh earnings calendar fetch (single-flight)."""
+    snap = await earnings_intel.fetch_and_refresh(force=True)
     return {
         "ok": True,
-        "enabled": False,
-        "implemented": False,
-        "source": None,
-        "fetched_at": None,
-        "age_seconds": None,
-        "total_results": 0,
-        "results": [],
-        "errors": [],
-        "warning": (
-            "Insider transactions are not yet implemented in microtrading. "
-            "V6 migration source exists; implementation required."
+        "enabled": bool(snap.get("enabled", earnings_intel.is_enabled())),
+        "source": snap.get("source"),
+        "fetched_at": snap.get("fetched_at"),
+        "total_count": len(snap.get("results") or []),
+        "warning": snap.get("warning"),
+    }
+
+
+_INSIDER_SORT_KEYS = {
+    "transaction_date": lambda r: r.get("transaction_date") or "",
+    "ticker":           lambda r: (r.get("ticker") or "").upper(),
+    "value":            lambda r: r.get("value") if r.get("value") is not None else 0.0,
+    "transaction_type": lambda r: (r.get("transaction_type") or ""),
+}
+
+
+@router.get("/insiders")
+async def get_intelligence_insiders(
+    ticker: str | None = Query(default=None),
+    symbol: str | None = Query(default=None),
+    transaction_type: str | None = Query(default=None),
+    min_value: float | None = Query(default=None),
+    days_back: int = Query(default=30, ge=1, le=365),
+    sort_by: str = Query(default="transaction_date"),
+    sort_dir: str = Query(default="desc"),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+):
+    """
+    Cache-first insider transactions feed.
+
+    Returns enabled=false with a clear warning when INSIDER_DATA_PROVIDER
+    is unconfigured. Sales/awards/option exercises are surfaced informationally
+    and are NOT auto-bearish for scoring purposes.
+    """
+    if insiders_intel.get_snapshot() is None:
+        try:
+            await insiders_intel.fetch_and_refresh()
+        except Exception:
+            pass
+
+    snap = insiders_intel.get_snapshot() or {}
+    age = insiders_intel.cache_age_seconds()
+    stale = bool(age is not None and age >= settings.INSIDER_CACHE_TTL_SECONDS)
+
+    items = list(snap.get("results") or [])
+    filters_applied: dict = {}
+
+    tkr = (ticker or symbol or "").strip().upper()
+    if tkr:
+        items = [r for r in items if (r.get("ticker") or "").upper() == tkr]
+        filters_applied["ticker"] = tkr
+
+    if transaction_type:
+        tt = transaction_type.strip().lower()
+        items = [r for r in items if (r.get("transaction_type") or "").lower() == tt]
+        filters_applied["transaction_type"] = tt
+
+    if min_value is not None:
+        items = [r for r in items if (r.get("value") or 0) >= min_value]
+        filters_applied["min_value"] = min_value
+
+    if days_back is not None:
+        from datetime import date as _date, timedelta as _td
+        cutoff = (_date.today() - _td(days=days_back)).isoformat()
+        items = [r for r in items if not r.get("transaction_date") or str(r["transaction_date"])[:10] >= cutoff]
+        filters_applied["days_back"] = days_back
+
+    key_fn = _INSIDER_SORT_KEYS.get(sort_by, _INSIDER_SORT_KEYS["transaction_date"])
+    reverse = (sort_dir or "desc").lower() != "asc"
+    try:
+        items.sort(key=key_fn, reverse=reverse)
+    except TypeError:
+        items.sort(key=lambda r: str(key_fn(r)), reverse=reverse)
+
+    total = len(items)
+    paged = items[offset:offset + limit]
+
+    return {
+        "ok": True,
+        "enabled": bool(snap.get("enabled", insiders_intel.is_enabled())),
+        "implemented": True,
+        "source": snap.get("source") or insiders_intel.provider(),
+        "fetched_at": snap.get("fetched_at"),
+        "cache_age_seconds": int(age) if age is not None else None,
+        "ttl_seconds": settings.INSIDER_CACHE_TTL_SECONDS,
+        "stale": stale,
+        "total_count": total,
+        "returned_count": len(paged),
+        "limit": limit,
+        "offset": offset,
+        "filters_applied": filters_applied,
+        "sort_by": sort_by,
+        "sort_dir": (sort_dir or "desc").lower(),
+        "results": paged,
+        "errors": snap.get("errors") or [],
+        "warning": snap.get("warning"),
+        "note": (
+            "Only recent open-market purchases (code P) are treated as bullish. "
+            "Sales, awards, tax withholding, and option exercises are cautious / informational."
         ),
-        "note": "Display feed only — would not affect entry/exit logic when added.",
+    }
+
+
+@router.post("/insiders/refresh", dependencies=[Depends(require_admin_token)])
+async def refresh_intelligence_insiders():
+    """Admin: force a fresh insider transactions fetch (single-flight)."""
+    snap = await insiders_intel.fetch_and_refresh(force=True)
+    return {
+        "ok": True,
+        "enabled": bool(snap.get("enabled", insiders_intel.is_enabled())),
+        "source": snap.get("source"),
+        "fetched_at": snap.get("fetched_at"),
+        "total_count": len(snap.get("results") or []),
+        "warning": snap.get("warning"),
     }
