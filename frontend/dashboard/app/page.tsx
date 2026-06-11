@@ -378,6 +378,27 @@ interface NewsCatalystItem {
   bullish_flags?: string[];
   bearish_flags?: string[];
   sentiment_reasons?: string[];
+  tickers?: string[];
+  // Phase I5-H2 normalized rule fields
+  rule_analysis_available?: boolean;
+  rule_event_type?: string | null;
+  rule_impact_level?: "high" | "medium" | "low" | "unknown" | string;
+  rule_sentiment?: string | null;
+  rule_materiality_score?: number | null;
+  rule_sentiment_score?: number | null;
+  rule_bullish_flags?: string[];
+  rule_bearish_flags?: string[];
+  rule_reasons?: string[];
+  rule_explanation?: string | null;
+  used_by_engine?: boolean | "unknown" | string;
+  // Phase I5-H2 AI placeholders (inactive in this phase)
+  ai_analysis_available?: boolean;
+  ai_sentiment?: string | null;
+  ai_impact_level?: string | null;
+  ai_materiality_score?: number | null;
+  ai_confidence?: number | null;
+  ai_explanation?: string | null;
+  ai_model?: string | null;
 }
 
 interface NewsSnapshot {
@@ -3431,9 +3452,11 @@ function NewsTab({ token }: { token: string }) {
   const [ticker, setTicker] = useState("");
   const [eventType, setEventType] = useState("");
   const [sentiment, setSentiment] = useState("");
+  const [impact, setImpact] = useState("");
   const [sortBy, setSortBy] = useState("published_at");
   const [sortDir, setSortDir] = useState("desc");
   const [limit, setLimit] = useState(100);
+  const [offset, setOffset] = useState(0);
   const [refreshMsg, setRefreshMsg] = useState("");
 
   const fetchNewsLocal = useCallback(async () => {
@@ -3442,9 +3465,11 @@ function NewsTab({ token }: { token: string }) {
     if (ticker.trim()) params.set("ticker", ticker.trim());
     if (eventType) params.set("event_type", eventType);
     if (sentiment) params.set("sentiment", sentiment);
+    if (impact) params.set("rule_impact_level", impact);
     params.set("sort_by", sortBy);
     params.set("sort_dir", sortDir);
     params.set("limit", String(limit));
+    params.set("offset", String(offset));
     setLoading(true);
     try {
       const r = await fetch(`/api/intelligence/news?${params.toString()}`);
@@ -3454,7 +3479,12 @@ function NewsTab({ token }: { token: string }) {
     } finally {
       setLoading(false);
     }
-  }, [q, ticker, eventType, sentiment, sortBy, sortDir, limit]);
+  }, [q, ticker, eventType, sentiment, impact, sortBy, sortDir, limit, offset]);
+
+  // Reset pagination when filters change (offset is reset before refetch).
+  useEffect(() => {
+    setOffset(0);
+  }, [q, ticker, eventType, sentiment, impact, sortBy, sortDir, limit]);
 
   // Debounce filter changes so typing doesn't fire on every keystroke.
   useEffect(() => {
@@ -3557,6 +3587,17 @@ function NewsTab({ token }: { token: string }) {
           <option value="unknown">unknown</option>
         </select>
         <select
+          value={impact}
+          onChange={(e) => setImpact(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
+        >
+          <option value="">Impact: any</option>
+          <option value="high">high</option>
+          <option value="medium">medium</option>
+          <option value="low">low</option>
+          <option value="unknown">unknown</option>
+        </select>
+        <select
           value={sortBy}
           onChange={(e) => setSortBy(e.target.value)}
           className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm focus:outline-none focus:border-blue-500"
@@ -3588,7 +3629,7 @@ function NewsTab({ token }: { token: string }) {
         </select>
         <div className="flex gap-2">
           <button
-            onClick={() => { setQ(""); setTicker(""); setEventType(""); setSentiment(""); setSortBy("published_at"); setSortDir("desc"); setLimit(100); }}
+            onClick={() => { setQ(""); setTicker(""); setEventType(""); setSentiment(""); setImpact(""); setSortBy("published_at"); setSortDir("desc"); setLimit(100); setOffset(0); }}
             className="flex-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm font-semibold transition-colors"
           >
             Clear
@@ -3638,46 +3679,95 @@ function NewsTab({ token }: { token: string }) {
             <thead>
               <tr className="text-xs text-gray-400 border-b border-gray-700">
                 <th className="pb-2 pr-2 text-left whitespace-nowrap">Time</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Ticker</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Ticker(s)</th>
                 <th className="pb-2 pr-2 text-left">Title</th>
                 <th className="pb-2 pr-2 text-left whitespace-nowrap">Source</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Event</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Sentiment</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Rule Event Type</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Rule Impact</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Rule Sentiment</th>
                 <th className="pb-2 pr-2 text-right whitespace-nowrap">Materiality</th>
-                <th className="pb-2 pr-2 text-left">Flags</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">Sent. Score</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Bullish Flags</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Bearish Flags</th>
+                <th className="pb-2 pr-2 text-left">Rule Explanation</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">AI Analysis</th>
                 <th className="pb-2 pr-2 text-left whitespace-nowrap">URL</th>
               </tr>
             </thead>
             <tbody>
-              {items.slice(0, 100).map((item, i) => {
+              {items.map((item, i) => {
                 const pub = item.published_utc ? new Date(item.published_utc).toUTCString().replace(" GMT", " UTC").slice(0, -4) : "—";
-                const bull = item.bullish_flags ?? [];
-                const bear = item.bearish_flags ?? [];
-                const sentColor =
-                  item.sentiment === "bullish" ? "text-green-400" :
-                  item.sentiment === "bearish" ? "text-red-400" :
-                  item.sentiment === "neutral" ? "text-gray-400" : "text-gray-500";
-                const evType = item.classified_event_type || item.event_type || "—";
+                const bull = item.rule_bullish_flags ?? item.bullish_flags ?? [];
+                const bear = item.rule_bearish_flags ?? item.bearish_flags ?? [];
+                const sentVal = (item.rule_sentiment ?? item.sentiment ?? "unknown").toLowerCase();
+                const sentBadge =
+                  sentVal === "bullish" ? "bg-green-900 text-green-300 border-green-700" :
+                  sentVal === "bearish" ? "bg-red-900 text-red-300 border-red-700" :
+                  sentVal === "mixed"   ? "bg-yellow-900 text-yellow-300 border-yellow-700" :
+                  sentVal === "neutral" ? "bg-gray-800 text-gray-300 border-gray-600" :
+                                          "bg-gray-900 text-gray-500 border-gray-700";
+                const impactVal = (item.rule_impact_level ?? "unknown").toLowerCase();
+                const impactBadge =
+                  impactVal === "high"   ? "bg-orange-900 text-orange-300 border-orange-700" :
+                  impactVal === "medium" ? "bg-yellow-900 text-yellow-300 border-yellow-700" :
+                  impactVal === "low"    ? "bg-gray-800 text-gray-400 border-gray-600" :
+                                           "bg-gray-900 text-gray-500 border-gray-700";
+                const evType = item.rule_event_type || item.classified_event_type || item.event_type || "—";
+                const tickers = (item.tickers && item.tickers.length > 0)
+                  ? item.tickers.slice(0, 4).join(", ") + (item.tickers.length > 4 ? ` +${item.tickers.length - 4}` : "")
+                  : item.symbol;
+                const reasons = item.rule_reasons ?? item.sentiment_reasons ?? [];
+                const explanation = item.rule_explanation ?? (reasons.length > 0 ? reasons.join("; ") : "");
+                const sentScore = item.rule_sentiment_score ?? item.sentiment_score;
+                const materiality = item.rule_materiality_score ?? item.materiality_score;
+
                 return (
-                  <tr key={item.catalyst_id ?? `${item.symbol}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40">
+                  <tr key={item.catalyst_id ?? `${item.symbol}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40 align-top">
                     <td className="py-1.5 pr-2 text-xs text-gray-500 font-mono whitespace-nowrap">{pub}</td>
-                    <td className="py-1.5 pr-2 font-mono font-semibold text-yellow-300 whitespace-nowrap">{item.symbol}</td>
-                    <td className="py-1.5 pr-2 text-gray-200 max-w-[420px] truncate" title={item.title}>{item.title || "—"}</td>
-                    <td className="py-1.5 pr-2 text-xs text-gray-500 whitespace-nowrap">{item.publisher || item.source || "—"}</td>
-                    <td className="py-1.5 pr-2 text-xs text-blue-300 whitespace-nowrap">{evType}</td>
-                    <td className={`py-1.5 pr-2 text-xs font-semibold whitespace-nowrap ${sentColor}`}>
-                      {item.sentiment || "—"}
-                      {item.sentiment_score != null && (
-                        <span className="text-gray-600 ml-1">({item.sentiment_score.toFixed(2)})</span>
+                    <td className="py-1.5 pr-2 font-mono font-semibold text-yellow-300 whitespace-nowrap" title={(item.tickers ?? [item.symbol]).join(", ")}>
+                      <span className="text-yellow-200">{item.symbol}</span>
+                      {item.tickers && item.tickers.length > 1 && (
+                        <span className="text-gray-500 text-xs ml-1">({tickers})</span>
                       )}
                     </td>
-                    <td className="py-1.5 pr-2 text-xs font-mono text-right whitespace-nowrap text-gray-300">
-                      {item.materiality_score != null ? item.materiality_score.toFixed(2) : "—"}
+                    <td className="py-1.5 pr-2 text-gray-200 max-w-[360px] truncate" title={item.title}>{item.title || "—"}</td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-500 whitespace-nowrap max-w-[120px] truncate" title={item.publisher || item.source || ""}>
+                      {item.publisher || item.source || "—"}
                     </td>
-                    <td className="py-1.5 pr-2 text-xs">
-                      {bull.length > 0 && <span className="text-green-400 mr-1">+{bull.length}</span>}
-                      {bear.length > 0 && <span className="text-red-400">−{bear.length}</span>}
-                      {bull.length === 0 && bear.length === 0 && <span className="text-gray-600">—</span>}
+                    <td className="py-1.5 pr-2 text-xs text-blue-300 whitespace-nowrap">{evType}</td>
+                    <td className="py-1.5 pr-2 whitespace-nowrap">
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${impactBadge}`}>
+                        {impactVal.toUpperCase()}
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-2 whitespace-nowrap">
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${sentBadge}`}>
+                        {sentVal}
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs font-mono text-right whitespace-nowrap text-gray-300">
+                      {materiality != null ? Number(materiality).toFixed(2) : "—"}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs font-mono text-right whitespace-nowrap text-gray-300">
+                      {sentScore != null ? Number(sentScore).toFixed(2) : "—"}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs whitespace-nowrap" title={bull.join(", ")}>
+                      {bull.length > 0 ? (
+                        <span className="text-green-400 font-semibold">+{bull.length}</span>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs whitespace-nowrap" title={bear.join(", ")}>
+                      {bear.length > 0 ? (
+                        <span className="text-red-400 font-semibold">−{bear.length}</span>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-400 max-w-[220px] truncate" title={explanation || "—"}>
+                      {explanation || <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs whitespace-nowrap" title="AI analysis not active yet — no OpenAI/Anthropic/Ollama calls in this phase.">
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded border bg-purple-950 text-purple-400 border-purple-800">
+                        inactive
+                      </span>
                     </td>
                     <td className="py-1.5 pr-2 text-xs whitespace-nowrap">
                       {item.article_url ? (
@@ -3691,6 +3781,44 @@ function NewsTab({ token }: { token: string }) {
           </table>
         </div>
       )}
+
+      {/* Pagination */}
+      {data.total_count != null && data.total_count > limit && (
+        <div className="flex items-center justify-between gap-3 mt-3 text-xs text-gray-400">
+          <span>
+            Rows {offset + 1}–{Math.min(offset + (data.returned_count ?? 0), data.total_count)} of {data.total_count}
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setOffset(Math.max(0, offset - limit))}
+              disabled={offset <= 0}
+              className={`px-3 py-1 rounded font-semibold transition-colors ${
+                offset <= 0 ? "bg-gray-800 text-gray-600 cursor-not-allowed" : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+            >
+              ← Previous
+            </button>
+            <button
+              onClick={() => setOffset(offset + limit)}
+              disabled={data.total_count != null && offset + (data.returned_count ?? 0) >= data.total_count}
+              className={`px-3 py-1 rounded font-semibold transition-colors ${
+                data.total_count != null && offset + (data.returned_count ?? 0) >= data.total_count
+                  ? "bg-gray-800 text-gray-600 cursor-not-allowed"
+                  : "bg-gray-700 hover:bg-gray-600 text-gray-200"
+              }`}
+            >
+              Next →
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* AI placeholder note */}
+      <div className="mt-3 rounded border border-purple-900 bg-purple-950/30 px-3 py-2 text-xs text-purple-300">
+        <span className="font-semibold">AI Analysis column:</span>{" "}
+        AI analysis not active yet — no OpenAI/Anthropic/Ollama calls in this phase. The AI column is reserved
+        for a future side-by-side comparison against the current rule-based output.
+      </div>
 
       <p className="text-xs text-gray-600 mt-4">
         {data.note ?? "Display feed only — no live orders, no AI/LLM."}

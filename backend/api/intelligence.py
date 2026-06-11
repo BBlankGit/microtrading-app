@@ -235,6 +235,75 @@ def _cache_is_fresh() -> bool:
     return age is not None and age < _NEWS_TTL_SECONDS
 
 
+def _bucket_impact_level(materiality_score) -> str:
+    """
+    Deterministic bucketing of the existing materiality_score into a
+    human-readable impact level. Does NOT change scoring math — only labels
+    the existing value for display.
+
+      materiality >= 0.7  → high
+      materiality >= 0.4  → medium
+      materiality >  0.0  → low
+      materiality == 0    → low
+      materiality is None → unknown
+    """
+    if materiality_score is None:
+        return "unknown"
+    try:
+        m = float(materiality_score)
+    except (TypeError, ValueError):
+        return "unknown"
+    if m >= 0.7:
+        return "high"
+    if m >= 0.4:
+        return "medium"
+    return "low"
+
+
+def _normalize_for_display(it: dict) -> dict:
+    """
+    Add stable `rule_*` and `ai_*` keys for the dashboard, mapped from the
+    existing rule-based fields. The original fields are kept so existing
+    sort_by keys (materiality_score / sentiment_score) continue to work.
+
+    No new analysis is performed: rule_impact_level is a deterministic
+    bucketing of the existing materiality_score; everything else is a
+    rename of the value already produced by catalysts.sentiment /
+    catalysts.classify.
+    """
+    sentiment = it.get("sentiment")
+    materiality = it.get("materiality_score")
+    classification_method = it.get("classification_method")
+    sentiment_method = it.get("sentiment_method")
+
+    it["rule_analysis_available"] = bool(classification_method or sentiment_method)
+    it["rule_event_type"] = it.get("classified_event_type") or it.get("event_type")
+    it["rule_impact_level"] = _bucket_impact_level(materiality)
+    it["rule_sentiment"] = sentiment if sentiment is not None else "unknown"
+    it["rule_materiality_score"] = materiality
+    it["rule_sentiment_score"] = it.get("sentiment_score")
+    it["rule_bullish_flags"] = list(it.get("bullish_flags") or [])
+    it["rule_bearish_flags"] = list(it.get("bearish_flags") or [])
+    it["rule_reasons"] = list(it.get("sentiment_reasons") or [])
+    it["rule_explanation"] = "; ".join(it["rule_reasons"]) if it["rule_reasons"] else None
+
+    # used_by_engine: the engine consumes catalyst rows through
+    # catalysts.scoring, not through this display endpoint. We surface a
+    # conservative "unknown" rather than overclaim a yes/no per item.
+    it["used_by_engine"] = "unknown"
+
+    # AI placeholder fields — stable shape for future comparison work.
+    # No AI calls in this phase.
+    it["ai_analysis_available"] = False
+    it["ai_sentiment"] = None
+    it["ai_impact_level"] = None
+    it["ai_materiality_score"] = None
+    it["ai_confidence"] = None
+    it["ai_explanation"] = None
+    it["ai_model"] = None
+    return it
+
+
 async def _fetch_news_into_cache(force: bool = False) -> dict:
     """
     Single-flight refresh: only one task touches Polygon at a time.
@@ -255,7 +324,7 @@ async def _fetch_news_into_cache(force: bool = False) -> dict:
             analyze_sentiment=True,
         )
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        catalysts = raw.get("catalysts", []) or []
+        catalysts = [_normalize_for_display(c) for c in (raw.get("catalysts") or [])]
 
         _news_cache = {
             "results": catalysts,
@@ -305,6 +374,7 @@ async def get_intelligence_news(
     symbol: str | None = Query(default=None, description="Alias for ticker."),
     event_type: str | None = Query(default=None, description="Catalyst/event type filter."),
     sentiment: str | None = Query(default=None, description="bullish/bearish/mixed/neutral/unknown."),
+    rule_impact_level: str | None = Query(default=None, description="high/medium/low/unknown."),
     min_materiality: float | None = Query(default=None, description="Materiality score floor."),
     sort_by: str = Query(default="published_at"),
     sort_dir: str = Query(default="desc"),
@@ -384,8 +454,13 @@ async def get_intelligence_news(
 
     if sentiment:
         s = sentiment.strip().lower()
-        items = [it for it in items if (it.get("sentiment") or "").lower() == s]
+        items = [it for it in items if (it.get("rule_sentiment") or it.get("sentiment") or "").lower() == s]
         filters_applied["sentiment"] = s
+
+    if rule_impact_level:
+        il = rule_impact_level.strip().lower()
+        items = [it for it in items if (it.get("rule_impact_level") or "").lower() == il]
+        filters_applied["rule_impact_level"] = il
 
     if min_materiality is not None:
         items = [
