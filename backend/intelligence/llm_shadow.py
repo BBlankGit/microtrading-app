@@ -92,14 +92,32 @@ _SECRET_KEY_NAMES = (
 
 # 3. key=value, key:"value", or "key": "value" — both `=` and `:` separators,
 #    with optional quotes around BOTH the key name and the value. Requires a
-#    minimum value length of 6 alphanumeric chars to avoid over-redacting
-#    natural phrases like "key=true" / "token=null" / "sort_key=42".
+#    minimum value length of 6 chars to avoid over-redacting natural phrases
+#    like "key=true" / "token=null" / "sort_key=42".
+#
+# Phase L1-H3: value char class is broadened to cover dotted / punctuation-
+# heavy access tokens (JWT-style "abc.def.ghi", URL-encoded `%2F%2B`,
+# base64 padding `==`, slash/plus tokens, JWT scopes with `:`). Safe
+# delimiters (and quote chars) are still excluded so URL query strings,
+# JSON braces, and comma-separated lists terminate the value cleanly.
+#
+# Inside the class:
+#   A-Z a-z 0-9          alphanumeric
+#   _ -                  underscore, hyphen (existing)
+#   . / + = : %          dotted JWTs, slashes, base64 padding, colons,
+#                        percent-encoded bytes (% itself, plus the hex digits
+#                        are already covered by 0-9 / A-F via alphanumeric)
+#
+# Excluded (i.e. safe delimiters): whitespace, & , ; " ' ) ] } and end-of-
+# string. These are what terminates the match.
+_SECRET_VALUE_CHARS = r"A-Za-z0-9._/+=:%\-"
+
 _SECRET_ASSIGN_PATTERN = re.compile(
     rf"\b(?P<name>{_SECRET_KEY_NAMES})"
     rf"(?P<close_kq>['\"]?)"        # optional closing quote on the key name (JSON)
     rf"(?P<sep>\s*[:=]\s*)"
     rf"(?P<vq>['\"]?)"              # optional opening quote on the value
-    rf"(?P<val>[A-Za-z0-9_\-]{{6,}})"
+    rf"(?P<val>[{_SECRET_VALUE_CHARS}]{{6,}})"
     rf"(?P=vq)",
     re.IGNORECASE,
 )
