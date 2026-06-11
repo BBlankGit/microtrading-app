@@ -695,7 +695,27 @@ async def run_tick() -> dict[str, Any]:
             }
     except Exception:
         pass
+
+    # ── Phase M1: market trend overlay (ETF proxies, rolling 5/10/15m) ────────
+    # Apply the trend adjustment ONLY for entry gating consumers (the
+    # risk_on_score used by no-catalyst / market-mover paths). We surface the
+    # raw score separately so the dashboard can show both.
+    _tick_trend: dict | None = None
+    try:
+        if _cfg("MARKET_TREND_ENABLED"):
+            from market.trend import build_trend_overlay
+            _tick_trend = build_trend_overlay()
+            if _tick_regime is not None and _tick_trend is not None:
+                adj_score = _tick_trend.get("market_regime_score_after_trend")
+                if adj_score is not None:
+                    _tick_regime["risk_on_score_before_trend"] = _tick_regime.get("risk_on_score")
+                    _tick_regime["risk_on_score"] = adj_score
+                _tick_regime["trend"] = _tick_trend
+    except Exception:
+        pass
+
     result["market_regime"] = _tick_regime
+    result["market_trend"] = _tick_trend
 
     # ── 2c. Phase I6: snapshot earnings + insider caches once per tick ──────────
     # Cache-first reads only; no external API calls inside the tick loop.
@@ -1255,6 +1275,15 @@ async def run_tick() -> dict[str, Any]:
                 "insider_reason": scoring.get("insider_reason"),
                 "insider_latest_transaction_date": scoring.get("insider_latest_transaction_date"),
                 "insider_transaction_codes": scoring.get("insider_transaction_codes"),
+                # Market trend overlay (Phase M1 — ETF proxy, telemetry on every row)
+                "market_trend_enabled": (_tick_trend or {}).get("market_trend_enabled"),
+                "market_trend_source": (_tick_trend or {}).get("market_trend_source"),
+                "market_trend_direction": (_tick_trend or {}).get("market_trend_direction"),
+                "market_trend_strength": (_tick_trend or {}).get("market_trend_strength"),
+                "market_trend_adjustment": (_tick_trend or {}).get("market_trend_adjustment"),
+                "market_trend_reason": (_tick_trend or {}).get("market_trend_reason"),
+                "market_regime_score_before_trend": (_tick_trend or {}).get("market_regime_score_before_trend"),
+                "market_regime_score_after_trend": (_tick_trend or {}).get("market_regime_score_after_trend"),
                 # Momentum fields (Phase 2M)
                 "entry_mode": None,
                 "momentum_eligible": momentum_eval["eligible"] if momentum_eval else False,

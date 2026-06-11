@@ -145,6 +145,15 @@ interface Candidate {
   insider_reason?: string | null;
   insider_latest_transaction_date?: string | null;
   insider_transaction_codes?: string[] | null;
+  // Phase M1 market trend overlay
+  market_trend_enabled?: boolean | null;
+  market_trend_source?: string | null;
+  market_trend_direction?: string | null;
+  market_trend_strength?: string | null;
+  market_trend_adjustment?: number | null;
+  market_trend_reason?: string | null;
+  market_regime_score_before_trend?: number | null;
+  market_regime_score_after_trend?: number | null;
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -287,6 +296,43 @@ interface MarketRegimeData {
   as_of?: string | null;
   disclaimer?: string | null;
   error?: string | null;
+}
+
+interface MarketTrendDelta {
+  ago_snapshot_as_of?: string | null;
+  risk_on_score_ago?: number | null;
+  risk_on_score_delta?: number | null;
+  qqq_change_ago?: number | null;
+  qqq_delta?: number | null;
+  spy_change_ago?: number | null;
+  spy_delta?: number | null;
+  iwm_change_ago?: number | null;
+  iwm_delta?: number | null;
+}
+
+interface MarketTrendData {
+  ok: boolean;
+  enabled: boolean;
+  source: string;
+  futures_available: boolean;
+  provider_status: string;
+  primary_symbols: string[];
+  context_symbols: string[];
+  optional_proxy_symbols: string[];
+  snapshot_count: number;
+  snapshot_interval_seconds: number;
+  history_minutes: number;
+  windows_minutes: number[];
+  latest_snapshot?: Record<string, unknown> | null;
+  deltas: Record<string, MarketTrendDelta>;
+  market_regime_score_before_trend: number | null;
+  market_regime_score_after_trend: number | null;
+  trend_direction: "improving" | "deteriorating" | "flat" | "unknown" | string;
+  trend_strength: "strong" | "moderate" | "weak" | "unknown" | string;
+  market_trend_adjustment: number;
+  market_trend_reason: string;
+  warnings?: string[];
+  as_of: string | null;
 }
 
 interface Dashboard {
@@ -799,6 +845,16 @@ async function fetchPremarket(): Promise<PremarketSnapshot | null> {
   }
 }
 
+async function fetchMarketTrend(): Promise<MarketTrendData | null> {
+  try {
+    const r = await fetch("/api/market/trend");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
 async function fetchNews(): Promise<NewsSnapshot | null> {
   try {
     const r = await fetch("/api/intelligence/news?limit_per_symbol=5&max_age_hours=48");
@@ -1036,13 +1092,15 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
-            {["Symbol","✓","Mode","Action","Score","Components","Earn Adj","Ins Adj","Intel Adj","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
+            {["Symbol","✓","Mode","Action","Score","Components","Earn Adj","Ins Adj","Intel Adj","Mkt Trend","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
               "Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].map((h) => (
               <th key={h} className={`pb-2 pr-2 font-medium whitespace-nowrap ${
                 ["Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
                   ? "text-emerald-600"
                   : ["Earn Adj","Ins Adj","Intel Adj"].includes(h)
                   ? "text-cyan-500"
+                  : h === "Mkt Trend"
+                  ? "text-amber-500"
                   : ""
               }`}>{h}</th>
             ))}
@@ -1103,6 +1161,22 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                       {c.intelligence_score_adjustment > 0 ? "+" : ""}{c.intelligence_score_adjustment}
                     </span>
                   : <span className="text-gray-600">0</span>}
+              </td>
+              <td className="py-2 pr-2 text-xs whitespace-nowrap" title={c.market_trend_reason ?? "—"}>
+                {c.market_trend_direction === "unknown" || c.market_trend_direction == null ? (
+                  <span className="text-gray-600">collecting</span>
+                ) : (
+                  <span className={
+                    c.market_trend_direction === "improving" ? "text-green-400" :
+                    c.market_trend_direction === "deteriorating" ? "text-red-400" :
+                    "text-gray-400"
+                  }>
+                    {c.market_trend_direction}
+                    {c.market_trend_adjustment != null && c.market_trend_adjustment !== 0 && (
+                      <span className="ml-1 font-semibold">{c.market_trend_adjustment > 0 ? "+" : ""}{c.market_trend_adjustment}</span>
+                    )}
+                  </span>
+                )}
               </td>
               <td className="py-2 pr-2 font-mono">{fmt(c.spread_percent, 3)}</td>
               <td className={`py-2 pr-2 font-mono ${c.change_percent != null ? pnlClass(c.change_percent) : ""}`}>
@@ -2447,6 +2521,115 @@ function regimeBadgeClass(regime: string | null | undefined): string {
   if (regime === "risk_off") return "bg-red-900 text-red-300 border-red-700";
   if (regime === "neutral") return "bg-yellow-900 text-yellow-300 border-yellow-700";
   return "bg-gray-800 text-gray-400 border-gray-600";
+}
+
+function MarketTrendPanel({ trend }: { trend: MarketTrendData | null }) {
+  if (!trend) {
+    return <p className="text-gray-500 text-sm">Market trend data unavailable.</p>;
+  }
+  const dirColor =
+    trend.trend_direction === "improving" ? "bg-green-900 text-green-300 border-green-700" :
+    trend.trend_direction === "deteriorating" ? "bg-red-900 text-red-300 border-red-700" :
+    trend.trend_direction === "flat" ? "bg-gray-800 text-gray-300 border-gray-600" :
+    "bg-gray-900 text-gray-500 border-gray-700";
+  const strengthColor =
+    trend.trend_strength === "strong" ? "text-orange-300" :
+    trend.trend_strength === "moderate" ? "text-yellow-300" :
+    trend.trend_strength === "weak" ? "text-gray-300" : "text-gray-500";
+  const adj = trend.market_trend_adjustment;
+  const adjStr = adj === 0 ? "0" : `${adj > 0 ? "+" : ""}${adj}`;
+  const adjColor = adj > 0 ? "text-green-400" : adj < 0 ? "text-red-400" : "text-gray-400";
+  const before = trend.market_regime_score_before_trend;
+  const after = trend.market_regime_score_after_trend;
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded border border-blue-900 bg-blue-950 px-3 py-2 text-xs text-blue-300">
+        <span className="font-semibold">Source: ETF proxy.</span>{" "}
+        True Nasdaq/SPX futures are not configured/available in this phase — using QQQ / SPY / IWM.
+        Trend alone does not create entries and does not affect exits. Used as risk-on adjustment for
+        no-catalyst momentum and market-mover gates.
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${dirColor}`}>
+          Direction: {trend.trend_direction.toUpperCase()}
+        </span>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border bg-gray-800 border-gray-600 ${strengthColor}`}>
+          Strength: {trend.trend_strength}
+        </span>
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border bg-gray-800 border-gray-600 ${adjColor}`}>
+          Adjustment: {adjStr}
+        </span>
+        <span className="text-xs text-gray-400 border border-gray-700 rounded px-2 py-0.5">
+          Snapshots: {trend.snapshot_count} (interval {trend.snapshot_interval_seconds}s, history {trend.history_minutes}m)
+        </span>
+        <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
+          Provider: {trend.provider_status} · futures_available: {String(trend.futures_available)}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatBox label="Score (raw)" value={before != null ? String(before) : "—"} />
+        <StatBox label="Score (trend-adjusted)" value={after != null ? String(after) : "—"} cls={
+          after != null && before != null && after > before ? "text-green-400" :
+          after != null && before != null && after < before ? "text-red-400" : ""
+        } />
+        <StatBox label="Primary symbols" value={(trend.primary_symbols || []).join(", ") || "—"} />
+        <StatBox label="Optional proxies" value={(trend.optional_proxy_symbols || []).join(", ") || "—"} />
+      </div>
+
+      {(trend.snapshot_count ?? 0) >= 1 ? (
+        <div>
+          <h3 className="text-sm font-semibold text-gray-300 mb-2">Rolling deltas</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-gray-400 border-b border-gray-700">
+                  <th className="pb-2 pr-2 text-left whitespace-nowrap">Window</th>
+                  <th className="pb-2 pr-2 text-right whitespace-nowrap">Risk Δ</th>
+                  <th className="pb-2 pr-2 text-right whitespace-nowrap">QQQ Δ%</th>
+                  <th className="pb-2 pr-2 text-right whitespace-nowrap">SPY Δ%</th>
+                  <th className="pb-2 pr-2 text-right whitespace-nowrap">IWM Δ%</th>
+                  <th className="pb-2 pr-2 text-left whitespace-nowrap">Snapshot as_of</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(trend.windows_minutes || [5, 10, 15]).map((w) => {
+                  const d = trend.deltas?.[`${w}m`];
+                  const fmtDelta = (v: number | null | undefined) => {
+                    if (v == null) return "—";
+                    const cls = v > 0 ? "text-green-400" : v < 0 ? "text-red-400" : "text-gray-400";
+                    return <span className={cls}>{v > 0 ? "+" : ""}{v}</span>;
+                  };
+                  return (
+                    <tr key={w} className="border-b border-gray-800">
+                      <td className="py-1.5 pr-2 font-mono text-xs">{w}m</td>
+                      <td className="py-1.5 pr-2 font-mono text-xs text-right">{fmtDelta(d?.risk_on_score_delta as number | null | undefined)}</td>
+                      <td className="py-1.5 pr-2 font-mono text-xs text-right">{fmtDelta(d?.qqq_delta as number | null | undefined)}</td>
+                      <td className="py-1.5 pr-2 font-mono text-xs text-right">{fmtDelta(d?.spy_delta as number | null | undefined)}</td>
+                      <td className="py-1.5 pr-2 font-mono text-xs text-right">{fmtDelta(d?.iwm_delta as number | null | undefined)}</td>
+                      <td className="py-1.5 pr-2 font-mono text-xs text-gray-500">{d?.ago_snapshot_as_of ? String(d.ago_snapshot_as_of).slice(0, 19) : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      <p className="text-xs text-gray-500 italic">
+        Reason: {trend.market_trend_reason}
+      </p>
+      {(trend.warnings ?? []).map((w, i) => (
+        <p key={i} className="text-xs text-yellow-500">⚠ {w}</p>
+      ))}
+      {trend.as_of && (
+        <p className="text-xs text-gray-600">As of: <span className="font-mono">{utcShort(trend.as_of)}</span></p>
+      )}
+    </div>
+  );
 }
 
 function MarketRegimePanel({ regime }: { regime: MarketRegimeData | null }) {
@@ -4418,6 +4601,7 @@ export default function Home() {
   const [lastRefresh, setLastRefresh] = useState("");
   const [reddit, setReddit] = useState<RedditSnapshot | null>(null);
   const [premarket, setPremarket] = useState<PremarketSnapshot | null>(null);
+  const [marketTrend, setMarketTrend] = useState<MarketTrendData | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigState | null>(null);
   const [topTab, setTopTab] = useState<"main" | "intelligence" | "strategy">("main");
 
@@ -4427,9 +4611,9 @@ export default function Home() {
   // is not open.
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, mtdata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
-      fetchReddit(), fetchPremarket(), fetchRuntimeConfig(),
+      fetchReddit(), fetchPremarket(), fetchRuntimeConfig(), fetchMarketTrend(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -4439,6 +4623,7 @@ export default function Home() {
     setReddit(rddata);
     setPremarket(pmdata);
     setRuntimeConfig(rcfgdata);
+    setMarketTrend(mtdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -4536,6 +4721,17 @@ export default function Home() {
           </span>
         </h2>
         <MarketRegimePanel regime={dashboard?.market_regime ?? null} />
+      </section>
+
+      {/* Market Trend (Phase M1) */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Market Trend
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            ETF proxy momentum · 5/10/15-minute rolling deltas · futures not configured
+          </span>
+        </h2>
+        <MarketTrendPanel trend={marketTrend} />
       </section>
 
       {/* Session Readiness */}

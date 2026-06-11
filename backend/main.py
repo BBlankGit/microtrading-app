@@ -10,6 +10,7 @@ from api.data_status import router as data_status_router
 from api.journal import router as journal_router
 from api.market import router as market_router
 from api.market_regime import router as market_regime_router
+from api.market_trend import router as market_trend_router
 from api.marketdata import router as marketdata_router
 from api.monitoring import router as monitoring_router
 from api.paper import router as paper_router
@@ -85,6 +86,7 @@ app.include_router(data_status_router)
 app.include_router(journal_router)
 app.include_router(market_router)
 app.include_router(market_regime_router)
+app.include_router(market_trend_router)
 app.include_router(marketdata_router)
 app.include_router(monitoring_router)
 app.include_router(paper_router)

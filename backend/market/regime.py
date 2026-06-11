@@ -51,6 +51,13 @@ async def get_market_regime(force_refresh: bool = False) -> dict[str, Any]:
 
     try:
         result = await _build_regime()
+        # Phase M1: feed the trend rolling history with each successful regime
+        # snapshot. Best-effort — never block the regime path.
+        try:
+            from market import trend as _trend_mod
+            _trend_mod.record_snapshot(result)
+        except Exception:
+            pass
     except Exception as exc:
         logger.warning("Market regime build failed: %s", exc)
         result = {

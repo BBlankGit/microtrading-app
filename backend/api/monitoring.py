@@ -375,6 +375,7 @@ async def monitoring_status():
         "last_error": last_error,
         "market_session": ms,
         "market_regime": regime_summary,
+        "market_trend": _market_trend_summary(),
         "runtime_config": runtime_config_status,
         "momentum_mode": momentum_mode,
         "no_catalyst_mode": no_catalyst_mode,
@@ -417,3 +418,25 @@ def _market_session_now() -> dict:
         "regular_close": "16:00",
         "note": "Best-effort weekday/session check; holidays not included yet.",
     }
+
+
+def _market_trend_summary() -> dict:
+    """Compact market trend summary for monitoring/status (Phase M1)."""
+    try:
+        from market import trend as _trend
+        t = _trend.get_trend()
+        return {
+            "enabled": t.get("enabled"),
+            "source": t.get("source"),
+            "futures_available": t.get("futures_available"),
+            "provider_status": t.get("provider_status"),
+            "trend_direction": t.get("trend_direction"),
+            "trend_strength": t.get("trend_strength"),
+            "adjustment": t.get("market_trend_adjustment"),
+            "score_before_trend": t.get("market_regime_score_before_trend"),
+            "score_after_trend": t.get("market_regime_score_after_trend"),
+            "snapshot_count": t.get("snapshot_count"),
+            "warnings": t.get("warnings"),
+        }
+    except Exception as exc:
+        return {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}

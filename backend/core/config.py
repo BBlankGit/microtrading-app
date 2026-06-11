@@ -89,6 +89,18 @@ class Settings(BaseSettings):
     MARKET_REGIME_SYMBOLS: str = "SPY,QQQ,IWM,DIA,XLK,XLF,XLE,XLY,XLI,XLU"
     MARKET_REGIME_REFRESH_SECONDS: int = 60
     MARKET_REGIME_MIN_RISK_ON_SCORE: int = 60
+
+    # Phase M1 — Market regime trend momentum (ETF proxies only; no futures)
+    MARKET_TREND_ENABLED: bool = True
+    MARKET_TREND_SOURCE: str = "etf_proxy"
+    MARKET_TREND_PRIMARY_SYMBOLS: str = "QQQ,SPY,IWM"
+    MARKET_TREND_CONTEXT_SYMBOLS: str = "DIA,XLK,XLF,XLE,XLY,XLI,XLU"
+    MARKET_TREND_OPTIONAL_PROXY_SYMBOLS: str = "TQQQ,SQQQ"
+    MARKET_TREND_INCLUDE_LEVERAGED_PROXIES_IN_SCORE: bool = False
+    MARKET_TREND_SNAPSHOT_INTERVAL_SECONDS: int = 60
+    MARKET_TREND_HISTORY_MINUTES: int = 30
+    MARKET_TREND_WINDOWS_MINUTES: str = "5,10,15"
+    MARKET_TREND_MIN_SNAPSHOTS: int = 3
     MARKET_REGIME_MAX_RISK_OFF_SCORE: int = 40
 
     # Catalyst sentiment (Phase 2I — no AI/LLM, deterministic rules only)
