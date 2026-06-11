@@ -1,9 +1,10 @@
 """
-Market regime monitor — observational only.
+Market regime monitor.
 
 No broker. No live trading. No real orders. No real-money execution.
 Fetches ETF snapshots from Polygon REST to compute a market breadth/risk score.
-This data is purely observational context; it does NOT affect entry/exit logic.
+Regime data is used by selected fake-money entry gates (momentum, no-catalyst,
+market-mover risk-off block). It does not place orders and does not affect exits.
 """
 
 import asyncio
@@ -23,9 +24,9 @@ _cache: dict[str, Any] | None = None
 _cache_time: float | None = None
 
 DISCLAIMER = (
-    "Observational market context only. "
-    "Does not affect trade entry/exit logic. "
-    "Research/fake-money simulation use only. No broker. No live trading."
+    "Used by selected fake-money entry gates (momentum, no-catalyst, market-mover risk-off). "
+    "Does not place orders; does not affect exits. "
+    "Research/fake-money simulation only. No broker. No live trading."
 )
 
 
@@ -53,6 +54,7 @@ async def get_market_regime(force_refresh: bool = False) -> dict[str, Any]:
     except Exception as exc:
         logger.warning("Market regime build failed: %s", exc)
         result = {
+            "enabled": True,
             "symbols_requested": [],
             "symbols_fetched": [],
             "symbols_failed": [],
@@ -97,6 +99,7 @@ async def _build_regime() -> dict[str, Any]:
     # which is misleading: complete data failure is not the same as a bearish market.
     if total_fetched == 0:
         return {
+            "enabled": True,
             "symbols_requested": symbols,
             "symbols_fetched": [],
             "symbols_failed": failed,
@@ -121,6 +124,7 @@ async def _build_regime() -> dict[str, Any]:
     risk = _compute_risk(breadth, leaders, confidence)
 
     return {
+        "enabled": True,
         "symbols_requested": symbols,
         "symbols_fetched": list(valid.keys()),
         "symbols_failed": failed,

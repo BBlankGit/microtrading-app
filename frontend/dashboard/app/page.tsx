@@ -238,20 +238,20 @@ interface MarketRegimeLeader {
 }
 
 interface MarketRegimeData {
-  enabled: boolean;
-  symbols_requested: string[];
-  symbols_fetched: string[];
-  symbols_failed: string[];
-  fetch_ratio: number;
-  breadth: {
+  enabled?: boolean;
+  symbols_requested?: string[];
+  symbols_fetched?: string[];
+  symbols_failed?: string[];
+  fetch_ratio?: number | null;
+  breadth?: {
     total: number;
     positive: number;
     negative: number;
     flat: number;
     positive_percent: number | null;
     avg_change_percent: number | null;
-  };
-  leaders: {
+  } | null;
+  leaders?: {
     data: {
       SPY: MarketRegimeLeader | null;
       QQQ: MarketRegimeLeader | null;
@@ -259,16 +259,17 @@ interface MarketRegimeData {
     };
     bullish_count: number;
     bearish_count: number;
-  };
-  risk: {
+  } | null;
+  risk?: {
     regime: "risk_on" | "neutral" | "risk_off" | "unknown" | string;
     risk_on_score: number | null;
     confidence: "high" | "medium" | "low" | "unknown" | string;
     fetched_count: number;
-  };
-  as_of: string | null;
-  disclaimer: string;
-  error?: string;
+    warnings?: string[];
+  } | null;
+  as_of?: string | null;
+  disclaimer?: string | null;
+  error?: string | null;
 }
 
 interface Dashboard {
@@ -2291,26 +2292,30 @@ function regimeBadgeClass(regime: string | null | undefined): string {
 }
 
 function MarketRegimePanel({ regime }: { regime: MarketRegimeData | null }) {
-  if (!regime || !regime.enabled) {
-    return (
-      <p className="text-gray-500 text-sm">
-        Market regime monitor disabled or data unavailable.
-      </p>
-    );
+  // Show panel if data is present (enabled flag OR risk object exists)
+  const hasData = regime && (regime.enabled === true || regime.risk != null);
+  if (!hasData) {
+    const reason = !regime
+      ? "No data returned from dashboard."
+      : regime.error
+      ? `Error: ${regime.error}`
+      : "Market regime monitor disabled by configuration (MARKET_REGIME_ENABLED=False).";
+    return <p className="text-gray-500 text-sm">{reason}</p>;
   }
 
-  const { breadth, leaders, risk, as_of, symbols_fetched, symbols_failed, error } = regime;
+  const { breadth, leaders, risk, as_of, symbols_fetched, symbols_failed, fetch_ratio, error } = regime;
+  const warnings = risk?.warnings ?? [];
 
   return (
     <div className="space-y-4">
       {/* Status badges */}
       <div className="flex flex-wrap gap-2 items-center">
         <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${regimeBadgeClass(risk?.regime)}`}>
-          Regime: {risk?.regime ? risk.regime.replace("_", " ").toUpperCase() : "UNKNOWN"}
+          Regime: {risk?.regime ? risk.regime.replace(/_/g, " ").toUpperCase() : "UNKNOWN"}
         </span>
         {risk?.risk_on_score != null && (
           <span className={`text-xs font-semibold px-2 py-0.5 rounded border bg-gray-800 border-gray-600 ${regimeColor(risk.regime)}`}>
-            Score: {risk.risk_on_score} / 100
+            Risk-on score: {risk.risk_on_score} / 100
           </span>
         )}
         <span className={`text-xs px-2 py-0.5 rounded border ${
@@ -2321,8 +2326,13 @@ function MarketRegimePanel({ regime }: { regime: MarketRegimeData | null }) {
           Confidence: {risk?.confidence ?? "—"}
         </span>
         <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
-          {symbols_fetched?.length ?? 0} symbols fetched
-          {(symbols_failed?.length ?? 0) > 0 && ` · ${symbols_failed.length} failed`}
+          {symbols_fetched?.length ?? 0} fetched
+          {(symbols_failed?.length ?? 0) > 0 && (
+            <span className="text-red-400"> · {symbols_failed!.length} failed</span>
+          )}
+          {fetch_ratio != null && (
+            <span className="text-gray-600"> · {Math.round(fetch_ratio * 100)}% ratio</span>
+          )}
         </span>
         {error && (
           <span className="text-xs text-red-400 font-mono bg-red-950 px-2 py-0.5 rounded border border-red-800 truncate max-w-xs">
@@ -2331,8 +2341,17 @@ function MarketRegimePanel({ regime }: { regime: MarketRegimeData | null }) {
         )}
       </div>
 
+      {/* Warnings from scoring */}
+      {warnings.length > 0 && (
+        <div className="space-y-1">
+          {warnings.map((w, i) => (
+            <p key={i} className="text-xs text-yellow-500">{w}</p>
+          ))}
+        </div>
+      )}
+
       {/* Breadth stats */}
-      {breadth && (
+      {breadth && breadth.total > 0 && (
         <div>
           <h3 className="text-sm font-semibold text-gray-300 mb-2">Market Breadth</h3>
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -2391,11 +2410,19 @@ function MarketRegimePanel({ regime }: { regime: MarketRegimeData | null }) {
         </div>
       )}
 
+      {/* Usage note */}
+      <div className="rounded border border-gray-700 bg-gray-900 px-3 py-2 text-xs text-gray-400">
+        <span className="font-semibold text-gray-300">Used by selected entry gates: </span>
+        no-catalyst momentum risk-on requirement · market-mover risk-off allow/block · shadow/diagnostic scoring context.
+        <span className="text-gray-600"> Not a broker or live-trading control.</span>
+      </div>
+
       {as_of && (
         <p className="text-xs text-gray-600">
           As of: <span className="font-mono text-gray-500">{utcShort(as_of)}</span>
-          {" · "}
-          <span className="italic">{regime.disclaimer}</span>
+          {regime.disclaimer && (
+            <>{" · "}<span className="italic">{regime.disclaimer}</span></>
+          )}
         </p>
       )}
     </div>
@@ -3402,7 +3429,7 @@ export default function Home() {
         <h2 className="text-lg font-semibold mb-3">
           Market Regime
           <span className="ml-2 text-xs font-normal text-gray-400">
-            observational only · breadth/risk context · no strategy changes
+            breadth/risk context · used by selected fake-money entry gates
           </span>
         </h2>
         <MarketRegimePanel regime={dashboard?.market_regime ?? null} />
