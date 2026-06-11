@@ -19,17 +19,48 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ══════════════════════════════════════════════════════════════════════
 
 def test_score_candidate_called_with_adjusted_q_in_source():
-    """score_candidate is called after _q_for_paths is built — verify via source inspection."""
+    """
+    score_candidate is called after _q_for_paths is built and receives it
+    as the second positional argument — verified via AST so the assertion
+    is tolerant of multiline call formatting and added kwargs.
+    """
+    import ast
     import inspect
     import paper.simulator as sim
 
     src = inspect.getsource(sim.run_tick)
-    # _q_for_paths must be built before score_candidate is called
-    pos_qfp = src.index("_q_for_paths")
-    pos_score = src.index("score_candidate(sym, _q_for_paths")
-    assert pos_qfp < pos_score, (
+    tree = ast.parse(src)
+
+    # _q_for_paths must be assigned somewhere in the function.
+    assigned_line: int | None = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "_q_for_paths":
+                    assigned_line = node.lineno
+                    break
+            if assigned_line is not None:
+                break
+    assert assigned_line is not None, "_q_for_paths must be assigned in run_tick"
+
+    # Find every score_candidate(...) call and assert one of them gets
+    # _q_for_paths as the second positional argument and appears after the
+    # assignment.
+    found = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if not (isinstance(fn, ast.Name) and fn.id == "score_candidate"):
+            continue
+        if len(node.args) >= 2 and isinstance(node.args[1], ast.Name) \
+                and node.args[1].id == "_q_for_paths" \
+                and node.lineno > assigned_line:
+            found = True
+            break
+    assert found, (
         "score_candidate must be called AFTER _q_for_paths is computed and "
-        "must receive _q_for_paths (not raw q)"
+        "must receive _q_for_paths as the second positional argument"
     )
 
 

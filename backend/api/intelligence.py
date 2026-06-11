@@ -611,8 +611,10 @@ async def get_intelligence_earnings(
 
     return {
         "ok": True,
-        "enabled": bool(snap.get("enabled", earnings_intel.is_enabled())),
+        "enabled": bool(snap.get("enabled", earnings_intel.is_available())),
+        "available": bool(snap.get("available", earnings_intel.is_available())),
         "implemented": True,
+        "provider_status": snap.get("provider_status", earnings_intel.provider_status()),
         "source": snap.get("source") or earnings_intel.provider(),
         "fetched_at": snap.get("fetched_at"),
         "cache_age_seconds": int(age) if age is not None else None,
@@ -638,7 +640,9 @@ async def refresh_intelligence_earnings():
     snap = await earnings_intel.fetch_and_refresh(force=True)
     return {
         "ok": True,
-        "enabled": bool(snap.get("enabled", earnings_intel.is_enabled())),
+        "enabled": bool(snap.get("enabled", earnings_intel.is_available())),
+        "available": bool(snap.get("available", earnings_intel.is_available())),
+        "provider_status": snap.get("provider_status", earnings_intel.provider_status()),
         "source": snap.get("source"),
         "fetched_at": snap.get("fetched_at"),
         "total_count": len(snap.get("results") or []),
@@ -718,8 +722,10 @@ async def get_intelligence_insiders(
 
     return {
         "ok": True,
-        "enabled": bool(snap.get("enabled", insiders_intel.is_enabled())),
+        "enabled": bool(snap.get("enabled", insiders_intel.is_available())),
+        "available": bool(snap.get("available", insiders_intel.is_available())),
         "implemented": True,
+        "provider_status": snap.get("provider_status", insiders_intel.provider_status()),
         "source": snap.get("source") or insiders_intel.provider(),
         "fetched_at": snap.get("fetched_at"),
         "cache_age_seconds": int(age) if age is not None else None,
@@ -748,7 +754,9 @@ async def refresh_intelligence_insiders():
     snap = await insiders_intel.fetch_and_refresh(force=True)
     return {
         "ok": True,
-        "enabled": bool(snap.get("enabled", insiders_intel.is_enabled())),
+        "enabled": bool(snap.get("enabled", insiders_intel.is_available())),
+        "available": bool(snap.get("available", insiders_intel.is_available())),
+        "provider_status": snap.get("provider_status", insiders_intel.provider_status()),
         "source": snap.get("source"),
         "fetched_at": snap.get("fetched_at"),
         "total_count": len(snap.get("results") or []),

@@ -3907,7 +3907,9 @@ interface EarningsRow {
 interface EarningsSnapshot {
   ok: boolean;
   enabled: boolean;
+  available?: boolean;
   implemented: boolean;
+  provider_status?: "not_configured" | "configured_but_unwired" | "active" | string;
   source: string | null;
   fetched_at: string | null;
   cache_age_seconds: number | null;
@@ -3988,9 +3990,19 @@ function EarningsTab({ token }: { token: string }) {
         (1d −10, 2d −5, 3d −3; configurable). Earnings alone cannot create an entry.
       </div>
 
-      {data?.enabled === false && (
+      {(data?.enabled === false || data?.available === false) && (
         <div className="mb-3 rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300">
-          ⚠ {data?.warning ?? "Earnings provider not configured. Set EARNINGS_DATA_PROVIDER to enable."}
+          ⚠{" "}
+          {data?.provider_status === "configured_but_unwired"
+            ? `Provider ${data?.source ?? "?"} is configured but no fetcher is implemented yet. No fake data shown.`
+            : data?.provider_status === "not_configured"
+            ? "Earnings provider is not configured. No fake data shown."
+            : data?.warning ?? "Earnings provider unavailable."}
+          {data?.provider_status && (
+            <span className="ml-2 text-yellow-500 font-mono">
+              [provider_status: {data.provider_status}]
+            </span>
+          )}
         </div>
       )}
 
@@ -4126,7 +4138,9 @@ interface InsiderRow {
 interface InsiderSnapshot {
   ok: boolean;
   enabled: boolean;
+  available?: boolean;
   implemented: boolean;
+  provider_status?: "not_configured" | "configured_but_unwired" | "active" | string;
   source: string | null;
   fetched_at: string | null;
   cache_age_seconds: number | null;
@@ -4211,9 +4225,19 @@ function InsidersTab({ token }: { token: string }) {
         auto-create bearish penalties.
       </div>
 
-      {data?.enabled === false && (
+      {(data?.enabled === false || data?.available === false) && (
         <div className="mb-3 rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300">
-          ⚠ {data?.warning ?? "Insider provider not configured. Set INSIDER_DATA_PROVIDER to enable."}
+          ⚠{" "}
+          {data?.provider_status === "configured_but_unwired"
+            ? `Provider ${data?.source ?? "?"} is configured but no fetcher is implemented yet. No fake data shown.`
+            : data?.provider_status === "not_configured"
+            ? "Insider provider is not configured. No fake data shown."
+            : data?.warning ?? "Insider provider unavailable."}
+          {data?.provider_status && (
+            <span className="ml-2 text-yellow-500 font-mono">
+              [provider_status: {data.provider_status}]
+            </span>
+          )}
         </div>
       )}
 

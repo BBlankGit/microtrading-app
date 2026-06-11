@@ -47,8 +47,35 @@ def provider() -> str:
     return (settings.EARNINGS_DATA_PROVIDER or "none").strip().lower()
 
 
+# Set of providers that have a real fetcher wired in this codebase. Phase I6
+# ships only the abstraction — no provider is implemented yet, so this set
+# is intentionally empty. Add provider names here once a fetcher lands.
+_WIRED_PROVIDERS: set[str] = set()
+
+
+def is_available() -> bool:
+    """True only when a real fetcher is wired for the configured provider."""
+    return provider() in _WIRED_PROVIDERS
+
+
+def provider_status() -> str:
+    """
+    Honest status string for callers/dashboard:
+      "not_configured"         — EARNINGS_DATA_PROVIDER=none
+      "configured_but_unwired" — provider name set, no fetcher implemented
+      "active"                 — provider has a wired fetcher
+    """
+    p = provider()
+    if p in ("", "none"):
+        return "not_configured"
+    if p in _WIRED_PROVIDERS:
+        return "active"
+    return "configured_but_unwired"
+
+
 def is_enabled() -> bool:
-    return provider() not in ("", "none")
+    """Backwards-compat alias: enabled iff a real fetcher is available."""
+    return is_available()
 
 
 def get_results_by_symbol() -> dict[str, dict]:
@@ -113,54 +140,64 @@ async def fetch_and_refresh(force: bool = False) -> dict:
         if not force and cache_is_fresh() and _cache is not None:
             return _cache
 
-        if not is_enabled():
+        prov = provider()
+        status = provider_status()
+
+        if status == "not_configured":
             _cache = {
                 "enabled": False,
+                "available": False,
                 "implemented": True,
+                "provider_status": status,
                 "source": "none",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "results": [],
                 "errors": [],
                 "warning": (
-                    "Earnings calendar provider not configured "
-                    "(EARNINGS_DATA_PROVIDER=none). Set EARNINGS_DATA_PROVIDER "
-                    "and the matching API key to enable real data."
+                    "Earnings calendar provider is not configured "
+                    "(EARNINGS_DATA_PROVIDER=none). No fake data shown. "
+                    "Set EARNINGS_DATA_PROVIDER and the matching API key to enable real data."
                 ),
             }
             _cache_time = time.monotonic()
             return _cache
 
-        # Provider-specific fetchers go here. As of Phase I6 no provider is
-        # wired in code; surfaces enabled=false with a clear warning rather
-        # than fabricate rows.
+        if status == "configured_but_unwired":
+            _cache = {
+                "enabled": False,
+                "available": False,
+                "implemented": True,
+                "provider_status": status,
+                "source": prov,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "results": [],
+                "errors": [],
+                "warning": (
+                    f"Earnings provider {prov!r} is configured but no fetcher is "
+                    "implemented yet. No fake data shown."
+                ),
+            }
+            _cache_time = time.monotonic()
+            return _cache
+
+        # status == "active": a wired fetcher exists for this provider.
         try:
             results_raw: list[dict] = []
             errors: list[dict] = []
-            warning: str | None = None
-            prov = provider()
-            if prov == "polygon":
-                warning = (
-                    "Polygon REST does not expose a reliable earnings calendar; "
-                    "leaving cache empty until a dedicated earnings provider is wired."
-                )
-            elif prov == "finnhub":
-                warning = (
-                    "Finnhub provider stub not yet wired. "
-                    "Set FINNHUB_API_KEY and implement the fetcher to enable."
-                )
-            else:
-                warning = f"Unknown EARNINGS_DATA_PROVIDER={prov!r}; no data fetched."
+            # NOTE: when a real fetcher is wired, populate results_raw here.
 
             today = date.today()
             results = [_normalize_row(r, today) for r in results_raw]
             _cache = {
                 "enabled": True,
+                "available": True,
                 "implemented": True,
+                "provider_status": "active",
                 "source": prov,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "results": results,
                 "errors": errors,
-                "warning": warning,
+                "warning": None,
             }
             _cache_time = time.monotonic()
             return _cache
@@ -168,8 +205,10 @@ async def fetch_and_refresh(force: bool = False) -> dict:
             logger.warning("Earnings fetch failed: %s", exc)
             keep = _cache or {
                 "enabled": True,
+                "available": True,
                 "implemented": True,
-                "source": provider(),
+                "provider_status": "active",
+                "source": prov,
                 "fetched_at": None,
                 "results": [],
                 "errors": [],

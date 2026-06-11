@@ -52,8 +52,28 @@ def provider() -> str:
     return (settings.INSIDER_DATA_PROVIDER or "none").strip().lower()
 
 
+# Set of providers that have a real fetcher wired in this codebase. Phase I6
+# ships only the abstraction — no provider is implemented yet. Add provider
+# names here once a fetcher lands.
+_WIRED_PROVIDERS: set[str] = set()
+
+
+def is_available() -> bool:
+    return provider() in _WIRED_PROVIDERS
+
+
+def provider_status() -> str:
+    p = provider()
+    if p in ("", "none"):
+        return "not_configured"
+    if p in _WIRED_PROVIDERS:
+        return "active"
+    return "configured_but_unwired"
+
+
 def is_enabled() -> bool:
-    return provider() not in ("", "none")
+    """Backwards-compat alias: enabled iff a real fetcher is available."""
+    return is_available()
 
 
 _BUY_CODES = {"P"}
@@ -137,51 +157,64 @@ async def fetch_and_refresh(force: bool = False) -> dict:
         if not force and cache_is_fresh() and _cache is not None:
             return _cache
 
-        if not is_enabled():
+        prov = provider()
+        status = provider_status()
+
+        if status == "not_configured":
             _cache = {
                 "enabled": False,
+                "available": False,
                 "implemented": True,
+                "provider_status": status,
                 "source": "none",
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "results": [],
                 "errors": [],
                 "warning": (
-                    "Insider transactions provider not configured "
-                    "(INSIDER_DATA_PROVIDER=none). Set INSIDER_DATA_PROVIDER "
-                    "and the matching API key to enable real data."
+                    "Insider transactions provider is not configured "
+                    "(INSIDER_DATA_PROVIDER=none). No fake data shown. "
+                    "Set INSIDER_DATA_PROVIDER and the matching API key to enable real data."
                 ),
             }
             _cache_time = time.monotonic()
             return _cache
 
+        if status == "configured_but_unwired":
+            _cache = {
+                "enabled": False,
+                "available": False,
+                "implemented": True,
+                "provider_status": status,
+                "source": prov,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "results": [],
+                "errors": [],
+                "warning": (
+                    f"Insider provider {prov!r} is configured but no fetcher is "
+                    "implemented yet. No fake data shown."
+                ),
+            }
+            _cache_time = time.monotonic()
+            return _cache
+
+        # status == "active": wired fetcher
         try:
             results_raw: list[dict] = []
             errors: list[dict] = []
-            warning: str | None = None
-            prov = provider()
-            if prov == "polygon":
-                warning = (
-                    "Polygon REST has no clean SEC Form 4 endpoint on the basic "
-                    "plan; leaving cache empty until a dedicated insider feed is wired."
-                )
-            elif prov == "finnhub":
-                warning = (
-                    "Finnhub insider provider stub not yet wired. "
-                    "Set FINNHUB_API_KEY and implement the fetcher to enable."
-                )
-            else:
-                warning = f"Unknown INSIDER_DATA_PROVIDER={prov!r}; no data fetched."
+            # NOTE: when a real fetcher is wired, populate results_raw here.
 
             today = date.today()
             results = [_normalize_row(r, today) for r in results_raw]
             _cache = {
                 "enabled": True,
+                "available": True,
                 "implemented": True,
+                "provider_status": "active",
                 "source": prov,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "results": results,
                 "errors": errors,
-                "warning": warning,
+                "warning": None,
             }
             _cache_time = time.monotonic()
             return _cache
@@ -189,8 +222,10 @@ async def fetch_and_refresh(force: bool = False) -> dict:
             logger.warning("Insider fetch failed: %s", exc)
             keep = _cache or {
                 "enabled": True,
+                "available": True,
                 "implemented": True,
-                "source": provider(),
+                "provider_status": "active",
+                "source": prov,
                 "fetched_at": None,
                 "results": [],
                 "errors": [],
