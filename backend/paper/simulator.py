@@ -722,10 +722,12 @@ async def run_tick() -> dict[str, Any]:
             _tick_regime_adjusted["regime"] = adj_label
         _tick_regime_adjusted["trend"] = _tick_trend
 
-    # Phase M1-H1 consumer flags (read once per tick).
+    # Phase M1-H1 / M1-H2 consumer flags (read once per tick).
     _trend_apply_legacy = bool(_cfg("MARKET_TREND_APPLY_TO_LEGACY_MOMENTUM"))
     _trend_apply_no_cat = bool(_cfg("MARKET_TREND_APPLY_TO_NO_CATALYST"))
     _trend_apply_mm     = bool(_cfg("MARKET_TREND_APPLY_TO_MARKET_MOVER"))
+    _trend_apply_shadow = bool(_cfg("MARKET_TREND_APPLY_TO_SHADOW"))
+    _trend_apply_catalyst = bool(_cfg("MARKET_TREND_APPLY_TO_CATALYST"))
 
     def _regime_for(consumer_flag: bool) -> dict | None:
         """Return adjusted regime when consumer opts in; else raw. Never mutates."""
@@ -1260,6 +1262,46 @@ async def run_tick() -> dict[str, Any]:
                     "size_multiplier": _mm_entry_size_mult,
                 }
 
+            # ── Phase M1-H2: determine the actual evaluation path that drove
+            # the regime input for THIS candidate. Telemetry must match the
+            # evaluator that actually consumed regime, not the source metadata.
+            #
+            # Order matches the simulator's own decision precedence:
+            #   1. Hard-rejected before any path → rejected_before_path
+            #      (unless the rejection was "no accepted catalysts" / "only
+            #       generic_news catalysts" — those go through the no_catalyst
+            #       / market_mover_no_catalyst evaluators below.)
+            #   2. No-catalyst rejection + market mover eligible → market_mover_no_catalyst
+            #   3. No-catalyst rejection (no MM eligibility) → no_catalyst
+            #   4. Catalyst-eligible with momentum entry_mode → legacy_momentum
+            #   5. Catalyst-eligible otherwise → catalyst
+            if hard_rejection is not None and not is_no_catalyst_rejection:
+                _trend_path_name = "rejected_before_path"
+                _trend_path_consumed = False
+                _trend_path_regime_used = "raw"
+            elif is_no_catalyst_rejection and _mm_meta is not None and _mm_entry_eligible:
+                _trend_path_name = "market_mover_no_catalyst"
+                _trend_path_consumed = _trend_apply_mm and _tick_regime_adjusted is not None
+                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
+            elif is_no_catalyst_rejection:
+                _trend_path_name = "no_catalyst"
+                _trend_path_consumed = _trend_apply_no_cat and _tick_regime_adjusted is not None
+                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
+            elif momentum_eval and momentum_eval.get("eligible"):
+                _trend_path_name = "legacy_momentum"
+                _trend_path_consumed = _trend_apply_legacy and _tick_regime_adjusted is not None
+                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
+            else:
+                _trend_path_name = "catalyst"
+                _trend_path_consumed = _trend_apply_catalyst and _tick_regime_adjusted is not None
+                _trend_path_regime_used = "trend_adjusted" if _trend_path_consumed else "raw"
+
+            _trend_path_regime_label_used = (
+                (_tick_regime_adjusted or {}).get("regime")
+                if _trend_path_regime_used == "trend_adjusted"
+                else (_tick_regime or {}).get("regime")
+            )
+
             candidate: dict[str, Any] = {
                 "symbol": sym,
                 "eligible": False,
@@ -1337,30 +1379,29 @@ async def run_tick() -> dict[str, Any]:
                 "market_trend_has_10m_window": (_tick_trend or {}).get("market_trend_has_10m_window"),
                 "market_trend_has_15m_window": (_tick_trend or {}).get("market_trend_has_15m_window"),
                 "market_trend_consumers": (_tick_trend or {}).get("trend_consumers"),
-                # Per-candidate "consumer" telemetry: this candidate is evaluated
-                # primarily via no-catalyst if is_no_catalyst_rejection was set,
-                # otherwise via the catalyst path.
-                "market_trend_consumed_by_path": bool(
-                    (is_no_catalyst_rejection and _trend_apply_no_cat)
-                    or (_mm_meta is not None and _trend_apply_mm)
-                ),
-                "market_trend_regime_used": (
-                    "trend_adjusted"
-                    if (
-                        (is_no_catalyst_rejection and _trend_apply_no_cat)
-                        or (_mm_meta is not None and _trend_apply_mm)
-                    ) and _tick_regime_adjusted is not None
-                    else "raw"
-                ),
-                "market_trend_path_name": (
-                    "market_mover" if _mm_meta is not None else
-                    "no_catalyst" if is_no_catalyst_rejection else
-                    "catalyst"
-                ),
+                # Phase M1-H2: derive path telemetry from the actual entry-
+                # evaluation path, not from candidate source metadata. The
+                # invariant is: which evaluator's regime input actually drove
+                # this candidate's decision.
+                "market_trend_path_name": _trend_path_name,
+                "market_trend_consumed_by_path": _trend_path_consumed,
+                "market_trend_regime_used": _trend_path_regime_used,
+                # Raw vs adjusted regime LABELS at the tick, plus the label
+                # that the candidate's actual path consumed.
+                "market_regime_label_before_trend": (_tick_regime or {}).get("regime"),
+                "market_regime_label_after_trend": (_tick_regime_adjusted or {}).get("regime") if _tick_regime_adjusted is not None else None,
+                "market_trend_regime_label_used": _trend_path_regime_label_used,
                 # Market mover: which regime did we use, what score/label
                 "market_mover_regime_used": _mm_regime_used_kind,
                 "market_mover_risk_score_used": _mm_risk_score_used,
                 "market_mover_regime_label_used": _mm_regime_label_used,
+                # Shadow: which regime drove the shadow scorer
+                "market_trend_shadow_consumed": bool(_trend_apply_shadow and _tick_regime_adjusted is not None),
+                "market_trend_shadow_regime_used": (
+                    "trend_adjusted"
+                    if _trend_apply_shadow and _tick_regime_adjusted is not None
+                    else "raw"
+                ),
                 # Momentum fields (Phase 2M)
                 "entry_mode": None,
                 "momentum_eligible": momentum_eval["eligible"] if momentum_eval else False,
@@ -1660,13 +1701,16 @@ async def run_tick() -> dict[str, Any]:
             # ── Phase I4-A: Enhanced shadow scoring (diagnostic only) ────────
             # Shadow fields are appended after all real decisions are finalized.
             # They do not affect eligible, action, entry_mode, or any account state.
+            # Phase M1-H2: route raw vs trend-adjusted regime to the shadow
+            # scorer according to MARKET_TREND_APPLY_TO_SHADOW.
+            _shadow_regime = _regime_for(_trend_apply_shadow)
             try:
                 from intelligence.shadow_scoring import compute_shadow_score
                 _shadow = compute_shadow_score(
                     symbol=sym,
                     quality=q,
                     scoring=scoring,
-                    tick_regime=_tick_regime,
+                    tick_regime=_shadow_regime,
                     premarket_snap=_shadow_premarket_snap,
                     reddit_snap=_shadow_reddit_snap,
                     blocked_cat_types=_blocked_cat_types,
