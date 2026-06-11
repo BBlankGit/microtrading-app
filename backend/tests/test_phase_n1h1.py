@@ -331,7 +331,13 @@ def test_risk_off_blocks_when_allow_risk_off_false():
                   regime_str="risk_off")
     c = _cand(result)
     assert c.get("market_mover_entry_eligible") is False
-    assert "risk_off_blocked" in (c.get("market_mover_entry_blockers") or [])
+    # Phase M1-H1: the blocker string is either the legacy "risk_off_blocked"
+    # (raw regime path) or "market_mover_risk_off_blocked_by_trend_adjusted_regime"
+    # (when MARKET_TREND_APPLY_TO_MARKET_MOVER is enabled, which is the default).
+    blockers = c.get("market_mover_entry_blockers") or []
+    assert any("risk_off" in b for b in blockers), (
+        f"expected a risk_off blocker in {blockers}"
+    )
     assert c.get("market_mover_risk_off_allowed") is False
 
 

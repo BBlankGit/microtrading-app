@@ -154,6 +154,17 @@ interface Candidate {
   market_trend_reason?: string | null;
   market_regime_score_before_trend?: number | null;
   market_regime_score_after_trend?: number | null;
+  market_trend_collecting?: boolean | null;
+  market_trend_has_5m_window?: boolean | null;
+  market_trend_has_10m_window?: boolean | null;
+  market_trend_has_15m_window?: boolean | null;
+  market_trend_consumers?: Record<string, boolean> | null;
+  market_trend_consumed_by_path?: boolean | null;
+  market_trend_regime_used?: "raw" | "trend_adjusted" | string | null;
+  market_trend_path_name?: string | null;
+  market_mover_regime_used?: string | null;
+  market_mover_risk_score_used?: number | null;
+  market_mover_regime_label_used?: string | null;
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -327,10 +338,23 @@ interface MarketTrendData {
   deltas: Record<string, MarketTrendDelta>;
   market_regime_score_before_trend: number | null;
   market_regime_score_after_trend: number | null;
+  raw_regime_label?: string | null;
+  adjusted_regime_label?: string | null;
   trend_direction: "improving" | "deteriorating" | "flat" | "unknown" | string;
   trend_strength: "strong" | "moderate" | "weak" | "unknown" | string;
   market_trend_adjustment: number;
   market_trend_reason: string;
+  collecting?: boolean;
+  has_5m_window?: boolean;
+  has_10m_window?: boolean;
+  has_15m_window?: boolean;
+  trend_consumers?: {
+    legacy_momentum?: boolean;
+    no_catalyst?: boolean;
+    market_mover?: boolean;
+    catalyst?: boolean;
+    shadow?: boolean;
+  };
   warnings?: string[];
   as_of: string | null;
 }
@@ -1162,9 +1186,10 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                     </span>
                   : <span className="text-gray-600">0</span>}
               </td>
-              <td className="py-2 pr-2 text-xs whitespace-nowrap" title={c.market_trend_reason ?? "—"}>
-                {c.market_trend_direction === "unknown" || c.market_trend_direction == null ? (
-                  <span className="text-gray-600">collecting</span>
+              <td className="py-2 pr-2 text-xs whitespace-nowrap"
+                  title={`${c.market_trend_reason ?? "—"} · regime_used=${c.market_trend_regime_used ?? "—"} · path=${c.market_trend_path_name ?? "—"}`}>
+                {c.market_trend_collecting || c.market_trend_direction === "unknown" || c.market_trend_direction == null ? (
+                  <span className="text-amber-400">collecting</span>
                 ) : (
                   <span className={
                     c.market_trend_direction === "improving" ? "text-green-400" :
@@ -1174,6 +1199,9 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                     {c.market_trend_direction}
                     {c.market_trend_adjustment != null && c.market_trend_adjustment !== 0 && (
                       <span className="ml-1 font-semibold">{c.market_trend_adjustment > 0 ? "+" : ""}{c.market_trend_adjustment}</span>
+                    )}
+                    {c.market_trend_regime_used && (
+                      <span className="ml-1 text-gray-600">[{c.market_trend_regime_used === "trend_adjusted" ? "adj" : "raw"}]</span>
                     )}
                   </span>
                 )}
@@ -2567,7 +2595,43 @@ function MarketTrendPanel({ trend }: { trend: MarketTrendData | null }) {
         <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
           Provider: {trend.provider_status} · futures_available: {String(trend.futures_available)}
         </span>
+        <span className="text-xs border border-gray-700 rounded px-2 py-0.5">
+          Windows: 5m {trend.has_5m_window ? "✓" : "—"} · 10m {trend.has_10m_window ? "✓" : "—"} · 15m {trend.has_15m_window ? "✓" : "—"}
+        </span>
+        {trend.collecting && (
+          <span className="text-xs font-semibold px-2 py-0.5 rounded border bg-amber-950 text-amber-300 border-amber-700">
+            COLLECTING
+          </span>
+        )}
       </div>
+
+      {/* Consumer config (Phase M1-H1) */}
+      {trend.trend_consumers && (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="font-semibold text-gray-300">Consumers:</span>
+          {Object.entries(trend.trend_consumers).map(([path, on]) => (
+            <span
+              key={path}
+              className={`px-2 py-0.5 rounded border font-mono ${
+                on
+                  ? "bg-cyan-950 text-cyan-300 border-cyan-800"
+                  : "bg-gray-800 text-gray-500 border-gray-700"
+              }`}
+            >
+              {path}: {on ? "trend_adjusted" : "raw"}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Raw vs adjusted regime label */}
+      {(trend.raw_regime_label || trend.adjusted_regime_label) && (
+        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-400">
+          <span>Raw regime: <span className="font-mono text-gray-300">{trend.raw_regime_label ?? "—"}</span></span>
+          <span>·</span>
+          <span>Adjusted regime: <span className="font-mono text-gray-300">{trend.adjusted_regime_label ?? "—"}</span></span>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatBox label="Score (raw)" value={before != null ? String(before) : "—"} />

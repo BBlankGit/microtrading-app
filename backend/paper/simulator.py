@@ -696,25 +696,45 @@ async def run_tick() -> dict[str, Any]:
     except Exception:
         pass
 
-    # ── Phase M1: market trend overlay (ETF proxies, rolling 5/10/15m) ────────
-    # Apply the trend adjustment ONLY for entry gating consumers (the
-    # risk_on_score used by no-catalyst / market-mover paths). We surface the
-    # raw score separately so the dashboard can show both.
+    # ── Phase M1 / M1-H1: market trend overlay (ETF proxies, 5/10/15m) ────────
+    # M1-H1: DO NOT mutate the shared _tick_regime in place. Build a separate
+    # _tick_regime_adjusted with the trend-adjusted score + regime label so
+    # consumers can be opted in / out individually via config.
     _tick_trend: dict | None = None
+    _tick_regime_adjusted: dict | None = None
     try:
         if _cfg("MARKET_TREND_ENABLED"):
             from market.trend import build_trend_overlay
             _tick_trend = build_trend_overlay()
-            if _tick_regime is not None and _tick_trend is not None:
-                adj_score = _tick_trend.get("market_regime_score_after_trend")
-                if adj_score is not None:
-                    _tick_regime["risk_on_score_before_trend"] = _tick_regime.get("risk_on_score")
-                    _tick_regime["risk_on_score"] = adj_score
-                _tick_regime["trend"] = _tick_trend
     except Exception:
         pass
 
+    if _tick_regime is not None and _tick_trend is not None:
+        adj_score = _tick_trend.get("market_regime_score_after_trend")
+        adj_label = _tick_trend.get("adjusted_regime_label")
+        # Copy raw regime + overlay adjusted fields. Never overwrite raw.
+        _tick_regime_adjusted = dict(_tick_regime)
+        if adj_score is not None:
+            _tick_regime_adjusted["risk_on_score_before_trend"] = _tick_regime.get("risk_on_score")
+            _tick_regime_adjusted["risk_on_score"] = adj_score
+        if adj_label and adj_label != "unknown":
+            _tick_regime_adjusted["regime_before_trend"] = _tick_regime.get("regime")
+            _tick_regime_adjusted["regime"] = adj_label
+        _tick_regime_adjusted["trend"] = _tick_trend
+
+    # Phase M1-H1 consumer flags (read once per tick).
+    _trend_apply_legacy = bool(_cfg("MARKET_TREND_APPLY_TO_LEGACY_MOMENTUM"))
+    _trend_apply_no_cat = bool(_cfg("MARKET_TREND_APPLY_TO_NO_CATALYST"))
+    _trend_apply_mm     = bool(_cfg("MARKET_TREND_APPLY_TO_MARKET_MOVER"))
+
+    def _regime_for(consumer_flag: bool) -> dict | None:
+        """Return adjusted regime when consumer opts in; else raw. Never mutates."""
+        if consumer_flag and _tick_regime_adjusted is not None:
+            return _tick_regime_adjusted
+        return _tick_regime
+
     result["market_regime"] = _tick_regime
+    result["market_regime_adjusted"] = _tick_regime_adjusted
     result["market_trend"] = _tick_trend
 
     # ── 2c. Phase I6: snapshot earnings + insider caches once per tick ──────────
@@ -1041,18 +1061,25 @@ async def run_tick() -> dict[str, Any]:
                     is_no_catalyst_rejection = False
 
             # ── Momentum evaluation (always computed when mode enabled) ────────
+            # Phase M1-H1: legacy momentum reads the RAW regime by default.
+            # Operators can opt in to the trend-adjusted regime via
+            # MARKET_TREND_APPLY_TO_LEGACY_MOMENTUM=true.
             momentum_eval: dict | None = None
+            _legacy_regime_used = _regime_for(_trend_apply_legacy)
             if _cfg("PAPER_MOMENTUM_MODE_ENABLED"):
                 try:
-                    momentum_eval = evaluate_momentum_entry(sym, _q_for_paths, _tick_regime)
+                    momentum_eval = evaluate_momentum_entry(sym, _q_for_paths, _legacy_regime_used)
                 except Exception:
                     momentum_eval = None
 
             # ── No-catalyst evaluation (Phase 2R) ─────────────────────────────
+            # Phase M1-H1: no-catalyst uses TREND-ADJUSTED regime by default
+            # so deteriorating proxy momentum makes the risk_on gate harder.
             nc_eval: dict | None = None
+            _nc_regime_used = _regime_for(_trend_apply_no_cat)
             if is_no_catalyst_rejection:
                 try:
-                    nc_eval = evaluate_no_catalyst_entry(sym, _q_for_paths, scoring, _tick_regime)
+                    nc_eval = evaluate_no_catalyst_entry(sym, _q_for_paths, scoring, _nc_regime_used)
                 except Exception:
                     nc_eval = None
 
@@ -1071,6 +1098,9 @@ async def run_tick() -> dict[str, Any]:
             _mm_entry_size_mult: float | None = None
             _mm_unsafe_sessions_warning: str | None = None
             _mm_risk_off_allowed: bool | None = None
+            _mm_regime_used_kind: str | None = None
+            _mm_regime_label_used: str | None = None
+            _mm_risk_score_used: int | float | None = None
 
             if (
                 bool(_cfg("PAPER_MARKET_MOVER_ENTRY_ENABLED"))
@@ -1107,15 +1137,33 @@ async def run_tick() -> dict[str, Any]:
                 else:
                     _mm_blockers: list[str] = []
 
-                    # Risk-off gate (Phase N1-H1): block when regime is risk_off and
-                    # PAPER_MARKET_MOVER_ALLOW_RISK_OFF=false.
+                    # Risk-off gate (Phase N1-H1 + M1-H1): block when regime is
+                    # risk_off and PAPER_MARKET_MOVER_ALLOW_RISK_OFF=false.
+                    # M1-H1: use trend-adjusted regime when
+                    # MARKET_TREND_APPLY_TO_MARKET_MOVER=true.
                     _mm_risk_off_allowed = bool(_cfg("PAPER_MARKET_MOVER_ALLOW_RISK_OFF"))
+                    _mm_regime_obj = _regime_for(_trend_apply_mm)
+                    _mm_regime_used_kind = (
+                        "trend_adjusted"
+                        if _trend_apply_mm and _tick_regime_adjusted is not None
+                        else "raw"
+                    )
+                    _mm_regime_label_used = (
+                        (_mm_regime_obj or {}).get("regime") if _mm_regime_obj else None
+                    )
+                    _mm_risk_score_used = (
+                        (_mm_regime_obj or {}).get("risk_on_score") if _mm_regime_obj else None
+                    )
                     if (
                         not _mm_risk_off_allowed
-                        and _tick_regime is not None
-                        and _tick_regime.get("regime") == "risk_off"
+                        and _mm_regime_obj is not None
+                        and _mm_regime_obj.get("regime") == "risk_off"
                     ):
-                        _mm_blockers.append("risk_off_blocked")
+                        _mm_blockers.append(
+                            "market_mover_risk_off_blocked_by_trend_adjusted_regime"
+                            if _mm_regime_used_kind == "trend_adjusted"
+                            else "risk_off_blocked"
+                        )
 
                     # Rank check
                     _mm_rank = _mm_meta.get("market_mover_rank")
@@ -1275,7 +1323,7 @@ async def run_tick() -> dict[str, Any]:
                 "insider_reason": scoring.get("insider_reason"),
                 "insider_latest_transaction_date": scoring.get("insider_latest_transaction_date"),
                 "insider_transaction_codes": scoring.get("insider_transaction_codes"),
-                # Market trend overlay (Phase M1 — ETF proxy, telemetry on every row)
+                # Market trend overlay (Phase M1 + M1-H1 — ETF proxy, telemetry on every row)
                 "market_trend_enabled": (_tick_trend or {}).get("market_trend_enabled"),
                 "market_trend_source": (_tick_trend or {}).get("market_trend_source"),
                 "market_trend_direction": (_tick_trend or {}).get("market_trend_direction"),
@@ -1284,6 +1332,35 @@ async def run_tick() -> dict[str, Any]:
                 "market_trend_reason": (_tick_trend or {}).get("market_trend_reason"),
                 "market_regime_score_before_trend": (_tick_trend or {}).get("market_regime_score_before_trend"),
                 "market_regime_score_after_trend": (_tick_trend or {}).get("market_regime_score_after_trend"),
+                "market_trend_collecting": (_tick_trend or {}).get("market_trend_collecting"),
+                "market_trend_has_5m_window": (_tick_trend or {}).get("market_trend_has_5m_window"),
+                "market_trend_has_10m_window": (_tick_trend or {}).get("market_trend_has_10m_window"),
+                "market_trend_has_15m_window": (_tick_trend or {}).get("market_trend_has_15m_window"),
+                "market_trend_consumers": (_tick_trend or {}).get("trend_consumers"),
+                # Per-candidate "consumer" telemetry: this candidate is evaluated
+                # primarily via no-catalyst if is_no_catalyst_rejection was set,
+                # otherwise via the catalyst path.
+                "market_trend_consumed_by_path": bool(
+                    (is_no_catalyst_rejection and _trend_apply_no_cat)
+                    or (_mm_meta is not None and _trend_apply_mm)
+                ),
+                "market_trend_regime_used": (
+                    "trend_adjusted"
+                    if (
+                        (is_no_catalyst_rejection and _trend_apply_no_cat)
+                        or (_mm_meta is not None and _trend_apply_mm)
+                    ) and _tick_regime_adjusted is not None
+                    else "raw"
+                ),
+                "market_trend_path_name": (
+                    "market_mover" if _mm_meta is not None else
+                    "no_catalyst" if is_no_catalyst_rejection else
+                    "catalyst"
+                ),
+                # Market mover: which regime did we use, what score/label
+                "market_mover_regime_used": _mm_regime_used_kind,
+                "market_mover_risk_score_used": _mm_risk_score_used,
+                "market_mover_regime_label_used": _mm_regime_label_used,
                 # Momentum fields (Phase 2M)
                 "entry_mode": None,
                 "momentum_eligible": momentum_eval["eligible"] if momentum_eval else False,

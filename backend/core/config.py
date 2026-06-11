@@ -101,6 +101,16 @@ class Settings(BaseSettings):
     MARKET_TREND_HISTORY_MINUTES: int = 30
     MARKET_TREND_WINDOWS_MINUTES: str = "5,10,15"
     MARKET_TREND_MIN_SNAPSHOTS: int = 3
+
+    # Phase M1-H1 — Explicit per-path trend consumers. Catalyst path is never
+    # hard-blocked by trend in this phase. Legacy momentum opts in only if
+    # explicitly enabled. No-catalyst, market-mover, and shadow consume the
+    # trend-adjusted regime by default.
+    MARKET_TREND_APPLY_TO_LEGACY_MOMENTUM: bool = False
+    MARKET_TREND_APPLY_TO_NO_CATALYST: bool = True
+    MARKET_TREND_APPLY_TO_MARKET_MOVER: bool = True
+    MARKET_TREND_APPLY_TO_CATALYST: bool = False
+    MARKET_TREND_APPLY_TO_SHADOW: bool = True
     MARKET_REGIME_MAX_RISK_OFF_SCORE: int = 40
 
     # Catalyst sentiment (Phase 2I — no AI/LLM, deterministic rules only)

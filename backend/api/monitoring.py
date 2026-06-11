@@ -421,7 +421,7 @@ def _market_session_now() -> dict:
 
 
 def _market_trend_summary() -> dict:
-    """Compact market trend summary for monitoring/status (Phase M1)."""
+    """Compact market trend summary for monitoring/status (Phase M1 + M1-H1)."""
     try:
         from market import trend as _trend
         t = _trend.get_trend()
@@ -435,7 +435,14 @@ def _market_trend_summary() -> dict:
             "adjustment": t.get("market_trend_adjustment"),
             "score_before_trend": t.get("market_regime_score_before_trend"),
             "score_after_trend": t.get("market_regime_score_after_trend"),
+            "raw_regime_label": t.get("raw_regime_label"),
+            "adjusted_regime_label": t.get("adjusted_regime_label"),
             "snapshot_count": t.get("snapshot_count"),
+            "collecting": t.get("collecting"),
+            "has_5m_window": t.get("has_5m_window"),
+            "has_10m_window": t.get("has_10m_window"),
+            "has_15m_window": t.get("has_15m_window"),
+            "trend_consumers": t.get("trend_consumers"),
             "warnings": t.get("warnings"),
         }
     except Exception as exc:

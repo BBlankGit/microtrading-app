@@ -136,41 +136,63 @@ def _classify(
     qqq_delta_5: float | None,
     qqq_delta_10: float | None,
     snapshot_count: int,
+    has_5m_window: bool,
+    has_10m_window: bool,
 ) -> tuple[str, str, int, str]:
     """
     Return (direction, strength, adjustment_points, reason).
 
-    Thresholds per spec:
-      strong improving:      risk_delta_10 >= +10 OR qqq_delta_10 >= +0.40%
-      moderate improving:    risk_delta_10 >= +5  OR qqq_delta_10 >= +0.25%
-      weak improving:        risk_delta_5  > 0     OR qqq_delta_5  > +0.10%
-      strong deteriorating:  risk_delta_10 <= -10 OR qqq_delta_10 <= -0.40%
-      moderate deteriorating: risk_delta_10 <= -5 OR qqq_delta_10 <= -0.25%
-      weak deteriorating:    risk_delta_5  < 0    OR qqq_delta_5  < -0.10%
-      else: flat
-      insufficient history: unknown
+    Phase M1-H1: classification only fires when a real aged snapshot exists
+    in the relevant window. If MARKET_TREND_MIN_SNAPSHOTS is met but no 5m
+    snapshot exists yet, return "unknown"/"collecting" instead of "flat".
     """
     if snapshot_count < int(settings.MARKET_TREND_MIN_SNAPSHOTS):
         return "unknown", "unknown", 0, f"collecting trend history ({snapshot_count} snapshots)"
 
-    r10 = risk_delta_10 if risk_delta_10 is not None else 0.0
-    q10 = qqq_delta_10 if qqq_delta_10 is not None else 0.0
+    if not has_5m_window:
+        return (
+            "unknown", "unknown", 0,
+            "collecting trend history; no 5m-aged snapshot yet",
+        )
+
+    # 10m-window-only signals: only consult if the 10m window actually has data.
+    if has_10m_window:
+        r10 = risk_delta_10 if risk_delta_10 is not None else 0.0
+        q10 = qqq_delta_10 if qqq_delta_10 is not None else 0.0
+        if r10 >= 10 or q10 >= 0.40:
+            return "improving", "strong", 8, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (strong improving)"
+        if r10 <= -10 or q10 <= -0.40:
+            return "deteriorating", "strong", -10, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (strong deteriorating)"
+        if r10 >= 5 or q10 >= 0.25:
+            return "improving", "moderate", 4, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (moderate improving)"
+        if r10 <= -5 or q10 <= -0.25:
+            return "deteriorating", "moderate", -6, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (moderate deteriorating)"
+
     r5 = risk_delta_5 if risk_delta_5 is not None else 0.0
     q5 = qqq_delta_5 if qqq_delta_5 is not None else 0.0
-
-    if r10 >= 10 or q10 >= 0.40:
-        return "improving", "strong", 8, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (strong improving)"
-    if r10 <= -10 or q10 <= -0.40:
-        return "deteriorating", "strong", -10, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (strong deteriorating)"
-    if r10 >= 5 or q10 >= 0.25:
-        return "improving", "moderate", 4, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (moderate improving)"
-    if r10 <= -5 or q10 <= -0.25:
-        return "deteriorating", "moderate", -6, f"risk_delta_10m={r10:+.1f}, qqq_delta_10m={q10:+.2f}% (moderate deteriorating)"
     if r5 > 0 or q5 > 0.10:
         return "improving", "weak", 2, f"risk_delta_5m={r5:+.1f}, qqq_delta_5m={q5:+.2f}% (weak improving)"
     if r5 < 0 or q5 < -0.10:
         return "deteriorating", "weak", -3, f"risk_delta_5m={r5:+.1f}, qqq_delta_5m={q5:+.2f}% (weak deteriorating)"
     return "flat", "weak", 0, f"risk_delta_5m={r5:+.1f}, qqq_delta_5m={q5:+.2f}% (flat)"
+
+
+def label_from_score(score: int | float | None) -> str:
+    """
+    Derive a regime label from a risk_on_score using the same thresholds
+    the regime module uses to classify regimes natively.
+    """
+    if score is None:
+        return "unknown"
+    try:
+        s = float(score)
+    except (TypeError, ValueError):
+        return "unknown"
+    if s >= float(settings.MARKET_REGIME_MIN_RISK_ON_SCORE):
+        return "risk_on"
+    if s <= float(settings.MARKET_REGIME_MAX_RISK_OFF_SCORE):
+        return "risk_off"
+    return "neutral"
 
 
 def get_trend() -> dict:
@@ -213,16 +235,18 @@ def get_trend() -> dict:
         for w in windows:
             sec = w * 60
             old = _snapshot_at_or_before(sec)
+            has_window = old is not None
             deltas[f"{w}m"] = {
+                "has_window": has_window,
                 "ago_snapshot_as_of": (old or {}).get("as_of"),
                 "risk_on_score_ago": (old or {}).get("risk_on_score") if old else None,
-                "risk_on_score_delta": _delta(risk_now, old),
+                "risk_on_score_delta": _delta(risk_now, old) if has_window else None,
                 "qqq_change_ago": ((old or {}).get("primary_change") or {}).get("QQQ") if old else None,
-                "qqq_delta": _delta(qqq_now, old, "primary", "QQQ"),
+                "qqq_delta": _delta(qqq_now, old, "primary", "QQQ") if has_window else None,
                 "spy_change_ago": ((old or {}).get("primary_change") or {}).get("SPY") if old else None,
-                "spy_delta": _delta(spy_now, old, "primary", "SPY"),
+                "spy_delta": _delta(spy_now, old, "primary", "SPY") if has_window else None,
                 "iwm_change_ago": ((old or {}).get("primary_change") or {}).get("IWM") if old else None,
-                "iwm_delta": _delta(iwm_now, old, "primary", "IWM"),
+                "iwm_delta": _delta(iwm_now, old, "primary", "IWM") if has_window else None,
             }
         risk_delta_5 = deltas.get("5m", {}).get("risk_on_score_delta")
         risk_delta_10 = deltas.get("10m", {}).get("risk_on_score_delta")
@@ -231,8 +255,13 @@ def get_trend() -> dict:
         qqq_delta_10 = deltas.get("10m", {}).get("qqq_delta")
         qqq_delta_15 = deltas.get("15m", {}).get("qqq_delta")
 
+    has_5m_window = bool((deltas.get("5m") or {}).get("has_window"))
+    has_10m_window = bool((deltas.get("10m") or {}).get("has_window"))
+    has_15m_window = bool((deltas.get("15m") or {}).get("has_window"))
+
     direction, strength, adjustment, reason = _classify(
-        risk_delta_5, risk_delta_10, qqq_delta_5, qqq_delta_10, len(_history),
+        risk_delta_5, risk_delta_10, qqq_delta_5, qqq_delta_10,
+        len(_history), has_5m_window, has_10m_window,
     )
 
     raw_score = latest.get("risk_on_score") if latest else None
@@ -241,13 +270,31 @@ def get_trend() -> dict:
     else:
         adjusted_score = max(0, min(100, int(raw_score) + int(adjustment)))
 
+    raw_regime_label = (latest.get("regime") if latest else None) or label_from_score(raw_score)
+    adjusted_regime_label = label_from_score(adjusted_score)
+
+    collecting = direction == "unknown"
+
     warnings: list[str] = [
         "True Nasdaq futures are not configured/available; using ETF proxies QQQ/SPY/IWM."
     ]
-    if len(_history) < int(settings.MARKET_TREND_MIN_SNAPSHOTS):
-        warnings.append(
-            f"Collecting trend history — needs at least {settings.MARKET_TREND_MIN_SNAPSHOTS} snapshots."
-        )
+    if collecting:
+        if len(_history) < int(settings.MARKET_TREND_MIN_SNAPSHOTS):
+            warnings.append(
+                f"Collecting trend history — needs at least {settings.MARKET_TREND_MIN_SNAPSHOTS} snapshots."
+            )
+        elif not has_5m_window:
+            warnings.append(
+                "Collecting trend history — no 5m-aged snapshot exists yet."
+            )
+
+    consumers = {
+        "legacy_momentum": bool(settings.MARKET_TREND_APPLY_TO_LEGACY_MOMENTUM),
+        "no_catalyst":     bool(settings.MARKET_TREND_APPLY_TO_NO_CATALYST),
+        "market_mover":    bool(settings.MARKET_TREND_APPLY_TO_MARKET_MOVER),
+        "catalyst":        bool(settings.MARKET_TREND_APPLY_TO_CATALYST),
+        "shadow":          bool(settings.MARKET_TREND_APPLY_TO_SHADOW),
+    }
 
     return {
         "ok": True,
@@ -265,12 +312,19 @@ def get_trend() -> dict:
         "windows_minutes": _windows_minutes(),
         "latest_snapshot": latest,
         "deltas": deltas,
+        "has_5m_window": has_5m_window,
+        "has_10m_window": has_10m_window,
+        "has_15m_window": has_15m_window,
+        "collecting": collecting,
         "market_regime_score_before_trend": raw_score,
         "market_regime_score_after_trend": adjusted_score,
+        "raw_regime_label": raw_regime_label,
+        "adjusted_regime_label": adjusted_regime_label,
         "trend_direction": direction,
         "trend_strength": strength,
         "market_trend_adjustment": adjustment,
         "market_trend_reason": reason,
+        "trend_consumers": consumers,
         "warnings": warnings,
         "as_of": (latest or {}).get("as_of") if latest else None,
     }
@@ -293,5 +347,12 @@ def build_trend_overlay() -> dict:
         "market_trend_reason": t.get("market_trend_reason"),
         "market_regime_score_before_trend": t.get("market_regime_score_before_trend"),
         "market_regime_score_after_trend": t.get("market_regime_score_after_trend"),
+        "raw_regime_label": t.get("raw_regime_label"),
+        "adjusted_regime_label": t.get("adjusted_regime_label"),
         "market_trend_snapshot_count": t.get("snapshot_count"),
+        "market_trend_collecting": t.get("collecting"),
+        "market_trend_has_5m_window": t.get("has_5m_window"),
+        "market_trend_has_10m_window": t.get("has_10m_window"),
+        "market_trend_has_15m_window": t.get("has_15m_window"),
+        "trend_consumers": t.get("trend_consumers"),
     }
