@@ -111,6 +111,42 @@ def _hash_packet(packet: dict) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+# ── Intraday history (cache-first; never calls Polygon) ─────────────────────
+
+def get_cached_intraday_history(symbol: str, max_points: int) -> dict | None:
+    """
+    Return a cached intraday history series for `symbol`, or None when no
+    cached series exists. MUST NOT make any external API call.
+
+    Phase L1-H1 ships this helper as a stable extension point: today there is
+    no in-memory minute-bar cache for the simulator's symbol set, so this
+    returns None. Future phases can populate a cache and start returning
+    series here without touching build_candidate_packet's contract.
+    """
+    return None
+
+
+# ── Rule-impact bucketing for news items inside the packet ──────────────────
+
+def _bucket_impact_level(materiality_score) -> str:
+    """
+    Mirror api.intelligence._bucket_impact_level so news items that arrive
+    raw from catalysts.news_collector (without I5-H2 normalization) still
+    carry a rule_impact_level into the LLM packet.
+    """
+    if materiality_score is None:
+        return "unknown"
+    try:
+        m = float(materiality_score)
+    except (TypeError, ValueError):
+        return "unknown"
+    if m >= 0.7:
+        return "high"
+    if m >= 0.4:
+        return "medium"
+    return "low"
+
+
 # ── Packet builder ───────────────────────────────────────────────────────────
 
 def build_candidate_packet(
@@ -125,6 +161,7 @@ def build_candidate_packet(
     reddit_lookup: dict | None = None,
     premarket_lookup: dict | None = None,
     intraday_history: dict | None = None,
+    quality: dict | None = None,
 ) -> dict:
     """
     Build a structured packet describing the candidate for the LLM.
@@ -145,50 +182,80 @@ def build_candidate_packet(
     }
 
     # ── 2. Current marketdata ────────────────────────────────────────────────
+    # Prefer the quality dict (per-tick evaluate_market_quality output) when
+    # available; fall back to candidate fields. Never reach out to Polygon.
+    q = quality or {}
+
+    def _pick(key_q: str, *fallbacks: str):
+        if key_q in q and q.get(key_q) is not None:
+            return q.get(key_q)
+        for k in fallbacks:
+            if candidate.get(k) is not None:
+                return candidate.get(k)
+        return None
+
+    raw_md_error = candidate.get("marketdata_error")
+    sanitized_md_error = _redact(str(raw_md_error)) if raw_md_error else None
+    last_trade_price = _pick("last_trade_price", "last_trade_price", "last_price")
+
     marketdata = {
-        "last_price": candidate.get("last_price"),
-        "bid": candidate.get("bid"),
-        "ask": candidate.get("ask"),
-        "spread_percent": candidate.get("spread_percent"),
-        "change_percent": candidate.get("change_percent"),
-        "day_open": candidate.get("day_open"),
-        "day_high": candidate.get("day_high"),
-        "day_low": candidate.get("day_low"),
-        "previous_close": candidate.get("previous_close"),
-        "day_volume": candidate.get("day_volume"),
-        "previous_day_volume": candidate.get("prev_day_volume"),
-        "volume_ratio": candidate.get("volume_ratio"),
-        "time_adjusted_volume_ratio": candidate.get("time_adjusted_volume_ratio"),
-        "dollar_volume": candidate.get("dollar_volume"),
-        "vwap": candidate.get("vwap"),
-        "marketdata_age_seconds": candidate.get("marketdata_age_seconds"),
-        "marketdata_source": candidate.get("marketdata_source"),
-        "tradable": candidate.get("quality_tradable"),
-        "marketdata_stale": candidate.get("marketdata_stale"),
-        "marketdata_missing": candidate.get("marketdata_error") is not None,
+        "last_trade_price":            last_trade_price,
+        "last_price":                  last_trade_price,  # alias for legacy consumers
+        "bid":                         _pick("bid", "bid"),
+        "ask":                         _pick("ask", "ask"),
+        "bid_size":                    _pick("bid_size", "bid_size"),
+        "ask_size":                    _pick("ask_size", "ask_size"),
+        "spread":                      _pick("spread", "spread"),
+        "spread_percent":              _pick("spread_percent", "spread_percent"),
+        "change_percent":              _pick("change_percent", "change_percent"),
+        "day_open":                    candidate.get("day_open"),
+        "day_high":                    candidate.get("day_high"),
+        "day_low":                     candidate.get("day_low"),
+        "previous_close":              candidate.get("previous_close"),
+        "day_volume":                  _pick("day_volume", "day_volume"),
+        "previous_day_volume":         _pick("previous_day_volume", "prev_day_volume"),
+        "volume_ratio":                _pick("volume_ratio", "volume_ratio"),
+        "time_adjusted_volume_ratio":  candidate.get("time_adjusted_volume_ratio"),
+        "dollar_volume":               candidate.get("dollar_volume"),
+        "vwap":                        candidate.get("vwap"),
+        "tradable":                    _pick("tradable", "quality_tradable"),
+        "marketdata_age_seconds":      candidate.get("marketdata_age_seconds"),
+        "marketdata_source":           candidate.get("marketdata_source"),
+        "marketdata_fetched_at":       candidate.get("marketdata_fetched_at"),
+        "marketdata_fallback_used":    bool(candidate.get("marketdata_fallback_used")),
+        "marketdata_stale":            bool(candidate.get("marketdata_stale")),
+        "marketdata_missing":          raw_md_error is not None,
+        "marketdata_error":            sanitized_md_error,
     }
 
-    # ── 3. Intraday evolution (best-effort, no new Polygon calls in L1) ─────
+    # ── 3. Intraday evolution (cache-first; never calls Polygon) ────────────
+    cap = max(1, int(getattr(settings, "LLM_SHADOW_MAX_INTRADAY_POINTS", 20)))
     intra = (intraday_history or {}).get(sym) if intraday_history else None
+    if intra is None:
+        # Try the shared cache helper; today it returns None.
+        intra = get_cached_intraday_history(sym, cap)
+
     if intra:
-        cap = max(1, int(getattr(settings, "LLM_SHADOW_MAX_INTRADAY_POINTS", 20)))
         intraday = {
-            "intraday_history_available": True,
-            "recent_price_points": (intra.get("recent_prices") or [])[-cap:],
-            "recent_change_percent_points": (intra.get("recent_change_pct") or [])[-cap:],
-            "recent_volume_points": (intra.get("recent_volumes") or [])[-cap:],
-            "intraday_trend_direction": intra.get("trend_direction"),
-            "intraday_momentum_5m": intra.get("momentum_5m"),
-            "intraday_momentum_10m": intra.get("momentum_10m"),
-            "intraday_momentum_15m": intra.get("momentum_15m"),
-            "distance_from_day_high": intra.get("distance_from_day_high"),
-            "distance_from_day_low": intra.get("distance_from_day_low"),
-            "position_in_day_range": intra.get("position_in_day_range"),
+            "intraday_history_available":     True,
+            "recent_price_points":            (intra.get("recent_prices") or [])[-cap:],
+            "recent_change_percent_points":   (intra.get("recent_change_pct") or [])[-cap:],
+            "recent_volume_points":           (intra.get("recent_volumes") or [])[-cap:],
+            "intraday_trend_direction":       intra.get("trend_direction"),
+            "intraday_momentum_5m":           intra.get("momentum_5m"),
+            "intraday_momentum_10m":          intra.get("momentum_10m"),
+            "intraday_momentum_15m":          intra.get("momentum_15m"),
+            "distance_from_day_high":         intra.get("distance_from_day_high"),
+            "distance_from_day_low":          intra.get("distance_from_day_low"),
+            "position_in_day_range":          intra.get("position_in_day_range"),
         }
     else:
         intraday = {
-            "intraday_history_available": False,
-            "note": "no cached intraday history; LLM should rely on current marketdata only",
+            "intraday_history_available":     False,
+            "recent_price_points":            [],
+            "recent_change_percent_points":   [],
+            "recent_volume_points":           [],
+            "intraday_unavailable_reason":    "no cached intraday history series for symbol",
         }
 
     # ── 4. Real engine decision ──────────────────────────────────────────────
@@ -222,24 +289,51 @@ def build_candidate_packet(
     }
 
     # ── 6. News / catalyst rule analysis ─────────────────────────────────────
+    # Surface explicit availability instead of an empty list — the LLM should
+    # be able to tell "no cached news yet for this symbol" from "we forgot".
+    has_news_section = news_items_by_symbol is not None
     raw_news = (news_items_by_symbol or {}).get(sym, []) if news_items_by_symbol else []
-    news = []
+    news_items: list[dict] = []
     for item in raw_news[:max_news]:
-        news.append({
-            "title": item.get("title"),
-            "source": item.get("publisher") or item.get("source"),
-            "published_at": item.get("published_utc"),
-            "url": item.get("article_url"),
-            "rule_event_type": item.get("rule_event_type") or item.get("classified_event_type") or item.get("event_type"),
-            "rule_impact_level": item.get("rule_impact_level"),
-            "rule_sentiment": item.get("rule_sentiment") or item.get("sentiment"),
-            "rule_materiality_score": item.get("rule_materiality_score") or item.get("materiality_score"),
-            "rule_sentiment_score": item.get("rule_sentiment_score") or item.get("sentiment_score"),
-            "rule_bullish_flags": item.get("rule_bullish_flags") or item.get("bullish_flags") or [],
-            "rule_bearish_flags": item.get("rule_bearish_flags") or item.get("bearish_flags") or [],
-            "rule_reasons": item.get("rule_reasons") or item.get("sentiment_reasons") or [],
-            "used_by_engine": item.get("used_by_engine"),
+        materiality = item.get("rule_materiality_score")
+        if materiality is None:
+            materiality = item.get("materiality_score")
+        rule_impact = item.get("rule_impact_level") or _bucket_impact_level(materiality)
+        reasons = item.get("rule_reasons") or item.get("sentiment_reasons") or []
+        rule_explanation = item.get("rule_explanation") or ("; ".join(reasons) if reasons else None)
+        news_items.append({
+            "title":                  item.get("title"),
+            "source":                  item.get("publisher") or item.get("source"),
+            "published_at":            item.get("published_utc"),
+            "url":                     item.get("article_url"),
+            "rule_event_type":         item.get("rule_event_type") or item.get("classified_event_type") or item.get("event_type"),
+            "rule_impact_level":       rule_impact,
+            "rule_sentiment":          item.get("rule_sentiment") or item.get("sentiment"),
+            "rule_materiality_score":  materiality,
+            "rule_sentiment_score":    item.get("rule_sentiment_score") if item.get("rule_sentiment_score") is not None else item.get("sentiment_score"),
+            "rule_bullish_flags":      item.get("rule_bullish_flags") or item.get("bullish_flags") or [],
+            "rule_bearish_flags":      item.get("rule_bearish_flags") or item.get("bearish_flags") or [],
+            "rule_reasons":            reasons,
+            "rule_explanation":        rule_explanation,
+            "used_by_engine":          item.get("used_by_engine") if item.get("used_by_engine") is not None else "unknown",
         })
+    if news_items:
+        news_section: dict = {
+            "news_available": True,
+            "items":          news_items,
+        }
+    elif has_news_section:
+        news_section = {
+            "news_available":            False,
+            "news_unavailable_reason":   "no cached news items for symbol",
+            "items":                     [],
+        }
+    else:
+        news_section = {
+            "news_available":            False,
+            "news_unavailable_reason":   "news lookup not provided to packet builder",
+            "items":                     [],
+        }
 
     # ── 7. Reddit ────────────────────────────────────────────────────────────
     reddit = {
@@ -337,7 +431,7 @@ def build_candidate_packet(
         "intraday":       intraday,
         "engine":         engine,
         "shadow":         shadow,
-        "news":           news,
+        "news":           news_section,
         "reddit":         reddit,
         "movers":         movers,
         "earnings":       earnings,

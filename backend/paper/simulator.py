@@ -1885,18 +1885,33 @@ async def run_tick() -> dict[str, Any]:
                 "daily_loss_guard_triggered": bool(_guard.get("triggered")) if _guard else None,
             }
 
+            # Build news_items_by_symbol from the catalysts the engine already
+            # accepted for the selected symbols. No new news fetches; capped
+            # per LLM_SHADOW_MAX_NEWS_ITEMS_PER_SYMBOL.
+            _llm_news_cap = max(1, int(_cfg("LLM_SHADOW_MAX_NEWS_ITEMS_PER_SYMBOL")))
+            _llm_news_by_sym: dict[str, list[dict]] = {}
+            for _c in _picked:
+                _sym = (_c.get("symbol") or "").upper()
+                _rows = catalyst_map.get(_sym) or []
+                if _rows:
+                    _llm_news_by_sym[_sym] = list(_rows)[:_llm_news_cap]
+                else:
+                    _llm_news_by_sym[_sym] = []  # explicit "no news for this symbol"
+
             async def _analyze_one(c: dict) -> tuple[str, dict]:
+                _sym_for_pkt = (c.get("symbol") or "").upper()
                 packet = _llm_mod.build_candidate_packet(
                     c,
                     market_regime=_tick_regime,
                     market_trend=_tick_trend,
                     account_summary=_acct_summary,
-                    news_items_by_symbol=None,
+                    news_items_by_symbol=_llm_news_by_sym,
                     earnings_by_symbol=_earnings_by_symbol,
                     insiders_by_symbol=_insider_txns_by_symbol,
                     reddit_lookup=_shadow_reddit_snap,
                     premarket_lookup=_shadow_pm_lookup,
-                    intraday_history=None,
+                    intraday_history=None,  # falls through to llm_shadow.get_cached_intraday_history
+                    quality=quality_map.get(_sym_for_pkt),
                 )
                 res = await _llm_mod.analyze_candidate_packet(packet)
                 _llm_mod.record_tick_call()

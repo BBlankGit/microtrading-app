@@ -1132,18 +1132,44 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
       <table className="w-full text-sm text-left">
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
-            {["Symbol","✓","Mode","Action","Score","Components","Earn Adj","Ins Adj","Intel Adj","Mkt Trend","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
-              "Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike",
-              "LLM Decision","LLM Conf.","LLM Action","LLM Reason"].map((h) => (
-              <th key={h} className={`pb-2 pr-2 font-medium whitespace-nowrap ${
-                ["Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
+            {[
+              {h:"Symbol", tip:"Ticker symbol"},
+              {h:"✓", tip:"Eligible flag"},
+              {h:"Mode", tip:"Entry mode"},
+              {h:"Action", tip:"Engine action"},
+              {h:"Score", tip:"Total score / threshold"},
+              {h:"Components", tip:"Score components"},
+              {h:"Earn Adj", tip:"Earnings score adjustment"},
+              {h:"Ins Adj", tip:"Insider score adjustment"},
+              {h:"Intel Adj", tip:"Intelligence (earnings + insider) adjustment total"},
+              {h:"Mkt Trend", tip:"Market trend adjustment direction"},
+              {h:"Spread%", tip:"Bid-ask spread percent"},
+              {h:"Chg%", tip:"Day change percent"},
+              {h:"Cats", tip:"Catalyst count"},
+              {h:"Type", tip:"Catalyst type"},
+              {h:"Sentiment", tip:"Catalyst sentiment"},
+              {h:"Engine Decision", tip:"Real paper engine decision / rejection reason"},
+              {h:"Enhanced Score", tip:"Deterministic enhanced shadow score — diagnostic only"},
+              {h:"Deterministic Shadow Decision", tip:"Deterministic shadow decision — rule-based, diagnostic only, does not place trades"},
+              {h:"Shadow Reason", tip:"Deterministic shadow reasoning"},
+              {h:"PRE rank/gap", tip:"Premarket rank and gap percent"},
+              {h:"Reddit rank/spike", tip:"Reddit mention rank and spike ratio"},
+              {h:"LLM Shadow Decision", tip:"LLM shadow analyst decision — diagnostic only, does not place trades"},
+              {h:"LLM Conf.", tip:"LLM confidence (0–1)"},
+              {h:"LLM Action", tip:"LLM recommended action"},
+              {h:"LLM Reason", tip:"LLM primary reason"},
+            ].map(({h, tip}) => (
+              <th key={h} title={tip} className={`pb-2 pr-2 font-medium whitespace-nowrap ${
+                ["Enhanced Score","Deterministic Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
                   ? "text-emerald-600"
                   : ["Earn Adj","Ins Adj","Intel Adj"].includes(h)
                   ? "text-cyan-500"
                   : h === "Mkt Trend"
                   ? "text-amber-500"
-                  : ["LLM Decision","LLM Conf.","LLM Action","LLM Reason"].includes(h)
+                  : ["LLM Shadow Decision","LLM Conf.","LLM Action","LLM Reason"].includes(h)
                   ? "text-purple-400"
+                  : h === "Engine Decision"
+                  ? "text-gray-300"
                   : ""
               }`}>{h}</th>
             ))}

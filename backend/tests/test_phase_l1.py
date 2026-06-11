@@ -181,9 +181,10 @@ def test_packet_includes_all_required_sections():
     assert packet["engine"]["intelligence_score_adjustment"] == 5
     # 5. shadow
     assert packet["shadow"]["enhanced_shadow_decision"] == "WOULD_ENTER"
-    # 6. news
-    assert len(packet["news"]) == 1
-    assert packet["news"][0]["rule_event_type"] == "earnings"
+    # 6. news (Phase L1-H1: dict with news_available + items)
+    assert packet["news"]["news_available"] is True
+    assert len(packet["news"]["items"]) == 1
+    assert packet["news"]["items"][0]["rule_event_type"] == "earnings"
     # 7. reddit
     assert packet["reddit"]["reddit_rank"] == 10
     # 8. movers
@@ -212,7 +213,7 @@ def test_packet_caps_news_per_symbol(monkeypatch):
     packet = L.build_candidate_packet(
         candidate, news_items_by_symbol={"AAPL": news_items}
     )
-    assert len(packet["news"]) == 2
+    assert len(packet["news"]["items"]) == 2
 
 
 # ── 4. Selection logic ──────────────────────────────────────────────────────
