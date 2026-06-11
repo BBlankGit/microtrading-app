@@ -910,7 +910,7 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
           <tr>
             {["Symbol","✓","Mode","Action","Score","Components","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
               "Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].map((h) => (
-              <th key={h} className={`pb-2 pr-4 font-medium whitespace-nowrap ${
+              <th key={h} className={`pb-2 pr-2 font-medium whitespace-nowrap ${
                 ["Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
                   ? "text-emerald-600"
                   : ""
@@ -923,13 +923,13 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
             <tr key={c.symbol} className={`border-b border-gray-800 hover:bg-gray-800 ${
               c.enhanced_shadow_decision === "WOULD_ENTER" && !c.eligible ? "bg-emerald-950/30" : ""
             }`}>
-              <td className="py-2 pr-4 font-semibold text-yellow-300">{c.symbol}</td>
-              <td className="py-2 pr-4">
+              <td className="py-2 pr-2 font-semibold text-yellow-300">{c.symbol}</td>
+              <td className="py-2 pr-2">
                 {c.eligible
                   ? <span className="text-green-400 font-bold">✓</span>
                   : <span className="text-red-400 font-bold">✗</span>}
               </td>
-              <td className="py-2 pr-4 whitespace-nowrap">
+              <td className="py-2 pr-2 whitespace-nowrap">
                 {c.entry_mode === "momentum"
                   ? <span className="text-purple-400 text-xs font-semibold px-1 rounded bg-purple-950 border border-purple-700">mom</span>
                   : c.entry_mode === "catalyst"
@@ -938,20 +938,20 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                   ? <span className="text-purple-600 text-xs font-mono">m?</span>
                   : <span className="text-gray-600 text-xs">—</span>}
               </td>
-              <td className="py-2 pr-4 text-blue-300 whitespace-nowrap">{c.action || "—"}</td>
-              <td className={`py-2 pr-4 font-mono font-semibold whitespace-nowrap ${scoreColor(c.total_score, c.score_threshold)}`}>
+              <td className="py-2 pr-2 text-blue-300 whitespace-nowrap">{c.action || "—"}</td>
+              <td className={`py-2 pr-2 font-mono font-semibold whitespace-nowrap ${scoreColor(c.total_score, c.score_threshold)}`}>
                 {c.total_score != null ? `${c.total_score} / ${c.score_threshold ?? "?"}` : "—"}
               </td>
-              <td className="py-2 pr-4 font-mono text-xs text-gray-400 whitespace-nowrap">
+              <td className="py-2 pr-2 font-mono text-xs text-gray-400 whitespace-nowrap">
                 {fmtComponents(c.score_components)}
               </td>
-              <td className="py-2 pr-4 font-mono">{fmt(c.spread_percent, 3)}</td>
-              <td className={`py-2 pr-4 font-mono ${c.change_percent != null ? pnlClass(c.change_percent) : ""}`}>
+              <td className="py-2 pr-2 font-mono">{fmt(c.spread_percent, 3)}</td>
+              <td className={`py-2 pr-2 font-mono ${c.change_percent != null ? pnlClass(c.change_percent) : ""}`}>
                 {fmt(c.change_percent)}%
               </td>
-              <td className="py-2 pr-4 font-mono">{c.catalyst_count}</td>
-              <td className="py-2 pr-4 text-blue-300">{c.catalyst_type || "—"}</td>
-              <td className="py-2 pr-4 whitespace-nowrap" title={
+              <td className="py-2 pr-2 font-mono">{c.catalyst_count}</td>
+              <td className="py-2 pr-2 text-blue-300">{c.catalyst_type || "—"}</td>
+              <td className="py-2 pr-2 whitespace-nowrap" title={
                 c.catalyst_sentiment_reasons?.join("; ") ?? undefined
               }>
                 {sentimentBadge(c.catalyst_sentiment)}
@@ -959,7 +959,7 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                   <span className="text-gray-600 text-xs ml-1">{fmt(c.catalyst_materiality_score, 2)}</span>
                 )}
               </td>
-              <td className="py-2 pr-4 text-xs max-w-xs truncate">
+              <td className="py-2 pr-2 text-xs max-w-xs truncate">
                 {c.catalyst_type_blocked && (
                   <span className="mr-1 px-1 py-0.5 rounded text-xs font-semibold bg-orange-900 text-orange-300">
                     BLOCKED
@@ -970,24 +970,24 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                 </span>
               </td>
               {/* Shadow columns — diagnostic only, not used for trading */}
-              <td className="py-2 pr-4 font-mono font-semibold text-emerald-400 whitespace-nowrap">
+              <td className="py-2 pr-2 font-mono font-semibold text-emerald-400 whitespace-nowrap">
                 {c.enhanced_shadow_score != null ? c.enhanced_shadow_score : "—"}
                 {c.enhanced_shadow_confidence && (
                   <span className="ml-1 text-gray-600 text-xs">{c.enhanced_shadow_confidence[0]}</span>
                 )}
               </td>
-              <td className="py-2 pr-4 whitespace-nowrap">
+              <td className="py-2 pr-2 whitespace-nowrap">
                 {shadowDecisionBadge(c.enhanced_shadow_decision)}
               </td>
-              <td className="py-2 pr-4 text-xs text-gray-500 max-w-[180px] truncate" title={c.enhanced_shadow_reason ?? undefined}>
+              <td className="py-2 pr-2 text-xs text-gray-500 max-w-[180px] truncate" title={c.enhanced_shadow_reason ?? undefined}>
                 {c.enhanced_shadow_reason || "—"}
               </td>
-              <td className="py-2 pr-4 text-xs whitespace-nowrap">
+              <td className="py-2 pr-2 text-xs whitespace-nowrap">
                 {c.premarket_rank != null
                   ? <span className="text-indigo-300">#{c.premarket_rank} {c.premarket_gap_percent != null ? `${c.premarket_gap_percent > 0 ? "+" : ""}${c.premarket_gap_percent.toFixed(1)}%` : ""}</span>
                   : <span className="text-gray-600">—</span>}
               </td>
-              <td className="py-2 pr-4 text-xs whitespace-nowrap">
+              <td className="py-2 pr-2 text-xs whitespace-nowrap">
                 {c.reddit_rank != null
                   ? <span className="text-pink-300">#{c.reddit_rank}{c.reddit_spike_ratio != null ? ` ×${c.reddit_spike_ratio.toFixed(1)}` : ""}</span>
                   : <span className="text-gray-600">—</span>}
@@ -3357,7 +3357,7 @@ export default function Home() {
   const s = dashboard?.status;
 
   return (
-    <main className="min-h-screen bg-gray-950 text-white p-6 max-w-7xl mx-auto">
+    <main className="min-h-screen bg-gray-950 text-white p-6 max-w-[1800px] mx-auto">
 
       {/* Disclaimer */}
       <div className="mb-5 rounded-lg border border-yellow-600 bg-yellow-950 px-5 py-3 text-yellow-300 text-sm font-semibold">
