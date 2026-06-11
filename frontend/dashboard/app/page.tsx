@@ -359,6 +359,58 @@ interface PremarketSnapshot {
   warnings?: string[];
 }
 
+interface NewsCatalystItem {
+  catalyst_id?: string;
+  symbol: string;
+  source?: string;
+  event_type?: string | null;
+  classified_event_type?: string | null;
+  event_confidence?: number | null;
+  title?: string;
+  description?: string;
+  publisher?: string;
+  published_utc?: string | null;
+  collected_at?: string | null;
+  article_url?: string | null;
+  sentiment?: string | null;
+  sentiment_score?: number | null;
+  materiality_score?: number | null;
+  bullish_flags?: string[];
+  bearish_flags?: string[];
+  sentiment_reasons?: string[];
+}
+
+interface NewsSnapshot {
+  ok: boolean;
+  enabled: boolean;
+  implemented: boolean;
+  source: string;
+  analysis_mode?: string;
+  fetched_at: string | null;
+  age_seconds: number | null;
+  fetch_duration_ms?: number;
+  symbols_requested?: string[];
+  total_results: number;
+  results: NewsCatalystItem[];
+  errors?: { symbol: string; error: string }[];
+  warning: string | null;
+  note?: string;
+}
+
+interface PlaceholderFeed {
+  ok: boolean;
+  enabled: boolean;
+  implemented: boolean;
+  source: string | null;
+  fetched_at: string | null;
+  age_seconds: number | null;
+  total_results: number;
+  results: unknown[];
+  errors?: unknown[];
+  warning: string | null;
+  note?: string;
+}
+
 // ── Journal types ─────────────────────────────────────────────────────────────
 
 interface JournalStatus {
@@ -695,6 +747,36 @@ async function fetchReddit(): Promise<RedditSnapshot | null> {
 async function fetchPremarket(): Promise<PremarketSnapshot | null> {
   try {
     const r = await fetch("/api/intelligence/premarket");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchNews(): Promise<NewsSnapshot | null> {
+  try {
+    const r = await fetch("/api/intelligence/news?limit_per_symbol=5&max_age_hours=48");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchEarnings(): Promise<PlaceholderFeed | null> {
+  try {
+    const r = await fetch("/api/intelligence/earnings");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchInsiders(): Promise<PlaceholderFeed | null> {
+  try {
+    const r = await fetch("/api/intelligence/insiders");
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -2912,11 +2994,17 @@ type IntelTab = typeof INTEL_TABS[number]["key"];
 function IntelligenceSection({
   reddit,
   premarket,
+  news,
+  earnings,
+  insiders,
   token,
   onRefresh,
 }: {
   reddit: RedditSnapshot | null;
   premarket: PremarketSnapshot | null;
+  news: NewsSnapshot | null;
+  earnings: PlaceholderFeed | null;
+  insiders: PlaceholderFeed | null;
   token: string;
   onRefresh: () => void;
 }) {
@@ -3320,11 +3408,149 @@ function IntelligenceSection({
       {/* Tab content */}
       {activeTab === "reddit"    && <RedditTab />}
       {activeTab === "premarket" && <PremarketTab />}
-      {activeTab === "earnings" && <ComingSoon name="Earnings Calendar" />}
-      {activeTab === "insiders" && <ComingSoon name="Insider Transactions" />}
-      {activeTab === "news"     && <ComingSoon name="News Intelligence" />}
-      {activeTab === "heatmap"  && <ComingSoon name="Sector Heatmap" />}
-      {activeTab === "llm"      && <ComingSoon name="LLM Shadow Analysis" />}
+      {activeTab === "news"      && <NewsTab data={news} />}
+      {activeTab === "earnings"  && <NotImplementedFeed name="Earnings Calendar" data={earnings} />}
+      {activeTab === "insiders"  && <NotImplementedFeed name="Insider Transactions" data={insiders} />}
+      {activeTab === "heatmap"   && <ComingSoon name="Sector Heatmap" />}
+      {activeTab === "llm"       && <LLMPlaceholderTab />}
+    </div>
+  );
+}
+
+// ── News / Earnings / Insiders / LLM tabs (Phase I5) ──────────────────────────
+
+function NewsTab({ data }: { data: NewsSnapshot | null }) {
+  if (!data) {
+    return <div className="text-center py-8 text-gray-500 text-sm animate-pulse">Loading news/catalyst feed…</div>;
+  }
+  const items = data.results ?? [];
+  const fetchedAt = data.fetched_at ? new Date(data.fetched_at).toUTCString().replace(" GMT", " UTC") : "—";
+
+  return (
+    <div>
+      <div className="mb-3 rounded border border-blue-800 bg-blue-950 px-3 py-2 text-xs text-blue-300">
+        <span className="font-semibold">Rule-based analysis.</span> News/catalyst scoring is deterministic
+        (event-type classification + keyword/structured sentiment + materiality). No AI/LLM analysis yet.
+      </div>
+
+      <div className="flex flex-wrap items-center gap-3 mb-4 text-xs text-gray-400">
+        <span className="bg-gray-700 px-2 py-0.5 rounded font-mono">source: {data.source}</span>
+        <span>Fetched: {fetchedAt}</span>
+        <span>{items.length} items</span>
+        {data.symbols_requested && (
+          <span>{data.symbols_requested.length} symbols</span>
+        )}
+        {data.fetch_duration_ms != null && (
+          <span>fetch: {data.fetch_duration_ms}ms</span>
+        )}
+      </div>
+
+      {data.warning && (
+        <div className="mb-3 rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300">
+          ⚠ {data.warning}
+        </div>
+      )}
+
+      {items.length === 0 ? (
+        <p className="text-gray-500 text-sm py-4 text-center">No news items returned.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-gray-400 border-b border-gray-700">
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Time</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Ticker</th>
+                <th className="pb-2 pr-2 text-left">Title</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Source</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Event</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Sentiment</th>
+                <th className="pb-2 pr-2 text-right whitespace-nowrap">Materiality</th>
+                <th className="pb-2 pr-2 text-left">Flags</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">URL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.slice(0, 100).map((item, i) => {
+                const pub = item.published_utc ? new Date(item.published_utc).toUTCString().replace(" GMT", " UTC").slice(0, -4) : "—";
+                const bull = item.bullish_flags ?? [];
+                const bear = item.bearish_flags ?? [];
+                const sentColor =
+                  item.sentiment === "bullish" ? "text-green-400" :
+                  item.sentiment === "bearish" ? "text-red-400" :
+                  item.sentiment === "neutral" ? "text-gray-400" : "text-gray-500";
+                const evType = item.classified_event_type || item.event_type || "—";
+                return (
+                  <tr key={item.catalyst_id ?? `${item.symbol}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40">
+                    <td className="py-1.5 pr-2 text-xs text-gray-500 font-mono whitespace-nowrap">{pub}</td>
+                    <td className="py-1.5 pr-2 font-mono font-semibold text-yellow-300 whitespace-nowrap">{item.symbol}</td>
+                    <td className="py-1.5 pr-2 text-gray-200 max-w-[420px] truncate" title={item.title}>{item.title || "—"}</td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-500 whitespace-nowrap">{item.publisher || item.source || "—"}</td>
+                    <td className="py-1.5 pr-2 text-xs text-blue-300 whitespace-nowrap">{evType}</td>
+                    <td className={`py-1.5 pr-2 text-xs font-semibold whitespace-nowrap ${sentColor}`}>
+                      {item.sentiment || "—"}
+                      {item.sentiment_score != null && (
+                        <span className="text-gray-600 ml-1">({item.sentiment_score.toFixed(2)})</span>
+                      )}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs font-mono text-right whitespace-nowrap text-gray-300">
+                      {item.materiality_score != null ? item.materiality_score.toFixed(2) : "—"}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs">
+                      {bull.length > 0 && <span className="text-green-400 mr-1">+{bull.length}</span>}
+                      {bear.length > 0 && <span className="text-red-400">−{bear.length}</span>}
+                      {bull.length === 0 && bear.length === 0 && <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs whitespace-nowrap">
+                      {item.article_url ? (
+                        <a href={item.article_url} target="_blank" rel="noreferrer" className="text-blue-400 hover:text-blue-300 underline">open</a>
+                      ) : <span className="text-gray-600">—</span>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <p className="text-xs text-gray-600 mt-4">
+        {data.note ?? "Display feed only — no live orders, no AI/LLM."}
+      </p>
+    </div>
+  );
+}
+
+function NotImplementedFeed({ name, data }: { name: string; data: PlaceholderFeed | null }) {
+  const warning = data?.warning ?? `${name} is not yet implemented in microtrading.`;
+  return (
+    <div className="text-center py-10 text-gray-400 border border-dashed border-gray-700 rounded bg-gray-900">
+      <div className="text-4xl mb-3">🚧</div>
+      <p className="text-lg font-semibold text-gray-300">{name}</p>
+      <p className="text-sm mt-2 text-gray-400 max-w-xl mx-auto">{warning}</p>
+      <p className="text-xs mt-3 text-gray-600">
+        Status: <span className="font-mono">implemented={String(data?.implemented ?? false)}</span>
+        {" · "}<span className="font-mono">enabled={String(data?.enabled ?? false)}</span>
+      </p>
+      <p className="text-xs mt-1 text-gray-600">Display feed only · no trading integration · no fake data shown</p>
+    </div>
+  );
+}
+
+function LLMPlaceholderTab() {
+  return (
+    <div className="text-center py-10 text-gray-400 border border-dashed border-purple-800 rounded bg-purple-950/30">
+      <div className="text-4xl mb-3">🤖</div>
+      <p className="text-lg font-semibold text-purple-300">LLM Analysis — not active</p>
+      <p className="text-sm mt-2 max-w-xl mx-auto">
+        Future phase: AI-based news/catalyst impact analysis. A model would classify impact as high / medium / low
+        and explain why.
+      </p>
+      <p className="text-xs mt-3 text-purple-400">
+        No OpenAI / Anthropic / Ollama / LLM calls are made in this phase.
+      </p>
+      <p className="text-xs mt-1 text-gray-600">
+        Current news/catalyst scoring is deterministic / rule-based only.
+      </p>
     </div>
   );
 }
@@ -3343,12 +3569,17 @@ export default function Home() {
   const [lastRefresh, setLastRefresh] = useState("");
   const [reddit, setReddit] = useState<RedditSnapshot | null>(null);
   const [premarket, setPremarket] = useState<PremarketSnapshot | null>(null);
+  const [news, setNews] = useState<NewsSnapshot | null>(null);
+  const [earnings, setEarnings] = useState<PlaceholderFeed | null>(null);
+  const [insiders, setInsiders] = useState<PlaceholderFeed | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigState | null>(null);
+  const [topTab, setTopTab] = useState<"main" | "intelligence" | "strategy">("main");
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, newsdata, erndata, insdata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
       fetchReddit(), fetchPremarket(), fetchRuntimeConfig(),
+      fetchNews(), fetchEarnings(), fetchInsiders(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -3358,6 +3589,9 @@ export default function Home() {
     setReddit(rddata);
     setPremarket(pmdata);
     setRuntimeConfig(rcfgdata);
+    setNews(newsdata);
+    setEarnings(erndata);
+    setInsiders(insdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -3402,6 +3636,28 @@ export default function Home() {
 
       {loading && <p className="text-gray-400 animate-pulse">Loading…</p>}
 
+      {/* Top-level tab navigation (Phase I5) */}
+      <nav className="mb-5 flex flex-wrap gap-1 border-b border-gray-700 pb-1">
+        {([
+          { key: "main",          label: "📊 Main Dashboard" },
+          { key: "intelligence",  label: "🧠 Intelligence" },
+          { key: "strategy",      label: "⚙ Strategy Settings" },
+        ] as const).map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTopTab(t.key)}
+            className={`px-4 py-2 rounded-t text-sm font-semibold transition-colors ${
+              topTab === t.key
+                ? "bg-gray-800 text-white border border-b-transparent border-gray-600"
+                : "text-gray-400 hover:text-gray-200 hover:bg-gray-800/60"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {topTab === "main" && (<>
       {/* Market Session Readiness */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
         <h2 className="text-lg font-semibold mb-3">
@@ -3604,17 +3860,6 @@ export default function Home() {
         />
       </section>
 
-      {/* Strategy Settings */}
-      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
-        <h2 className="text-lg font-semibold mb-3">
-          Strategy Settings
-          <span className="ml-2 text-xs font-normal text-gray-400">
-            runtime config · admin-protected · fake-money only
-          </span>
-        </h2>
-        <StrategySettingsPanel token={token} onRefresh={refresh} />
-      </section>
-
       {/* Analytics */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
         <h2 className="text-lg font-semibold mb-3">
@@ -3647,17 +3892,39 @@ export default function Home() {
         </h2>
         <JournalPanel journal={journal} />
       </section>
+      </>)}
 
-      {/* Intelligence */}
-      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
-        <h2 className="text-lg font-semibold mb-1">
-          Intelligence
-          <span className="ml-2 text-xs font-normal text-gray-400">
-            read-only · no trading integration · Phase I3-A
-          </span>
-        </h2>
-        <IntelligenceSection reddit={reddit} premarket={premarket} token={token} onRefresh={refresh} />
-      </section>
+      {topTab === "strategy" && (
+        <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+          <h2 className="text-lg font-semibold mb-3">
+            Strategy Settings
+            <span className="ml-2 text-xs font-normal text-gray-400">
+              runtime config · admin-protected · fake-money only
+            </span>
+          </h2>
+          <StrategySettingsPanel token={token} onRefresh={refresh} />
+        </section>
+      )}
+
+      {topTab === "intelligence" && (
+        <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+          <h2 className="text-lg font-semibold mb-1">
+            Intelligence
+            <span className="ml-2 text-xs font-normal text-gray-400">
+              read-only · no trading integration · rule-based · no AI/LLM · Phase I5
+            </span>
+          </h2>
+          <IntelligenceSection
+            reddit={reddit}
+            premarket={premarket}
+            news={news}
+            earnings={earnings}
+            insiders={insiders}
+            token={token}
+            onRefresh={refresh}
+          />
+        </section>
+      )}
 
       <footer className="text-center text-xs text-gray-600 mt-8 border-t border-gray-800 pt-4 space-y-1">
         <p>{dashboard?.disclaimer}</p>

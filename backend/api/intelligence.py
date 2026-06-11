@@ -1,13 +1,17 @@
 """
 Intelligence API — read-only data layer, no broker, no live trading, no real orders.
 Phase I2: Reddit ranking. Phase I3-A: Pre-market movers. Phase I3-B: Full-universe scanner.
+Phase I5: News/Earnings/Insiders intelligence feed surface (read-only display).
 """
 import time
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Query
 
 from api.dependencies import require_admin_token
+from catalysts.news_collector import collect_news_for_symbols
 from core.config import settings
+from data.universe import DEFAULT_UNIVERSE
 from intelligence import full_premarket as full_premarket_intel
 from intelligence import premarket as premarket_intel
 from intelligence import reddit as reddit_intel
@@ -203,4 +207,119 @@ async def premarket_status():
             "interval_regular_s":    settings.PREMARKET_SCANNER_INTERVAL_REGULAR_SECONDS,
             "max_universe_size":     settings.PREMARKET_SCANNER_MAX_UNIVERSE_SIZE,
         },
+    }
+
+
+# ── Phase I5: News / Earnings / Insiders feeds (read-only display) ────────────
+
+
+@router.get("/news")
+async def get_intelligence_news(
+    symbols: str | None = Query(
+        default=None,
+        description="Comma-separated tickers; defaults to DEFAULT_UNIVERSE when omitted.",
+    ),
+    limit_per_symbol: int = Query(default=5, ge=1, le=20),
+    max_age_hours: int = Query(default=24, ge=1, le=168),
+):
+    """
+    Recent news catalysts surfaced for the Intelligence dashboard.
+
+    Wraps catalysts.news_collector with classify_events + analyze_sentiment
+    so each item carries deterministic event-type / sentiment / materiality
+    flags. Rule-based — NOT AI/LLM analysis. Read-only display feed; does not
+    affect trading decisions on its own (the engine uses its own catalyst
+    scoring path via paper.simulator).
+    """
+    if symbols:
+        parts = [s.strip().upper() for s in symbols.split(",")]
+        syms = [s for s in parts if s][:25]
+    else:
+        syms = list(DEFAULT_UNIVERSE)
+
+    started = time.monotonic()
+    raw = await collect_news_for_symbols(
+        syms,
+        limit_per_symbol=limit_per_symbol,
+        apply_filter=False,
+        max_age_hours=max_age_hours,
+        classify_events=True,
+        analyze_sentiment=True,
+    )
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    catalysts = raw.get("catalysts", []) or []
+
+    return {
+        "ok": True,
+        "enabled": True,
+        "implemented": True,
+        "source": "polygon_news + deterministic rule-based classify/sentiment",
+        "analysis_mode": "rule-based (no AI/LLM)",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "age_seconds": 0,
+        "fetch_duration_ms": elapsed_ms,
+        "symbols_requested": raw.get("symbols_requested", []),
+        "total_results": len(catalysts),
+        "results": catalysts,
+        "errors": raw.get("errors", []),
+        "warning": None,
+        "note": (
+            "Used by engine via catalysts.scoring (deterministic rules). "
+            "Display feed only — no live orders, no AI/LLM."
+        ),
+    }
+
+
+@router.get("/earnings")
+async def get_intelligence_earnings():
+    """
+    Earnings calendar surface. Not yet implemented in microtrading.
+
+    A V6 migration source exists; surfacing an upcoming-earnings calendar
+    here is a future phase. This endpoint returns a stable, well-defined
+    "not implemented" payload so the dashboard can show a clear placeholder
+    rather than fake data or an error.
+    """
+    return {
+        "ok": True,
+        "enabled": False,
+        "implemented": False,
+        "source": None,
+        "fetched_at": None,
+        "age_seconds": None,
+        "total_results": 0,
+        "results": [],
+        "errors": [],
+        "warning": (
+            "Earnings calendar is not yet implemented in microtrading. "
+            "V6 migration source exists; implementation required."
+        ),
+        "note": "Display feed only — would not affect entry/exit logic when added.",
+    }
+
+
+@router.get("/insiders")
+async def get_intelligence_insiders():
+    """
+    Insider transactions surface. Not yet implemented in microtrading.
+
+    A V6 migration source exists; surfacing recent Form 4 insider buys/sells
+    here is a future phase. This endpoint returns a stable "not implemented"
+    payload so the dashboard can show a clear placeholder.
+    """
+    return {
+        "ok": True,
+        "enabled": False,
+        "implemented": False,
+        "source": None,
+        "fetched_at": None,
+        "age_seconds": None,
+        "total_results": 0,
+        "results": [],
+        "errors": [],
+        "warning": (
+            "Insider transactions are not yet implemented in microtrading. "
+            "V6 migration source exists; implementation required."
+        ),
+        "note": "Display feed only — would not affect entry/exit logic when added.",
     }
