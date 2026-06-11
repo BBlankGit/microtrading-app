@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     EARNINGS_DATA_PROVIDER: str = "none"  # "polygon" | "finnhub" | "none"
     EARNINGS_CACHE_TTL_SECONDS: int = 7200  # 2 hours
     EARNINGS_LOOKAHEAD_DAYS: int = 30
+    EARNINGS_MAX_SYMBOLS_PER_REFRESH: int = 100
+    EARNINGS_FETCH_TIMEOUT_SECONDS: float = 8.0
+    FINNHUB_API_KEY: str = ""
 
     # Phase I6 — Insider transactions (fake-money scoring only, no broker)
     PAPER_INSIDER_SCORING_ENABLED: bool = True
@@ -55,6 +58,9 @@ class Settings(BaseSettings):
     PAPER_INSIDER_IGNORE_NON_DISCRETIONARY: bool = True
     INSIDER_DATA_PROVIDER: str = "none"  # "polygon" | "finnhub" | "none"
     INSIDER_CACHE_TTL_SECONDS: int = 1800  # 30 minutes
+    INSIDER_MAX_SYMBOLS_PER_REFRESH: int = 50
+    INSIDER_FETCH_TIMEOUT_SECONDS: float = 8.0
+    INSIDER_FETCH_INTERSYMBOL_DELAY_SECONDS: float = 0.1
 
     # Dynamic universe (Phase 2C)
     PAPER_BASE_UNIVERSE: str = (

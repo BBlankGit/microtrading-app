@@ -23,6 +23,8 @@ from datetime import datetime, date, timezone, timedelta
 from typing import Any
 
 from core.config import settings
+from data.universe import DEFAULT_UNIVERSE
+from intelligence.finnhub_client import FinnhubError, get as finnhub_get, is_configured as finnhub_configured
 
 logger = logging.getLogger(__name__)
 
@@ -47,15 +49,19 @@ def provider() -> str:
     return (settings.EARNINGS_DATA_PROVIDER or "none").strip().lower()
 
 
-# Set of providers that have a real fetcher wired in this codebase. Phase I6
-# ships only the abstraction — no provider is implemented yet, so this set
-# is intentionally empty. Add provider names here once a fetcher lands.
-_WIRED_PROVIDERS: set[str] = set()
+# Providers that have a real fetcher wired in this codebase.
+# Phase I6-H2 wires Finnhub.
+_WIRED_PROVIDERS: set[str] = {"finnhub"}
 
 
 def is_available() -> bool:
-    """True only when a real fetcher is wired for the configured provider."""
-    return provider() in _WIRED_PROVIDERS
+    """True only when a real fetcher is wired for the configured provider AND the key is present."""
+    p = provider()
+    if p not in _WIRED_PROVIDERS:
+        return False
+    if p == "finnhub":
+        return finnhub_configured()
+    return True
 
 
 def provider_status() -> str:
@@ -63,19 +69,78 @@ def provider_status() -> str:
     Honest status string for callers/dashboard:
       "not_configured"         — EARNINGS_DATA_PROVIDER=none
       "configured_but_unwired" — provider name set, no fetcher implemented
-      "active"                 — provider has a wired fetcher
+      "missing_api_key"        — fetcher wired but provider key not configured
+      "active"                 — provider has a wired fetcher and key
     """
     p = provider()
     if p in ("", "none"):
         return "not_configured"
-    if p in _WIRED_PROVIDERS:
-        return "active"
-    return "configured_but_unwired"
+    if p not in _WIRED_PROVIDERS:
+        return "configured_but_unwired"
+    if p == "finnhub" and not finnhub_configured():
+        return "missing_api_key"
+    return "active"
 
 
 def is_enabled() -> bool:
     """Backwards-compat alias: enabled iff a real fetcher is available."""
     return is_available()
+
+
+# ── Symbol universe for earnings refresh (capped, never 5,000) ───────────────
+
+def _tracked_symbols() -> list[str]:
+    """
+    Controlled universe for earnings refresh.
+    Combines DEFAULT_UNIVERSE with the paper base universe, deduped and
+    capped at EARNINGS_MAX_SYMBOLS_PER_REFRESH. No 5k-symbol polling.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in DEFAULT_UNIVERSE:
+        u = s.strip().upper()
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    raw = settings.PAPER_BASE_UNIVERSE or ""
+    for tok in raw.split(","):
+        u = tok.strip().upper()
+        if u and u not in seen:
+            seen.add(u)
+            out.append(u)
+    cap = max(1, int(getattr(settings, "EARNINGS_MAX_SYMBOLS_PER_REFRESH", 100)))
+    return out[:cap]
+
+
+# ── Finnhub fetcher ──────────────────────────────────────────────────────────
+
+async def _fetch_finnhub_earnings() -> tuple[list[dict], list[dict], str | None, str]:
+    """
+    Returns (raw_rows, errors, warning, status_override_or_active).
+
+    Calendar endpoint returns a broad window; we then filter to tracked symbols.
+    """
+    today = date.today()
+    horizon = today + timedelta(days=int(settings.EARNINGS_LOOKAHEAD_DAYS))
+    params = {"from": today.isoformat(), "to": horizon.isoformat()}
+    try:
+        data = await finnhub_get(
+            "/calendar/earnings",
+            params=params,
+            timeout=settings.EARNINGS_FETCH_TIMEOUT_SECONDS,
+        )
+    except FinnhubError as exc:
+        if exc.rate_limited:
+            return [], [{"error": "rate_limited"}], "Finnhub rate-limited; serving previous cache if any.", "rate_limited"
+        return [], [{"error": str(exc)}], f"Finnhub error: {exc}", "error"
+
+    rows = data.get("earningsCalendar") if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return [], [{"error": "unexpected_payload"}], "Unexpected Finnhub payload shape", "error"
+
+    tracked = set(_tracked_symbols())
+    filtered = [r for r in rows if (r.get("symbol") or "").upper() in tracked]
+    return filtered, [], None, "active"
 
 
 def get_results_by_symbol() -> dict[str, dict]:
@@ -98,13 +163,17 @@ def _normalize_row(raw: dict, today: date) -> dict:
     """Normalize a provider-specific raw row to our canonical earnings schema."""
     ticker = (raw.get("symbol") or raw.get("ticker") or "").upper()
     report_date_s = raw.get("report_date") or raw.get("date") or raw.get("epsActualDate")
-    report_time = (raw.get("report_time") or raw.get("hour") or "unknown").lower()
-    if report_time in ("bmo", "before_market"):
+    raw_time = (raw.get("report_time") or raw.get("hour") or "").lower().strip()
+    if raw_time in ("bmo", "before_market", "before market open"):
         report_time = "before_open"
-    elif report_time in ("amc", "after_market"):
+    elif raw_time in ("amc", "after_market", "after market close"):
         report_time = "after_close"
-    elif report_time in ("dmh", "during_market", "during"):
+    elif raw_time in ("dmh", "during_market", "during", "dmt"):
         report_time = "during_market"
+    elif raw_time in ("", "tbd", "unknown"):
+        report_time = "unknown"
+    else:
+        report_time = raw_time
 
     try:
         d = date.fromisoformat(str(report_date_s)[:10])
@@ -113,16 +182,22 @@ def _normalize_row(raw: dict, today: date) -> dict:
         d = None
         days_until = None
 
+    confirmed_raw = raw.get("confirmed")
+    if confirmed_raw is None:
+        confirmed = "unknown"
+    else:
+        confirmed = confirmed_raw
+
     return {
         "ticker": ticker,
         "report_date": report_date_s,
         "report_time": report_time,
-        "eps_estimate": raw.get("eps_estimate") or raw.get("epsEstimate"),
-        "revenue_estimate": raw.get("revenue_estimate") or raw.get("revenueEstimate"),
-        "eps_actual": raw.get("eps_actual") or raw.get("epsActual"),
-        "revenue_actual": raw.get("revenue_actual") or raw.get("revenueActual"),
+        "eps_estimate": raw.get("eps_estimate") if raw.get("eps_estimate") is not None else raw.get("epsEstimate"),
+        "revenue_estimate": raw.get("revenue_estimate") if raw.get("revenue_estimate") is not None else raw.get("revenueEstimate"),
+        "eps_actual": raw.get("eps_actual") if raw.get("eps_actual") is not None else raw.get("epsActual"),
+        "revenue_actual": raw.get("revenue_actual") if raw.get("revenue_actual") is not None else raw.get("revenueActual"),
         "surprise": raw.get("surprise"),
-        "confirmed": raw.get("confirmed") if raw.get("confirmed") is not None else "unknown",
+        "confirmed": confirmed,
         "days_until": days_until,
         "source": raw.get("source") or provider(),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
@@ -180,40 +255,70 @@ async def fetch_and_refresh(force: bool = False) -> dict:
             _cache_time = time.monotonic()
             return _cache
 
-        # status == "active": a wired fetcher exists for this provider.
+        if status == "missing_api_key":
+            _cache = {
+                "enabled": False,
+                "available": False,
+                "implemented": True,
+                "provider_status": status,
+                "source": prov,
+                "fetched_at": datetime.now(timezone.utc).isoformat(),
+                "results": [],
+                "errors": [],
+                "warning": (
+                    f"Earnings provider {prov!r} fetcher is wired but FINNHUB_API_KEY "
+                    "is not configured. No fake data shown."
+                ),
+            }
+            _cache_time = time.monotonic()
+            return _cache
+
+        # status == "active": run the wired fetcher.
         try:
-            results_raw: list[dict] = []
-            errors: list[dict] = []
-            # NOTE: when a real fetcher is wired, populate results_raw here.
+            if prov == "finnhub":
+                results_raw, errors, warning, eff_status = await _fetch_finnhub_earnings()
+            else:
+                results_raw, errors, warning, eff_status = [], [], "Unknown provider", "error"
 
             today = date.today()
             results = [_normalize_row(r, today) for r in results_raw]
+
+            # Rate-limit / error: keep previous cache results if available.
+            if eff_status in ("rate_limited", "error") and _cache and _cache.get("results"):
+                _cache["provider_status"] = eff_status
+                _cache["warning"] = warning
+                _cache["errors"] = (_cache.get("errors") or []) + errors
+                # Keep existing fetched_at/results — the cache is now stale.
+                _cache_time = time.monotonic()
+                return _cache
+
             _cache = {
                 "enabled": True,
                 "available": True,
                 "implemented": True,
-                "provider_status": "active",
+                "provider_status": eff_status,
                 "source": prov,
                 "fetched_at": datetime.now(timezone.utc).isoformat(),
                 "results": results,
                 "errors": errors,
-                "warning": None,
+                "warning": warning,
             }
             _cache_time = time.monotonic()
             return _cache
         except Exception as exc:
-            logger.warning("Earnings fetch failed: %s", exc)
+            logger.warning("Earnings fetch failed: %s", type(exc).__name__)
             keep = _cache or {
                 "enabled": True,
                 "available": True,
                 "implemented": True,
-                "provider_status": "active",
+                "provider_status": "error",
                 "source": prov,
                 "fetched_at": None,
                 "results": [],
                 "errors": [],
                 "warning": None,
             }
+            keep["provider_status"] = "error"
             keep["errors"] = (keep.get("errors") or []) + [{"error": f"{type(exc).__name__}: {exc}"}]
             keep["warning"] = "Last fetch failed; serving previous cache (if any)."
             _cache = keep

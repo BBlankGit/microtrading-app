@@ -46,12 +46,15 @@ def test_earnings_provider_none_reports_not_configured():
 
 # ── Earnings: provider=finnhub but no fetcher → configured_but_unwired ────────
 
-def test_earnings_provider_finnhub_unwired_reports_configured_but_unwired():
+def test_earnings_provider_polygon_unwired_reports_configured_but_unwired_with_warning():
+    # NOTE: as of Phase I6-H2 finnhub is a wired provider, so the
+    # "configured-but-unwired" semantics are exercised with polygon, which
+    # remains unwired.
     from core.config import settings
     from intelligence import earnings as e
 
     _reset_earnings_cache()
-    with patch.object(settings, "EARNINGS_DATA_PROVIDER", "finnhub"):
+    with patch.object(settings, "EARNINGS_DATA_PROVIDER", "polygon"):
         assert e.provider_status() == "configured_but_unwired"
         assert e.is_available() is False
         snap = __import__("asyncio").run(e.fetch_and_refresh(force=True))
@@ -95,12 +98,14 @@ def test_insiders_provider_none_reports_not_configured():
     assert "not configured" in (snap.get("warning") or "").lower()
 
 
-def test_insiders_provider_finnhub_unwired_reports_configured_but_unwired():
+def test_insiders_provider_polygon_unwired_reports_configured_but_unwired_with_warning():
+    # NOTE: as of Phase I6-H2 finnhub is a wired provider, so the
+    # "configured-but-unwired" semantics are exercised with polygon.
     from core.config import settings
     from intelligence import insiders as ins
 
     _reset_insiders_cache()
-    with patch.object(settings, "INSIDER_DATA_PROVIDER", "finnhub"):
+    with patch.object(settings, "INSIDER_DATA_PROVIDER", "polygon"):
         assert ins.provider_status() == "configured_but_unwired"
         assert ins.is_available() is False
         snap = __import__("asyncio").run(ins.fetch_and_refresh(force=True))
@@ -132,7 +137,8 @@ def test_earnings_unwired_provider_does_not_make_http_calls():
     from intelligence import earnings as e
 
     _reset_earnings_cache()
-    with patch.object(settings, "EARNINGS_DATA_PROVIDER", "finnhub"), \
+    # polygon stays unwired in Phase I6-H2.
+    with patch.object(settings, "EARNINGS_DATA_PROVIDER", "polygon"), \
          patch.object(httpx.AsyncClient, "get", side_effect=AssertionError("no http call expected")), \
          patch.object(httpx.AsyncClient, "post", side_effect=AssertionError("no http call expected")):
         snap = asyncio.run(e.fetch_and_refresh(force=True))
