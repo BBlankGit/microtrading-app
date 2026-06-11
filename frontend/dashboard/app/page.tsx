@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -1035,35 +1035,64 @@ function PositionsTable({ positions }: { positions: Position[] }) {
   );
 }
 
+const TRADES_DEFAULT_VISIBLE = 3;
+
 function TradesTable({ trades }: { trades: Trade[] }) {
+  const [showAll, setShowAll] = useState(false);
   if (trades.length === 0)
     return <p className="text-gray-500 text-sm">No closed trades yet.</p>;
+
+  // Newest first.
+  const ordered = [...trades].reverse();
+  const total = ordered.length;
+  const visible = showAll || total <= TRADES_DEFAULT_VISIBLE
+    ? ordered
+    : ordered.slice(0, TRADES_DEFAULT_VISIBLE);
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm text-left">
-        <thead className="text-gray-400 border-b border-gray-700">
-          <tr>
-            {["Symbol","Entry","Exit","P&L","%","Reason","Hold","Catalyst","Closed"].map((h) => (
-              <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {[...trades].reverse().map((t) => (
-            <tr key={t.position_id + t.exit_time} className="border-b border-gray-800 hover:bg-gray-800">
-              <td className="py-2 pr-4 font-semibold text-yellow-300">{t.symbol}</td>
-              <td className="py-2 pr-4 font-mono">${fmt(t.entry_price, 4)}</td>
-              <td className="py-2 pr-4 font-mono">${fmt(t.exit_price, 4)}</td>
-              <td className={`py-2 pr-4 font-mono ${pnlClass(t.pnl)}`}>{fmtUSD(t.pnl)}</td>
-              <td className={`py-2 pr-4 font-mono ${pnlClass(t.pnl_percent)}`}>{fmt(t.pnl_percent)}%</td>
-              <td className="py-2 pr-4 text-gray-300">{t.exit_reason}</td>
-              <td className="py-2 pr-4 font-mono">{t.hold_minutes}m</td>
-              <td className="py-2 pr-4 text-blue-300">{t.entry_catalyst_type}</td>
-              <td className="py-2 pr-4 text-gray-400 text-xs">{utcShort(t.exit_time)}</td>
+    <div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm text-left">
+          <thead className="text-gray-400 border-b border-gray-700">
+            <tr>
+              {["Symbol","Entry","Exit","P&L","%","Reason","Hold","Catalyst","Closed"].map((h) => (
+                <th key={h} className="pb-2 pr-4 font-medium whitespace-nowrap">{h}</th>
+              ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {visible.map((t) => (
+              <tr key={t.position_id + t.exit_time} className="border-b border-gray-800 hover:bg-gray-800">
+                <td className="py-2 pr-4 font-semibold text-yellow-300">{t.symbol}</td>
+                <td className="py-2 pr-4 font-mono">${fmt(t.entry_price, 4)}</td>
+                <td className="py-2 pr-4 font-mono">${fmt(t.exit_price, 4)}</td>
+                <td className={`py-2 pr-4 font-mono ${pnlClass(t.pnl)}`}>{fmtUSD(t.pnl)}</td>
+                <td className={`py-2 pr-4 font-mono ${pnlClass(t.pnl_percent)}`}>{fmt(t.pnl_percent)}%</td>
+                <td className="py-2 pr-4 text-gray-300">{t.exit_reason}</td>
+                <td className="py-2 pr-4 font-mono">{t.hold_minutes}m</td>
+                <td className="py-2 pr-4 text-blue-300">{t.entry_catalyst_type}</td>
+                <td className="py-2 pr-4 text-gray-400 text-xs">{utcShort(t.exit_time)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {total > TRADES_DEFAULT_VISIBLE && (
+        <div className="mt-2 flex items-center gap-3">
+          <button
+            onClick={() => setShowAll((v) => !v)}
+            className="px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-xs font-semibold transition-colors"
+          >
+            {showAll ? "Show fewer" : "Show all closed positions"}
+          </button>
+          <span className="text-xs text-gray-500">
+            {showAll
+              ? `Showing all ${total} closed positions`
+              : `Showing latest ${Math.min(TRADES_DEFAULT_VISIBLE, total)} of ${total} closed positions`}
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -1102,7 +1131,202 @@ function shadowDecisionBadge(decision: string | null | undefined) {
   return <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-gray-800 text-gray-500 border border-gray-700">REJECT</span>;
 }
 
+// ── UI-L2: agreement & engine-decision helpers for the compact comparison ───
+
+type AgreementBucket = "all_agree_enter" | "all_agree_reject" | "missed_opportunity"
+  | "engine_vs_shadow" | "engine_vs_llm" | "shadow_vs_llm"
+  | "engine_vs_both" | "llm_inactive";
+
+function _engineEnter(c: Candidate): boolean {
+  return c.eligible === true;
+}
+
+function _shadowEnter(c: Candidate): boolean {
+  return c.enhanced_shadow_decision === "WOULD_ENTER";
+}
+
+function _llmEnter(c: Candidate): boolean {
+  return c.llm_status === "ok" && c.llm_decision === "WOULD_ENTER";
+}
+
+function _llmActive(c: Candidate): boolean {
+  return c.llm_status === "ok" && c.llm_decision != null;
+}
+
+function computeAgreement(c: Candidate): { bucket: AgreementBucket; label: string; cls: string; tip: string } {
+  const eng = _engineEnter(c);
+  const sha = _shadowEnter(c);
+  const llmA = _llmActive(c);
+  const llm = _llmEnter(c);
+  if (!llmA) {
+    if (eng === sha) {
+      return eng
+        ? { bucket: "all_agree_enter", label: "agree", cls: "bg-green-900 text-green-300 border-green-700", tip: "Engine and deterministic shadow agree (LLM inactive)" }
+        : { bucket: "all_agree_reject", label: "agree", cls: "bg-gray-800 text-gray-400 border-gray-600", tip: "Engine and deterministic shadow agree to reject (LLM inactive)" };
+    }
+    if (!eng && sha) {
+      return { bucket: "missed_opportunity", label: "missed?", cls: "bg-orange-900 text-orange-300 border-orange-700",
+               tip: "Engine rejected but deterministic shadow says WOULD_ENTER" };
+    }
+    return { bucket: "engine_vs_shadow", label: "E≠S", cls: "bg-yellow-900 text-yellow-300 border-yellow-700",
+             tip: "Engine accepted but deterministic shadow rejected" };
+  }
+  if (eng && sha && llm) {
+    return { bucket: "all_agree_enter", label: "all enter", cls: "bg-green-900 text-green-300 border-green-700",
+             tip: "Engine, deterministic shadow, and LLM all say WOULD_ENTER" };
+  }
+  const llmReject = c.llm_decision === "WOULD_REJECT";
+  if (!eng && !sha && llmReject) {
+    return { bucket: "all_agree_reject", label: "all reject", cls: "bg-gray-800 text-gray-400 border-gray-600",
+             tip: "Engine, deterministic shadow, and LLM all reject" };
+  }
+  const diffs: string[] = [];
+  if (eng !== sha) diffs.push("E≠S");
+  if (eng !== llm) diffs.push("E≠L");
+  if (sha !== llm) diffs.push("S≠L");
+  const missedByLlm = !eng && llm;
+  const missedByShadow = !eng && sha;
+  let bucket: AgreementBucket = "engine_vs_llm";
+  let cls = "bg-yellow-900 text-yellow-300 border-yellow-700";
+  if (missedByLlm && missedByShadow) {
+    bucket = "engine_vs_both";
+    cls = "bg-orange-900 text-orange-300 border-orange-700";
+  } else if (missedByLlm) {
+    bucket = "engine_vs_llm";
+    cls = "bg-orange-900 text-orange-300 border-orange-700";
+  } else if (missedByShadow) {
+    bucket = "missed_opportunity";
+    cls = "bg-orange-900 text-orange-300 border-orange-700";
+  } else if (sha !== llm) {
+    bucket = "shadow_vs_llm";
+  }
+  return { bucket, label: diffs.length > 0 ? diffs.join(" ") : "—", cls, tip: "Disagreement among engine / deterministic shadow / LLM shadow" };
+}
+
+function engineDecisionBadge(c: Candidate) {
+  if (c.eligible === true) {
+    return (
+      <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-green-900 text-green-300 border border-green-700"
+            title={`Engine ENTER via ${c.entry_mode ?? "?"}`}>
+        ENTER {c.entry_mode ? `(${c.entry_mode})` : ""}
+      </span>
+    );
+  }
+  if (c.action === "score_rejected" || c.rejection_reason) {
+    const reason = c.rejection_reason || c.action || "rejected";
+    return (
+      <span className="px-1.5 py-0.5 rounded text-xs font-semibold bg-gray-800 text-gray-400 border border-gray-700"
+            title={reason}>
+        REJECT
+      </span>
+    );
+  }
+  if (c.action) {
+    return (
+      <span className="px-1.5 py-0.5 rounded text-xs font-mono bg-gray-800 text-gray-400 border border-gray-700"
+            title={c.action ?? undefined}>
+        {c.action}
+      </span>
+    );
+  }
+  return <span className="text-gray-600 text-xs">—</span>;
+}
+
+function llmDecisionBadge(c: Candidate) {
+  if (c.llm_status === "disabled") return <span className="text-gray-600 text-xs">inactive</span>;
+  if (c.llm_status === "missing_api_key") return <span className="text-yellow-500 text-xs">key missing</span>;
+  if (c.llm_status === "not_selected") return <span className="text-gray-600 text-xs">—</span>;
+  if (c.llm_status === "error") return <span className="text-red-400 text-xs" title={c.llm_error ?? "error"}>error</span>;
+  if (c.llm_decision === "WOULD_ENTER")
+    return <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-purple-900 text-purple-200 border border-purple-700">WOULD_ENTER</span>;
+  if (c.llm_decision === "WATCH")
+    return <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-900 text-yellow-300 border border-yellow-700">WATCH</span>;
+  if (c.llm_decision === "WOULD_REJECT")
+    return <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-gray-800 text-gray-500 border border-gray-700">REJECT</span>;
+  return <span className="text-gray-600 text-xs">—</span>;
+}
+
+// ── UI-L2: expandable detail panel ──────────────────────────────────────────
+
+function CandidateDetailPanel({ c }: { c: Candidate }) {
+  return (
+    <div className="bg-gray-900/60 border-t border-gray-700 px-3 py-3 text-xs space-y-3">
+      {/* Engine details */}
+      <div>
+        <h4 className="text-gray-300 font-semibold mb-1">Engine Decision</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-gray-400">
+          <div><span className="text-gray-500">eligible:</span> {String(c.eligible)}</div>
+          <div><span className="text-gray-500">action:</span> {c.action ?? "—"}</div>
+          <div><span className="text-gray-500">entry_mode:</span> {c.entry_mode ?? "—"}</div>
+          <div><span className="text-gray-500">total_score:</span> {c.total_score ?? "—"} / {c.score_threshold ?? "?"}</div>
+        </div>
+        {c.rejection_reason && (
+          <p className="mt-1 text-orange-300 whitespace-pre-wrap break-words"><span className="text-gray-500">rejection:</span> {c.rejection_reason}</p>
+        )}
+        {c.decision_reason && (
+          <p className="mt-1 text-gray-400 whitespace-pre-wrap break-words"><span className="text-gray-500">decision:</span> {c.decision_reason}</p>
+        )}
+        {c.score_components && (
+          <p className="mt-1 font-mono text-gray-500">{fmtComponents(c.score_components)}</p>
+        )}
+      </div>
+
+      {/* Deterministic shadow */}
+      <div>
+        <h4 className="text-emerald-400 font-semibold mb-1">Deterministic Shadow</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-gray-400">
+          <div><span className="text-gray-500">decision:</span> {c.enhanced_shadow_decision ?? "—"}</div>
+          <div><span className="text-gray-500">score:</span> {c.enhanced_shadow_score ?? "—"}</div>
+          <div><span className="text-gray-500">confidence:</span> {c.enhanced_shadow_confidence ?? "—"}</div>
+        </div>
+        {c.enhanced_shadow_reason && (
+          <p className="mt-1 text-gray-400 whitespace-pre-wrap break-words"><span className="text-gray-500">reason:</span> {c.enhanced_shadow_reason}</p>
+        )}
+      </div>
+
+      {/* LLM shadow */}
+      <div>
+        <h4 className="text-purple-300 font-semibold mb-1">LLM Shadow</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-gray-400">
+          <div><span className="text-gray-500">status:</span> {c.llm_status ?? "—"}</div>
+          <div><span className="text-gray-500">decision:</span> {c.llm_decision ?? "—"}</div>
+          <div><span className="text-gray-500">confidence:</span> {c.llm_confidence != null ? c.llm_confidence.toFixed(2) : "—"}</div>
+          <div><span className="text-gray-500">action:</span> {c.llm_recommended_action ?? "—"}</div>
+          <div><span className="text-gray-500">impact:</span> {c.llm_impact_assessment ?? "—"}</div>
+          <div><span className="text-gray-500">bias:</span> {c.llm_directional_bias ?? "—"}</div>
+          <div><span className="text-gray-500">cached:</span> {String(c.llm_cached ?? false)}</div>
+          <div><span className="text-gray-500">latency:</span> {c.llm_latency_ms != null ? `${c.llm_latency_ms} ms` : "—"}</div>
+        </div>
+        {c.llm_primary_reason && (
+          <p className="mt-1 text-purple-200 whitespace-pre-wrap break-words"><span className="text-gray-500">primary reason:</span> {c.llm_primary_reason}</p>
+        )}
+        {c.llm_summary && (
+          <p className="mt-1 text-gray-300 whitespace-pre-wrap break-words"><span className="text-gray-500">summary:</span> {c.llm_summary}</p>
+        )}
+        {c.llm_error && (
+          <p className="mt-1 text-red-400 whitespace-pre-wrap break-words"><span className="text-gray-500">error:</span> {c.llm_error}</p>
+        )}
+      </div>
+
+      {/* Market context */}
+      <div>
+        <h4 className="text-amber-300 font-semibold mb-1">Market Context</h4>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-gray-400">
+          <div><span className="text-gray-500">spread%:</span> {fmt(c.spread_percent, 3)}</div>
+          <div><span className="text-gray-500">change%:</span> {fmt(c.change_percent)}%</div>
+          <div><span className="text-gray-500">catalysts:</span> {c.catalyst_count}</div>
+          <div><span className="text-gray-500">catalyst_type:</span> {c.catalyst_type ?? "—"}</div>
+          <div><span className="text-gray-500">sentiment:</span> {c.catalyst_sentiment ?? "—"}</div>
+          <div><span className="text-gray-500">mkt_trend:</span> {c.market_trend_direction ?? "—"} {c.market_trend_adjustment != null ? `(${c.market_trend_adjustment > 0 ? "+" : ""}${c.market_trend_adjustment})` : ""}</div>
+          <div><span className="text-gray-500">earn_days:</span> {c.earnings_days_until ?? "—"}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
+  const [openSym, setOpenSym] = useState<string | null>(null);
   if (candidates.length === 0)
     return <p className="text-gray-500 text-sm">No tick data yet. Run ⚡ Tick to see candidates.</p>;
 
@@ -1111,9 +1335,9 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
   );
 
   return (
-    <div className="overflow-x-auto">
+    <div>
       <p className="text-xs text-gray-600 mb-2">
-        Components: Qual=Quality(max 25) · Sprd=Spread(15) · Mom=Momentum(20) · Vol=Volume(15) · Cat=Catalyst(20) · Risk=penalty(−20 max)
+        Decision comparison — Engine / Deterministic Shadow / LLM Shadow. Click any row for full details.
       </p>
 
       {missedOpps.length > 0 && (
@@ -1129,209 +1353,136 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
         </div>
       )}
 
-      <table className="w-full text-sm text-left">
+      <table className="w-full text-sm text-left table-fixed">
+        <colgroup>
+          <col style={{ width: "7%" }} />   {/* Symbol */}
+          <col style={{ width: "9%" }} />   {/* Price/Chg */}
+          <col style={{ width: "13%" }} />  {/* Engine */}
+          <col style={{ width: "14%" }} />  {/* Det. Shadow */}
+          <col style={{ width: "14%" }} />  {/* LLM Shadow */}
+          <col style={{ width: "8%" }} />   {/* LLM Conf */}
+          <col style={{ width: "10%" }} />  {/* Agreement */}
+          <col style={{ width: "20%" }} />  {/* Key Reason */}
+          <col style={{ width: "5%" }} />   {/* Details */}
+        </colgroup>
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
             {[
-              {h:"Symbol", tip:"Ticker symbol"},
-              {h:"✓", tip:"Eligible flag"},
-              {h:"Mode", tip:"Entry mode"},
-              {h:"Action", tip:"Engine action"},
-              {h:"Score", tip:"Total score / threshold"},
-              {h:"Components", tip:"Score components"},
-              {h:"Earn Adj", tip:"Earnings score adjustment"},
-              {h:"Ins Adj", tip:"Insider score adjustment"},
-              {h:"Intel Adj", tip:"Intelligence (earnings + insider) adjustment total"},
-              {h:"Mkt Trend", tip:"Market trend adjustment direction"},
-              {h:"Spread%", tip:"Bid-ask spread percent"},
-              {h:"Chg%", tip:"Day change percent"},
-              {h:"Cats", tip:"Catalyst count"},
-              {h:"Type", tip:"Catalyst type"},
-              {h:"Sentiment", tip:"Catalyst sentiment"},
-              {h:"Engine Decision", tip:"Real paper engine decision / rejection reason"},
-              {h:"Enhanced Score", tip:"Deterministic enhanced shadow score — diagnostic only"},
-              {h:"Deterministic Shadow Decision", tip:"Deterministic shadow decision — rule-based, diagnostic only, does not place trades"},
-              {h:"Shadow Reason", tip:"Deterministic shadow reasoning"},
-              {h:"PRE rank/gap", tip:"Premarket rank and gap percent"},
-              {h:"Reddit rank/spike", tip:"Reddit mention rank and spike ratio"},
-              {h:"LLM Shadow Decision", tip:"LLM shadow analyst decision — diagnostic only, does not place trades"},
-              {h:"LLM Conf.", tip:"LLM confidence (0–1)"},
-              {h:"LLM Action", tip:"LLM recommended action"},
-              {h:"LLM Reason", tip:"LLM primary reason"},
-            ].map(({h, tip}) => (
-              <th key={h} title={tip} className={`pb-2 pr-2 font-medium whitespace-nowrap ${
-                ["Enhanced Score","Deterministic Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
-                  ? "text-emerald-600"
-                  : ["Earn Adj","Ins Adj","Intel Adj"].includes(h)
-                  ? "text-cyan-500"
-                  : h === "Mkt Trend"
-                  ? "text-amber-500"
-                  : ["LLM Shadow Decision","LLM Conf.","LLM Action","LLM Reason"].includes(h)
-                  ? "text-purple-400"
-                  : h === "Engine Decision"
-                  ? "text-gray-300"
-                  : ""
-              }`}>{h}</th>
+              { h: "Symbol",                          tip: "Ticker symbol",                                                                             cls: "" },
+              { h: "Price / Chg%",                    tip: "Last price and day change percent",                                                          cls: "" },
+              { h: "Engine Decision",                 tip: "Real paper engine decision and entry_mode / rejection",                                       cls: "text-gray-300" },
+              { h: "Deterministic Shadow",            tip: "Deterministic enhanced shadow — diagnostic only, does not place trades",                     cls: "text-emerald-500" },
+              { h: "LLM Shadow",                      tip: "LLM shadow analyst — diagnostic only, does not place trades",                                 cls: "text-purple-400" },
+              { h: "LLM Conf.",                       tip: "LLM confidence (0–1)",                                                                       cls: "text-purple-400" },
+              { h: "Agreement",                       tip: "Visual flag when Engine, Deterministic Shadow, and LLM Shadow disagree",                      cls: "text-orange-400" },
+              { h: "Key Reason / Status",             tip: "Short reason or status; click row for full details",                                          cls: "" },
+              { h: "",                                tip: "Toggle row details",                                                                          cls: "" },
+            ].map(({ h, tip, cls }) => (
+              <th key={h || "details"} title={tip} className={`pb-2 pr-2 font-medium text-xs ${cls}`}>
+                {h}
+              </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {candidates.map((c) => (
-            <tr key={c.symbol} className={`border-b border-gray-800 hover:bg-gray-800 ${
-              c.enhanced_shadow_decision === "WOULD_ENTER" && !c.eligible ? "bg-emerald-950/30" : ""
-            }`}>
-              <td className="py-2 pr-2 font-semibold text-yellow-300">{c.symbol}</td>
-              <td className="py-2 pr-2">
-                {c.eligible
-                  ? <span className="text-green-400 font-bold">✓</span>
-                  : <span className="text-red-400 font-bold">✗</span>}
-              </td>
-              <td className="py-2 pr-2 whitespace-nowrap">
-                {c.entry_mode === "momentum"
-                  ? <span className="text-purple-400 text-xs font-semibold px-1 rounded bg-purple-950 border border-purple-700">mom</span>
-                  : c.entry_mode === "catalyst"
-                  ? <span className="text-blue-400 text-xs font-semibold px-1 rounded bg-blue-950 border border-blue-700">cat</span>
-                  : c.momentum_eligible
-                  ? <span className="text-purple-600 text-xs font-mono">m?</span>
-                  : <span className="text-gray-600 text-xs">—</span>}
-              </td>
-              <td className="py-2 pr-2 text-blue-300 whitespace-nowrap">{c.action || "—"}</td>
-              <td className={`py-2 pr-2 font-mono font-semibold whitespace-nowrap ${scoreColor(c.total_score, c.score_threshold)}`}>
-                {c.total_score != null ? `${c.total_score} / ${c.score_threshold ?? "?"}` : "—"}
-              </td>
-              <td className="py-2 pr-2 font-mono text-xs text-gray-400 whitespace-nowrap">
-                {fmtComponents(c.score_components)}
-              </td>
-              <td className="py-2 pr-2 font-mono text-xs whitespace-nowrap" title={c.earnings_reason ?? "—"}>
-                {c.earnings_score_adjustment != null && c.earnings_score_adjustment !== 0
-                  ? <span className={c.earnings_score_adjustment < 0 ? "text-orange-400 font-semibold" : "text-green-400 font-semibold"}>
-                      {c.earnings_score_adjustment > 0 ? "+" : ""}{c.earnings_score_adjustment}
+          {candidates.map((c) => {
+            const isOpen = openSym === c.symbol;
+            const agree = computeAgreement(c);
+            const rowBg = agree.bucket === "missed_opportunity" || agree.bucket === "engine_vs_both"
+              ? "bg-orange-950/20"
+              : agree.bucket === "engine_vs_llm"
+              ? "bg-purple-950/20"
+              : "";
+            const detShadowBadge = c.enhanced_shadow_decision === "WOULD_ENTER"
+              ? "bg-emerald-900 text-emerald-300 border-emerald-700"
+              : c.enhanced_shadow_decision === "WATCH"
+              ? "bg-yellow-900 text-yellow-300 border-yellow-700"
+              : c.enhanced_shadow_decision === "WOULD_REJECT"
+              ? "bg-gray-800 text-gray-500 border-gray-700"
+              : "bg-gray-900 text-gray-600 border-gray-800";
+            const compactReason = c.llm_primary_reason
+              || c.rejection_reason
+              || c.decision_reason
+              || c.enhanced_shadow_reason
+              || c.llm_summary
+              || "—";
+            return (
+              <React.Fragment key={c.symbol}>
+                <tr
+                  onClick={() => setOpenSym(isOpen ? null : c.symbol)}
+                  className={`border-b border-gray-800 hover:bg-gray-800/60 cursor-pointer ${rowBg}`}
+                >
+                  {/* Symbol */}
+                  <td className="py-2 pr-2 font-semibold text-yellow-300 truncate">{c.symbol}</td>
+                  {/* Price / Chg% */}
+                  <td className="py-2 pr-2 font-mono text-xs">
+                    <div className="text-gray-300">
+                      {(() => {
+                        const lp = (c as unknown as Record<string, unknown>).last_trade_price as number | null | undefined;
+                        return lp != null ? `$${fmt(lp, 2)}` : "—";
+                      })()}
+                    </div>
+                    <div className={c.change_percent != null ? pnlClass(c.change_percent) : "text-gray-600"}>
+                      {c.change_percent != null ? `${c.change_percent > 0 ? "+" : ""}${c.change_percent.toFixed(2)}%` : "—"}
+                    </div>
+                  </td>
+                  {/* Engine Decision */}
+                  <td className="py-2 pr-2">{engineDecisionBadge(c)}</td>
+                  {/* Deterministic Shadow */}
+                  <td className="py-2 pr-2">
+                    {c.enhanced_shadow_decision ? (
+                      <div className="flex items-center gap-1">
+                        <span className={`text-xs font-semibold px-1.5 py-0.5 rounded border ${detShadowBadge}`}>
+                          {c.enhanced_shadow_decision}
+                        </span>
+                        {c.enhanced_shadow_score != null && (
+                          <span className="text-emerald-400 font-mono text-xs">{c.enhanced_shadow_score}</span>
+                        )}
+                      </div>
+                    ) : <span className="text-gray-600 text-xs">—</span>}
+                  </td>
+                  {/* LLM Shadow */}
+                  <td className="py-2 pr-2">
+                    <div className="flex flex-col gap-0.5">
+                      {llmDecisionBadge(c)}
+                      {c.llm_recommended_action && (
+                        <span className="text-purple-300 text-[10px] font-mono truncate">{c.llm_recommended_action}</span>
+                      )}
+                    </div>
+                  </td>
+                  {/* LLM Conf */}
+                  <td className="py-2 pr-2 font-mono text-xs text-purple-300">
+                    {c.llm_confidence != null ? `${Math.round(c.llm_confidence * 100)}%` : <span className="text-gray-600">—</span>}
+                  </td>
+                  {/* Agreement */}
+                  <td className="py-2 pr-2">
+                    <span title={agree.tip} className={`text-xs font-semibold px-1.5 py-0.5 rounded border whitespace-nowrap ${agree.cls}`}>
+                      {agree.label}
                     </span>
-                  : <span className="text-gray-600">0</span>}
-                {c.earnings_blocked && <span className="ml-1 text-red-400">⛔</span>}
-                {c.earnings_days_until != null && (
-                  <span className="text-gray-600 ml-1">({c.earnings_days_until}d)</span>
+                  </td>
+                  {/* Key Reason */}
+                  <td className="py-2 pr-2 text-xs text-gray-400 truncate" title={compactReason}>
+                    {compactReason}
+                  </td>
+                  {/* Details toggle */}
+                  <td className="py-2 pr-2 text-center">
+                    <span className="text-gray-400 text-xs">{isOpen ? "▾" : "▸"}</span>
+                  </td>
+                </tr>
+                {isOpen && (
+                  <tr className="border-b border-gray-800">
+                    <td colSpan={9} className="p-0">
+                      <CandidateDetailPanel c={c} />
+                    </td>
+                  </tr>
                 )}
-              </td>
-              <td className="py-2 pr-2 font-mono text-xs whitespace-nowrap" title={c.insider_reason ?? "—"}>
-                {c.insider_score_adjustment != null && c.insider_score_adjustment !== 0
-                  ? <span className={c.insider_score_adjustment > 0 ? "text-green-400 font-semibold" : "text-red-400 font-semibold"}>
-                      {c.insider_score_adjustment > 0 ? "+" : ""}{c.insider_score_adjustment}
-                    </span>
-                  : <span className="text-gray-600">0</span>}
-                {(c.insider_recent_buy_count ?? 0) > 0 && (
-                  <span className="text-gray-600 ml-1">(×{c.insider_recent_buy_count})</span>
-                )}
-              </td>
-              <td className="py-2 pr-2 font-mono text-xs font-semibold whitespace-nowrap"
-                  title={`base ${c.base_score_before_intelligence_adjustments ?? "—"} → final ${c.final_score_after_intelligence_adjustments ?? "—"}`}>
-                {c.intelligence_score_adjustment != null && c.intelligence_score_adjustment !== 0
-                  ? <span className={c.intelligence_score_adjustment > 0 ? "text-cyan-300" : "text-cyan-500"}>
-                      {c.intelligence_score_adjustment > 0 ? "+" : ""}{c.intelligence_score_adjustment}
-                    </span>
-                  : <span className="text-gray-600">0</span>}
-              </td>
-              <td className="py-2 pr-2 text-xs whitespace-nowrap"
-                  title={`${c.market_trend_reason ?? "—"} · regime_used=${c.market_trend_regime_used ?? "—"} · path=${c.market_trend_path_name ?? "—"}`}>
-                {c.market_trend_collecting || c.market_trend_direction === "unknown" || c.market_trend_direction == null ? (
-                  <span className="text-amber-400">collecting</span>
-                ) : (
-                  <span className={
-                    c.market_trend_direction === "improving" ? "text-green-400" :
-                    c.market_trend_direction === "deteriorating" ? "text-red-400" :
-                    "text-gray-400"
-                  }>
-                    {c.market_trend_direction}
-                    {c.market_trend_adjustment != null && c.market_trend_adjustment !== 0 && (
-                      <span className="ml-1 font-semibold">{c.market_trend_adjustment > 0 ? "+" : ""}{c.market_trend_adjustment}</span>
-                    )}
-                    {c.market_trend_regime_used && (
-                      <span className="ml-1 text-gray-600">[{c.market_trend_regime_used === "trend_adjusted" ? "adj" : "raw"}]</span>
-                    )}
-                  </span>
-                )}
-              </td>
-              <td className="py-2 pr-2 font-mono">{fmt(c.spread_percent, 3)}</td>
-              <td className={`py-2 pr-2 font-mono ${c.change_percent != null ? pnlClass(c.change_percent) : ""}`}>
-                {fmt(c.change_percent)}%
-              </td>
-              <td className="py-2 pr-2 font-mono">{c.catalyst_count}</td>
-              <td className="py-2 pr-2 text-blue-300">{c.catalyst_type || "—"}</td>
-              <td className="py-2 pr-2 whitespace-nowrap" title={
-                c.catalyst_sentiment_reasons?.join("; ") ?? undefined
-              }>
-                {sentimentBadge(c.catalyst_sentiment)}
-                {c.catalyst_materiality_score != null && (
-                  <span className="text-gray-600 text-xs ml-1">{fmt(c.catalyst_materiality_score, 2)}</span>
-                )}
-              </td>
-              <td className="py-2 pr-2 text-xs max-w-xs truncate">
-                {c.catalyst_type_blocked && (
-                  <span className="mr-1 px-1 py-0.5 rounded text-xs font-semibold bg-orange-900 text-orange-300">
-                    BLOCKED
-                  </span>
-                )}
-                <span className={c.catalyst_type_blocked ? "text-orange-400" : "text-gray-400"}>
-                  {c.rejection_reason || c.decision_reason || "—"}
-                </span>
-              </td>
-              {/* Shadow columns — diagnostic only, not used for trading */}
-              <td className="py-2 pr-2 font-mono font-semibold text-emerald-400 whitespace-nowrap">
-                {c.enhanced_shadow_score != null ? c.enhanced_shadow_score : "—"}
-                {c.enhanced_shadow_confidence && (
-                  <span className="ml-1 text-gray-600 text-xs">{c.enhanced_shadow_confidence[0]}</span>
-                )}
-              </td>
-              <td className="py-2 pr-2 whitespace-nowrap">
-                {shadowDecisionBadge(c.enhanced_shadow_decision)}
-              </td>
-              <td className="py-2 pr-2 text-xs text-gray-500 max-w-[180px] truncate" title={c.enhanced_shadow_reason ?? undefined}>
-                {c.enhanced_shadow_reason || "—"}
-              </td>
-              <td className="py-2 pr-2 text-xs whitespace-nowrap">
-                {c.premarket_rank != null
-                  ? <span className="text-indigo-300">#{c.premarket_rank} {c.premarket_gap_percent != null ? `${c.premarket_gap_percent > 0 ? "+" : ""}${c.premarket_gap_percent.toFixed(1)}%` : ""}</span>
-                  : <span className="text-gray-600">—</span>}
-              </td>
-              <td className="py-2 pr-2 text-xs whitespace-nowrap">
-                {c.reddit_rank != null
-                  ? <span className="text-pink-300">#{c.reddit_rank}{c.reddit_spike_ratio != null ? ` ×${c.reddit_spike_ratio.toFixed(1)}` : ""}</span>
-                  : <span className="text-gray-600">—</span>}
-              </td>
-              {/* Phase L1: LLM Shadow Analyst columns (diagnostic only) */}
-              <td className="py-2 pr-2 text-xs whitespace-nowrap" title={c.llm_summary ?? c.llm_status ?? ""}>
-                {c.llm_status === "disabled" ? (
-                  <span className="text-gray-600">LLM inactive</span>
-                ) : c.llm_status === "missing_api_key" ? (
-                  <span className="text-yellow-500">LLM key missing</span>
-                ) : c.llm_status === "not_selected" ? (
-                  <span className="text-gray-600">not selected</span>
-                ) : c.llm_status === "error" ? (
-                  <span className="text-red-400">LLM err</span>
-                ) : c.llm_decision === "WOULD_ENTER" ? (
-                  <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-purple-900 text-purple-200 border border-purple-700">WOULD_ENTER</span>
-                ) : c.llm_decision === "WATCH" ? (
-                  <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-900 text-yellow-300 border border-yellow-700">WATCH</span>
-                ) : c.llm_decision === "WOULD_REJECT" ? (
-                  <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-gray-800 text-gray-500 border border-gray-700">REJECT</span>
-                ) : <span className="text-gray-600">—</span>}
-              </td>
-              <td className="py-2 pr-2 text-xs whitespace-nowrap font-mono">
-                {c.llm_confidence != null ? c.llm_confidence.toFixed(2) : <span className="text-gray-600">—</span>}
-              </td>
-              <td className="py-2 pr-2 text-xs whitespace-nowrap text-purple-300">
-                {c.llm_recommended_action ?? <span className="text-gray-600">—</span>}
-              </td>
-              <td className="py-2 pr-2 text-xs text-gray-400 max-w-[220px] truncate"
-                  title={c.llm_primary_reason ?? c.llm_summary ?? ""}>
-                {c.llm_primary_reason ?? c.llm_summary ?? <span className="text-gray-600">—</span>}
-              </td>
-            </tr>
-          ))}
+              </React.Fragment>
+            );
+          })}
         </tbody>
       </table>
       <p className="text-xs text-gray-700 mt-2 italic">
-        Shadow only — not used for trading decisions. Enhanced score is independent of engine eligible/action/entry_mode.
+        Shadow only — not used for trading decisions. Engine, Deterministic Shadow, and LLM Shadow are independent. Click any row for full details.
       </p>
     </div>
   );
