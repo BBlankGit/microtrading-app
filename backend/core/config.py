@@ -111,6 +111,26 @@ class Settings(BaseSettings):
     MARKET_TREND_APPLY_TO_MARKET_MOVER: bool = True
     MARKET_TREND_APPLY_TO_CATALYST: bool = False
     MARKET_TREND_APPLY_TO_SHADOW: bool = True
+
+    # Phase L1 — LLM Shadow Analyst (diagnostic only, never affects entries/exits)
+    LLM_SHADOW_ENABLED: bool = False
+    LLM_PROVIDER: str = "openai"
+    LLM_MODEL: str = "gpt-4.1-mini"
+    LLM_API_KEY_ENV: str = "OPENAI_API_KEY"
+    LLM_SHADOW_MAX_CANDIDATES_PER_TICK: int = 5
+    LLM_SHADOW_MIN_ENGINE_SCORE: int = 60
+    LLM_SHADOW_INCLUDE_REJECTED_NEAR_MISSES: bool = True
+    LLM_SHADOW_INCLUDE_OPEN_POSITIONS: bool = False
+    LLM_SHADOW_TIMEOUT_SECONDS: int = 8
+    LLM_SHADOW_MAX_RETRIES: int = 1
+    LLM_SHADOW_CACHE_TTL_SECONDS: int = 300
+    LLM_SHADOW_MAX_NEWS_ITEMS_PER_SYMBOL: int = 5
+    LLM_SHADOW_MAX_INTRADAY_POINTS: int = 20
+    LLM_SHADOW_DECISION_THRESHOLD_ENTER: float = 0.70
+    LLM_SHADOW_LOG_PROMPTS: bool = False
+    LLM_SHADOW_LOG_RESPONSES: bool = True
+    LLM_SHADOW_REDACT_SECRETS: bool = True
+    LLM_SHADOW_PROMPT_VERSION: str = "l1-v1"
     MARKET_REGIME_MAX_RISK_OFF_SCORE: int = 40
 
     # Catalyst sentiment (Phase 2I — no AI/LLM, deterministic rules only)

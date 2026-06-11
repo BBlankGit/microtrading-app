@@ -165,6 +165,22 @@ interface Candidate {
   market_mover_regime_used?: string | null;
   market_mover_risk_score_used?: number | null;
   market_mover_regime_label_used?: string | null;
+  // Phase L1 LLM Shadow Analyst (diagnostic only)
+  llm_status?: string | null;
+  llm_decision?: "WOULD_ENTER" | "WATCH" | "WOULD_REJECT" | null;
+  llm_confidence?: number | null;
+  llm_recommended_action?: string | null;
+  llm_primary_reason?: string | null;
+  llm_summary?: string | null;
+  llm_agrees_with_engine?: boolean | null;
+  llm_agrees_with_shadow?: boolean | null;
+  llm_score_adjustment_suggestion?: number | null;
+  llm_directional_bias?: string | null;
+  llm_impact_assessment?: string | null;
+  llm_latency_ms?: number | null;
+  llm_cached?: boolean | null;
+  llm_model?: string | null;
+  llm_error?: string | null;
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -1117,7 +1133,8 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
         <thead className="text-gray-400 border-b border-gray-700">
           <tr>
             {["Symbol","✓","Mode","Action","Score","Components","Earn Adj","Ins Adj","Intel Adj","Mkt Trend","Spread%","Chg%","Cats","Type","Sentiment","Decision / Rejection",
-              "Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].map((h) => (
+              "Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike",
+              "LLM Decision","LLM Conf.","LLM Action","LLM Reason"].map((h) => (
               <th key={h} className={`pb-2 pr-2 font-medium whitespace-nowrap ${
                 ["Enhanced Score","Shadow Decision","Shadow Reason","PRE rank/gap","Reddit rank/spike"].includes(h)
                   ? "text-emerald-600"
@@ -1125,6 +1142,8 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                   ? "text-cyan-500"
                   : h === "Mkt Trend"
                   ? "text-amber-500"
+                  : ["LLM Decision","LLM Conf.","LLM Action","LLM Reason"].includes(h)
+                  ? "text-purple-400"
                   : ""
               }`}>{h}</th>
             ))}
@@ -1252,6 +1271,34 @@ function CandidatesTable({ candidates }: { candidates: Candidate[] }) {
                 {c.reddit_rank != null
                   ? <span className="text-pink-300">#{c.reddit_rank}{c.reddit_spike_ratio != null ? ` ×${c.reddit_spike_ratio.toFixed(1)}` : ""}</span>
                   : <span className="text-gray-600">—</span>}
+              </td>
+              {/* Phase L1: LLM Shadow Analyst columns (diagnostic only) */}
+              <td className="py-2 pr-2 text-xs whitespace-nowrap" title={c.llm_summary ?? c.llm_status ?? ""}>
+                {c.llm_status === "disabled" ? (
+                  <span className="text-gray-600">LLM inactive</span>
+                ) : c.llm_status === "missing_api_key" ? (
+                  <span className="text-yellow-500">LLM key missing</span>
+                ) : c.llm_status === "not_selected" ? (
+                  <span className="text-gray-600">not selected</span>
+                ) : c.llm_status === "error" ? (
+                  <span className="text-red-400">LLM err</span>
+                ) : c.llm_decision === "WOULD_ENTER" ? (
+                  <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-purple-900 text-purple-200 border border-purple-700">WOULD_ENTER</span>
+                ) : c.llm_decision === "WATCH" ? (
+                  <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-yellow-900 text-yellow-300 border border-yellow-700">WATCH</span>
+                ) : c.llm_decision === "WOULD_REJECT" ? (
+                  <span className="px-1.5 py-0.5 rounded text-xs font-bold bg-gray-800 text-gray-500 border border-gray-700">REJECT</span>
+                ) : <span className="text-gray-600">—</span>}
+              </td>
+              <td className="py-2 pr-2 text-xs whitespace-nowrap font-mono">
+                {c.llm_confidence != null ? c.llm_confidence.toFixed(2) : <span className="text-gray-600">—</span>}
+              </td>
+              <td className="py-2 pr-2 text-xs whitespace-nowrap text-purple-300">
+                {c.llm_recommended_action ?? <span className="text-gray-600">—</span>}
+              </td>
+              <td className="py-2 pr-2 text-xs text-gray-400 max-w-[220px] truncate"
+                  title={c.llm_primary_reason ?? c.llm_summary ?? ""}>
+                {c.llm_primary_reason ?? c.llm_summary ?? <span className="text-gray-600">—</span>}
               </td>
             </tr>
           ))}
@@ -4632,21 +4679,113 @@ function InsidersTab({ token }: { token: string }) {
   );
 }
 
+interface LLMStatus {
+  enabled: boolean;
+  provider: string;
+  model: string;
+  api_key_env: string;
+  api_key_present: boolean;
+  max_candidates_per_tick: number;
+  calls_total: number;
+  calls_last_tick: number;
+  calls_success: number;
+  calls_error: number;
+  cache_hits: number;
+  cache_misses: number;
+  average_latency_ms: number | null;
+  last_call_at: string | null;
+  last_success_at: string | null;
+  last_error: string | null;
+  last_model_used: string | null;
+  prompt_version: string;
+  disclaimer: string;
+}
+
 function LLMPlaceholderTab() {
+  const [data, setData] = useState<LLMStatus | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const fetchStatus = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await fetch("/api/intelligence/llm/status");
+      if (r.ok) setData(await r.json());
+    } catch { /* ignore */ } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+    const id = setInterval(fetchStatus, 30_000);
+    return () => clearInterval(id);
+  }, [fetchStatus]);
+
+  if (!data && loading) {
+    return <div className="text-center py-8 text-gray-500 text-sm animate-pulse">Loading LLM status…</div>;
+  }
+
+  const statusLabel = !data ? "unknown"
+    : !data.enabled ? "DISABLED"
+    : !data.api_key_present ? "KEY MISSING"
+    : data.last_error ? "ENABLED · last call errored"
+    : "ENABLED";
+  const statusColor = !data ? "text-gray-500"
+    : !data.enabled ? "bg-gray-800 text-gray-400 border-gray-600"
+    : !data.api_key_present ? "bg-yellow-900 text-yellow-300 border-yellow-700"
+    : data.last_error ? "bg-orange-900 text-orange-300 border-orange-700"
+    : "bg-green-900 text-green-300 border-green-700";
+
   return (
-    <div className="text-center py-10 text-gray-400 border border-dashed border-purple-800 rounded bg-purple-950/30">
-      <div className="text-4xl mb-3">🤖</div>
-      <p className="text-lg font-semibold text-purple-300">LLM Analysis — not active</p>
-      <p className="text-sm mt-2 max-w-xl mx-auto">
-        Future phase: AI-based news/catalyst impact analysis. A model would classify impact as high / medium / low
-        and explain why.
-      </p>
-      <p className="text-xs mt-3 text-purple-400">
-        No OpenAI / Anthropic / Ollama / LLM calls are made in this phase.
-      </p>
-      <p className="text-xs mt-1 text-gray-600">
-        Current news/catalyst scoring is deterministic / rule-based only.
-      </p>
+    <div className="space-y-4">
+      <div className="rounded border border-purple-900 bg-purple-950/30 px-3 py-2 text-xs text-purple-300">
+        <span className="font-semibold">LLM Shadow Analyst.</span>{" "}
+        Diagnostic only — does not affect entries, exits, or position sizing. The model reviews structured data
+        and returns WOULD_ENTER / WATCH / WOULD_REJECT plus reasoning. Cache-first; max-per-tick capped.
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${statusColor}`}>
+          Status: {statusLabel}
+        </span>
+        <span className="text-xs text-gray-400 border border-gray-700 rounded px-2 py-0.5">
+          Provider: <span className="font-mono">{data?.provider ?? "—"}</span>
+        </span>
+        <span className="text-xs text-gray-400 border border-gray-700 rounded px-2 py-0.5">
+          Model: <span className="font-mono">{data?.model ?? "—"}</span>
+        </span>
+        <span className={`text-xs px-2 py-0.5 rounded border font-mono ${
+          data?.api_key_present
+            ? "bg-green-950 text-green-400 border-green-800"
+            : "bg-gray-800 text-gray-500 border-gray-600"
+        }`}>
+          Key ({data?.api_key_env ?? "?"}): {data?.api_key_present ? "present" : "missing"}
+        </span>
+        <span className="text-xs text-gray-500 border border-gray-700 rounded px-2 py-0.5">
+          Max/tick: {data?.max_candidates_per_tick ?? "—"}
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <StatBox label="Calls (total)" value={String(data?.calls_total ?? 0)} />
+        <StatBox label="Calls (last tick)" value={String(data?.calls_last_tick ?? 0)} />
+        <StatBox label="Cache hits" value={String(data?.cache_hits ?? 0)} cls="text-green-400" />
+        <StatBox label="Cache misses" value={String(data?.cache_misses ?? 0)} cls="text-gray-400" />
+        <StatBox label="Success" value={String(data?.calls_success ?? 0)} cls="text-green-400" />
+        <StatBox label="Errors" value={String(data?.calls_error ?? 0)} cls={(data?.calls_error ?? 0) > 0 ? "text-red-400" : "text-gray-400"} />
+        <StatBox label="Avg latency" value={data?.average_latency_ms != null ? `${data.average_latency_ms} ms` : "—"} />
+        <StatBox label="Prompt version" value={data?.prompt_version ?? "—"} />
+      </div>
+
+      {data?.last_error && (
+        <div className="rounded border border-orange-700 bg-orange-950 px-3 py-2 text-xs text-orange-300 font-mono">
+          last_error: {data.last_error}
+        </div>
+      )}
+
+      <div className="text-xs text-gray-500">
+        <p>Last call: {data?.last_call_at ?? "—"}</p>
+        <p>Last success: {data?.last_success_at ?? "—"}</p>
+        <p className="italic mt-1">{data?.disclaimer ?? "LLM shadow only; does not affect trading decisions."}</p>
+      </div>
     </div>
   );
 }

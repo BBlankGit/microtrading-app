@@ -1849,6 +1849,78 @@ async def run_tick() -> dict[str, Any]:
     }
     _state["last_shadow_stats"] = result["enhanced_shadow_stats"]
 
+    # ── 4c. Phase L1: LLM Shadow Analyst (diagnostic only) ──────────────────
+    # Initializes safe defaults on every candidate, then — only when enabled
+    # AND the API key is present — picks up to N candidates and analyzes them.
+    # The LLM output never modifies eligible/action/entry_mode.
+    try:
+        from intelligence import llm_shadow as _llm_mod
+        _llm_default = _llm_mod.default_not_selected_result()
+        if not _llm_mod.is_enabled():
+            _llm_default = {**_llm_default, "llm_status": "disabled"}
+        elif not _llm_mod.api_key_present():
+            _llm_default = {**_llm_default, "llm_status": "missing_api_key"}
+        for c in result["candidates"]:
+            for k, v in _llm_default.items():
+                c.setdefault(k, v)
+        _llm_mod.reset_tick_counters()
+
+        if _llm_mod.is_enabled() and _llm_mod.api_key_present():
+            try:
+                _open_syms = {p.symbol for p in _account.positions.values()}
+            except Exception:
+                _open_syms = set()
+            _blocked_set = set(_blocked_cat_types or [])
+            _picked = _llm_mod.select_candidates_for_llm(
+                result["candidates"],
+                open_position_symbols=_open_syms,
+                blocked_catalyst_types=_blocked_set,
+            )
+            _acct_summary = {
+                "open_position_count": len(_open_syms),
+                "symbols_open": _open_syms,
+                "account_cash": getattr(_account, "cash", None),
+                "account_equity": getattr(_account, "equity", None),
+                "daily_realized_pnl": getattr(_account, "daily_realized_pnl", None),
+                "daily_loss_guard_triggered": bool(_guard.get("triggered")) if _guard else None,
+            }
+
+            async def _analyze_one(c: dict) -> tuple[str, dict]:
+                packet = _llm_mod.build_candidate_packet(
+                    c,
+                    market_regime=_tick_regime,
+                    market_trend=_tick_trend,
+                    account_summary=_acct_summary,
+                    news_items_by_symbol=None,
+                    earnings_by_symbol=_earnings_by_symbol,
+                    insiders_by_symbol=_insider_txns_by_symbol,
+                    reddit_lookup=_shadow_reddit_snap,
+                    premarket_lookup=_shadow_pm_lookup,
+                    intraday_history=None,
+                )
+                res = await _llm_mod.analyze_candidate_packet(packet)
+                _llm_mod.record_tick_call()
+                return (c.get("symbol") or "").upper(), res
+
+            _results = await asyncio.gather(
+                *[_analyze_one(c) for c in _picked], return_exceptions=True
+            )
+            _by_sym: dict[str, dict] = {}
+            for r in _results:
+                if isinstance(r, Exception):
+                    continue
+                sym, payload = r
+                if sym:
+                    _by_sym[sym] = payload
+            for c in result["candidates"]:
+                sym = (c.get("symbol") or "").upper()
+                if sym in _by_sym:
+                    for k, v in _by_sym[sym].items():
+                        c[k] = v
+    except Exception as exc:
+        # Defensive: LLM layer must never break a tick.
+        logger.warning("LLM shadow layer failed defensively: %s", type(exc).__name__)
+
     # ── 5. Update in-memory state ─────────────────────────────────────────────
     result["exits_made"] = len(result["exits"])
     result["entries_made"] = len(result["entries"])
