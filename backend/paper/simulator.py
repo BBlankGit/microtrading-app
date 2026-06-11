@@ -34,6 +34,12 @@ logger = logging.getLogger(__name__)
 _REDIS_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:state:v2"
 _DESIRED_RUNNING_KEY = f"{settings.PAPER_STATE_REDIS_NAMESPACE}:desired_running"
 
+# Phase N1-H1: hard-wired safe sessions for market_mover_no_catalyst.
+# These are the only sessions where the volume gate is fully defined.
+# Runtime config PAPER_MARKET_MOVER_ALLOWED_SESSIONS is intersected with this
+# set so that a misconfigured operator cannot bypass the session guard.
+_MM_SAFE_SESSIONS: frozenset[str] = frozenset({"premarket", "regular"})
+
 
 def _ny_trading_date() -> str:
     """Return current calendar date in America/New_York as YYYY-MM-DD."""
@@ -1000,6 +1006,8 @@ async def run_tick() -> dict[str, Any]:
             _mm_entry_vol_gate_type: str | None = None
             _mm_entry_vol_ratio_used: float | None = None
             _mm_entry_size_mult: float | None = None
+            _mm_unsafe_sessions_warning: str | None = None
+            _mm_risk_off_allowed: bool | None = None
 
             if (
                 bool(_cfg("PAPER_MARKET_MOVER_ENTRY_ENABLED"))
@@ -1008,13 +1016,43 @@ async def run_tick() -> dict[str, Any]:
             ):
                 _mm_entry_checked = True
                 _mm_entry_session = _tick_session_type
-                _mm_allowed = [s.strip() for s in str(_cfg("PAPER_MARKET_MOVER_ALLOWED_SESSIONS")).split(",") if s.strip()]
 
-                if _tick_session_type not in _mm_allowed:
-                    _mm_entry_reason = "session_not_allowed"
-                    _mm_entry_blockers = [f"session_{_tick_session_type}_not_in_allowed"]
+                # N1-H1: normalize configured sessions and intersect with safe set.
+                # Unsafe values (afterhours, closed, non_regular, overnight, unknown)
+                # are silently stripped and exposed as a warning — never allowed.
+                _mm_raw_sessions = frozenset(
+                    s.strip().lower()
+                    for s in str(_cfg("PAPER_MARKET_MOVER_ALLOWED_SESSIONS")).split(",")
+                    if s.strip()
+                )
+                _mm_configured_safe = _mm_raw_sessions & _MM_SAFE_SESSIONS
+                _mm_configured_unsafe = _mm_raw_sessions - _MM_SAFE_SESSIONS
+                if _mm_configured_unsafe:
+                    _mm_unsafe_sessions_warning = (
+                        f"Unsafe market mover sessions ignored: "
+                        f"{', '.join(sorted(_mm_configured_unsafe))}"
+                    )
+
+                # Hard block: session is not in the safe set at all.
+                if _tick_session_type not in _MM_SAFE_SESSIONS:
+                    _mm_entry_reason = "market_mover_session_not_allowed"
+                    _mm_entry_blockers = ["session_hard_blocked"]
+                # Config block: session is safe but operator disabled it via config.
+                elif _tick_session_type not in _mm_configured_safe:
+                    _mm_entry_reason = "market_mover_session_not_allowed"
+                    _mm_entry_blockers = ["session_not_allowed_by_config"]
                 else:
                     _mm_blockers: list[str] = []
+
+                    # Risk-off gate (Phase N1-H1): block when regime is risk_off and
+                    # PAPER_MARKET_MOVER_ALLOW_RISK_OFF=false.
+                    _mm_risk_off_allowed = bool(_cfg("PAPER_MARKET_MOVER_ALLOW_RISK_OFF"))
+                    if (
+                        not _mm_risk_off_allowed
+                        and _tick_regime is not None
+                        and _tick_regime.get("regime") == "risk_off"
+                    ):
+                        _mm_blockers.append("risk_off_blocked")
 
                     # Rank check
                     _mm_rank = _mm_meta.get("market_mover_rank")
@@ -1054,7 +1092,10 @@ async def run_tick() -> dict[str, Any]:
                                 and _mm_bearish_mat >= float(_cfg("PAPER_BEARISH_CATALYST_REJECT_MATERIALITY"))):
                             _mm_blockers.append("strong_bearish_blocked")
 
-                    # Session-specific volume gate
+                    # Session-specific volume gate — only reachable for safe sessions.
+                    # regular → time-adjusted volume ratio required.
+                    # premarket → volume_vs_prev or dollar_volume required.
+                    # Any other value cannot reach here (hard-blocked above).
                     _mm_day_vol = q.get("day_volume") or 0
                     _mm_prev_vol = q.get("previous_day_volume") or 0
                     _mm_price = q.get("last_trade_price") or q.get("ask") or 0
@@ -1175,6 +1216,8 @@ async def run_tick() -> dict[str, Any]:
                 "market_mover_entry_volume_gate_type": _mm_entry_vol_gate_type,
                 "market_mover_entry_volume_ratio_used": _mm_entry_vol_ratio_used,
                 "market_mover_entry_position_size_multiplier": _mm_entry_size_mult,
+                "market_mover_unsafe_sessions_warning": _mm_unsafe_sessions_warning,
+                "market_mover_risk_off_allowed": _mm_risk_off_allowed,
                 # Premarket volume metrics (useful for market mover diagnostics)
                 "volume_vs_previous_day_ratio": (
                     round((q.get("day_volume") or 0) / (q.get("previous_day_volume") or 1), 4)

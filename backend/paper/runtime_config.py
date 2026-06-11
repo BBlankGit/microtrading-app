@@ -478,8 +478,10 @@ _SCHEMA: dict[str, dict] = {
     "PAPER_MARKET_MOVER_ALLOWED_SESSIONS": {
         "type": "str", "min": None, "max": None,
         "description": (
-            "Comma-separated list of session types allowed for market mover entries. "
-            "Allowed values: premarket, regular. Afterhours/closed/non_regular always blocked."
+            "Comma-separated list of session types allowed for market mover no-catalyst entries. "
+            "Safe values: premarket, regular. Any other value (afterhours, closed, non_regular, "
+            "overnight, unknown) is silently stripped at evaluation time and exposed as a "
+            "warning — unsafe sessions are hard-blocked regardless of this setting."
         ),
         "category": "market_mover",
         "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,

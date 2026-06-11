@@ -342,7 +342,7 @@ def test_afterhours_session_blocks_market_mover_entry():
         c = _aapl(result)
         assert c.get("market_mover_entry_checked") is True, f"checked not True for session={session}"
         assert c.get("market_mover_entry_eligible") is False, f"eligible should be False for session={session}"
-        assert c.get("market_mover_entry_reason") == "session_not_allowed", f"wrong reason for session={session}"
+        assert c.get("market_mover_entry_reason") == "market_mover_session_not_allowed", f"wrong reason for session={session}"
         assert c.get("action") is None, f"action should be None for session={session}"
 
 
