@@ -285,6 +285,49 @@ async def monitoring_status():
     except Exception as exc:
         marketdata_cache = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # ── Market mover no-catalyst mode status (Phase N1) ──────────────────────
+    market_mover_mode: dict = {}
+    try:
+        from paper.runtime_config import effective_value as _cfg_mm
+        _mm_enabled = bool(_cfg_mm("PAPER_MARKET_MOVER_ENTRY_ENABLED"))
+        _last_cands = sim_status.get("last_candidates", [])
+        _mm_checked_last = sum(1 for c in _last_cands if c.get("market_mover_entry_checked"))
+        _mm_blockers_last: dict[str, int] = {}
+        for _c in _last_cands:
+            if _c.get("market_mover_entry_checked") and not _c.get("market_mover_entry_eligible"):
+                for _b in (_c.get("market_mover_entry_blockers") or []):
+                    _mm_blockers_last[_b] = _mm_blockers_last.get(_b, 0) + 1
+        market_mover_mode = {
+            "enabled": _mm_enabled,
+            "allowed_sessions": _cfg_mm("PAPER_MARKET_MOVER_ALLOWED_SESSIONS"),
+            "top_rank_max": _cfg_mm("PAPER_MARKET_MOVER_TOP_RANK_MAX"),
+            "min_change_percent": _cfg_mm("PAPER_MARKET_MOVER_MIN_CHANGE_PERCENT"),
+            "max_change_percent": _cfg_mm("PAPER_MARKET_MOVER_MAX_CHANGE_PERCENT"),
+            "min_time_adj_volume_ratio": _cfg_mm("PAPER_MARKET_MOVER_MIN_TIME_ADJ_VOLUME_RATIO"),
+            "min_premarket_volume_vs_prev_day": _cfg_mm("PAPER_MARKET_MOVER_MIN_PREMARKET_VOLUME_VS_PREV_DAY_RATIO"),
+            "min_dollar_volume": _cfg_mm("PAPER_MARKET_MOVER_MIN_DOLLAR_VOLUME"),
+            "max_spread_percent": _cfg_mm("PAPER_MARKET_MOVER_MAX_SPREAD_PERCENT"),
+            "min_score": _cfg_mm("PAPER_MARKET_MOVER_MIN_SCORE"),
+            "position_size_multiplier": _cfg_mm("PAPER_MARKET_MOVER_POSITION_SIZE_MULTIPLIER"),
+            "max_trades_per_day": _cfg_mm("PAPER_MARKET_MOVER_MAX_TRADES_PER_DAY"),
+            "block_if_any_bearish": _cfg_mm("PAPER_MARKET_MOVER_BLOCK_IF_ANY_BEARISH"),
+            "allow_risk_off": _cfg_mm("PAPER_MARKET_MOVER_ALLOW_RISK_OFF"),
+            "market_mover_no_catalyst_entries_today": sim_status.get("today_market_mover_no_catalyst_entry_count", 0),
+            "market_mover_no_catalyst_candidates_last_tick": _mm_checked_last,
+            "market_mover_no_catalyst_blockers_last_tick": _mm_blockers_last,
+            "disclaimer": (
+                "High-risk no-catalyst full-market mover path — fake-money only. "
+                "No live trading. No real-money execution. Simulation-only path."
+            ),
+        }
+        if _mm_enabled:
+            warnings.append(
+                "Market mover no-catalyst entry is ENABLED — fake-money simulation only. "
+                "No live trading. No real-money execution. High-risk path."
+            )
+    except Exception as exc:
+        market_mover_mode = {"enabled": False, "error": f"{type(exc).__name__}: {exc}"}
+
     # ── Enhanced shadow scoring stats (Phase I4-A — diagnostic only) ─────────
     shadow_stats: dict = {}
     try:
@@ -335,6 +378,7 @@ async def monitoring_status():
         "runtime_config": runtime_config_status,
         "momentum_mode": momentum_mode,
         "no_catalyst_mode": no_catalyst_mode,
+        "market_mover_mode": market_mover_mode,
         "catalyst_type_guard": catalyst_type_guard,
         "daily_loss_guard": daily_loss_guard,
         "marketdata_cache": marketdata_cache,

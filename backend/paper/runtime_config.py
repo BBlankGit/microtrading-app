@@ -465,6 +465,115 @@ _SCHEMA: dict[str, dict] = {
         "category": "quality",
         "runtime_applied": True, "applies_to": "scoring", "restart_required": False,
     },
+    # Session-aware market mover no-catalyst entry path (Phase N1 — fake-money only, no broker, no real orders)
+    "PAPER_MARKET_MOVER_ENTRY_ENABLED": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Enable the market_mover_no_catalyst entry path for full-market mover symbols without "
+            "accepted catalyst coverage. Fake-money simulation only. No broker. No real orders."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_ALLOWED_SESSIONS": {
+        "type": "str", "min": None, "max": None,
+        "description": (
+            "Comma-separated list of session types allowed for market mover entries. "
+            "Allowed values: premarket, regular. Afterhours/closed/non_regular always blocked."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_TOP_RANK_MAX": {
+        "type": "int", "min": 1, "max": 200,
+        "description": "Maximum full-market mover rank (by gap%) to be eligible for this path.",
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MIN_CHANGE_PERCENT": {
+        "type": "float", "min": 0.0, "max": 50.0,
+        "description": "Minimum intraday change% required for market mover no-catalyst entry.",
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MAX_CHANGE_PERCENT": {
+        "type": "float", "min": 5.0, "max": 1000.0,
+        "description": "Maximum intraday change% allowed (filters extreme/erroneous movers).",
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MIN_TIME_ADJ_VOLUME_RATIO": {
+        "type": "float", "min": 0.0, "max": 50.0,
+        "description": (
+            "Minimum time-adjusted volume ratio required during regular session for market mover entry. "
+            "Higher than the general TA vol gate to ensure only strongly-confirmed movers are entered."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MIN_PREMARKET_VOLUME_VS_PREV_DAY_RATIO": {
+        "type": "float", "min": 0.0, "max": 1.0,
+        "description": (
+            "Minimum premarket volume as fraction of previous full day volume. "
+            "Used during premarket session as primary volume gate."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MIN_DOLLAR_VOLUME": {
+        "type": "int", "min": 0, "max": 1_000_000_000,
+        "description": (
+            "Minimum dollar volume (day_volume × price) for premarket market mover entry. "
+            "Used as fallback when volume_vs_previous_day_ratio is unavailable."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MAX_SPREAD_PERCENT": {
+        "type": "float", "min": 0.0, "max": 5.0,
+        "description": "Maximum bid-ask spread% for market mover no-catalyst entry.",
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MIN_SCORE": {
+        "type": "int", "min": 0, "max": 150,
+        "description": (
+            "Minimum composite score required for market mover no-catalyst entry. "
+            "Lower than the main catalyst threshold — this path collects fake-money data on strong movers."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_POSITION_SIZE_MULTIPLIER": {
+        "type": "float", "min": 0.05, "max": 1.0,
+        "description": (
+            "Position size multiplier for market mover no-catalyst entries (fraction of normal size). "
+            "Smaller than other paths — high-risk no-catalyst movers use reduced sizing."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_MAX_TRADES_PER_DAY": {
+        "type": "int", "min": 0, "max": 100,
+        "description": "Maximum market_mover_no_catalyst entries per calendar day.",
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_BLOCK_IF_ANY_BEARISH": {
+        "type": "bool", "min": None, "max": None,
+        "description": "Block market mover entry if strong bearish catalyst sentiment is detected.",
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
+    "PAPER_MARKET_MOVER_ALLOW_RISK_OFF": {
+        "type": "bool", "min": None, "max": None,
+        "description": (
+            "Allow market mover no-catalyst entries even when market regime is risk-off. "
+            "True = enter regardless of regime (movers are event-driven, not regime-dependent)."
+        ),
+        "category": "market_mover",
+        "runtime_applied": True, "applies_to": "market_mover", "restart_required": False,
+    },
 }
 
 # Sentinel: fields that map to settings attributes under different names

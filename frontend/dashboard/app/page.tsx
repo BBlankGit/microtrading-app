@@ -1546,6 +1546,23 @@ const TA_VOLUME_FIELDS: Array<{ key: string; label: string; type: "bool" | "floa
 ];
 
 // No-Catalyst Momentum Entry fields (Phase 2N/2O — read-only display, currently active path)
+const MARKET_MOVER_FIELDS: Array<{ key: string; label: string; type: "bool" | "int" | "float" | "str" }> = [
+  { key: "PAPER_MARKET_MOVER_ENTRY_ENABLED",                        label: "Entry Enabled",                         type: "bool" },
+  { key: "PAPER_MARKET_MOVER_ALLOWED_SESSIONS",                     label: "Allowed Sessions",                      type: "str" },
+  { key: "PAPER_MARKET_MOVER_TOP_RANK_MAX",                         label: "Top Rank Max",                          type: "int" },
+  { key: "PAPER_MARKET_MOVER_MIN_CHANGE_PERCENT",                   label: "Min Change %",                          type: "float" },
+  { key: "PAPER_MARKET_MOVER_MAX_CHANGE_PERCENT",                   label: "Max Change %",                          type: "float" },
+  { key: "PAPER_MARKET_MOVER_MIN_TIME_ADJ_VOLUME_RATIO",            label: "Min TA Vol Ratio (Regular)",            type: "float" },
+  { key: "PAPER_MARKET_MOVER_MIN_PREMARKET_VOLUME_VS_PREV_DAY_RATIO", label: "Min Premarket Vol vs Prev Day",       type: "float" },
+  { key: "PAPER_MARKET_MOVER_MIN_DOLLAR_VOLUME",                    label: "Min Dollar Volume (Premarket Fallback)", type: "int" },
+  { key: "PAPER_MARKET_MOVER_MAX_SPREAD_PERCENT",                   label: "Max Spread %",                          type: "float" },
+  { key: "PAPER_MARKET_MOVER_MIN_SCORE",                            label: "Min Score",                             type: "int" },
+  { key: "PAPER_MARKET_MOVER_POSITION_SIZE_MULTIPLIER",             label: "Position Size Multiplier",              type: "float" },
+  { key: "PAPER_MARKET_MOVER_MAX_TRADES_PER_DAY",                   label: "Max Trades/Day",                        type: "int" },
+  { key: "PAPER_MARKET_MOVER_BLOCK_IF_ANY_BEARISH",                 label: "Block If Any Bearish",                  type: "bool" },
+  { key: "PAPER_MARKET_MOVER_ALLOW_RISK_OFF",                       label: "Allow Risk-Off Regime",                 type: "bool" },
+];
+
 const NO_CATALYST_FIELDS: Array<{ key: string; label: string; type: "bool" | "int" | "float" }> = [
   { key: "PAPER_NO_CATALYST_ENTRY_ENABLED",            label: "Entry Enabled",            type: "bool" },
   { key: "PAPER_NO_CATALYST_REQUIRE_RISK_ON",          label: "Require Risk-On Regime",   type: "bool" },
@@ -2075,6 +2092,79 @@ function StrategySettingsPanel({
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
               {TA_VOLUME_FIELDS.map((f) => {
+                const base = config.base_config[f.key];
+                const override = config.runtime_overrides[f.key];
+                const effective = config.effective_config[f.key];
+                const hasOverride = f.key in config.runtime_overrides;
+                const isChanged = hasOverride && String(override) !== String(base);
+                const isSameAsBase = hasOverride && !isChanged;
+                return (
+                  <div key={f.key} className={`bg-gray-900 rounded p-3 border ${
+                    isChanged ? "border-orange-700" : isSameAsBase ? "border-yellow-900" : "border-gray-700"
+                  }`}>
+                    <div className="text-xs text-gray-400 mb-1">{f.label}</div>
+                    <div className={`text-sm font-mono font-semibold ${
+                      f.type === "bool"
+                        ? (effective ? "text-indigo-400" : "text-gray-500")
+                        : isChanged ? "text-orange-300" : "text-white"
+                    }`}>
+                      {effective !== null && effective !== undefined ? String(effective) : "—"}
+                    </div>
+                    <div className="mt-1 flex gap-2 text-xs text-gray-500 font-mono flex-wrap">
+                      <span>base: {base !== null && base !== undefined ? String(base) : "—"}</span>
+                      {isChanged && <span className="text-orange-400">override: {String(override)}</span>}
+                      {isSameAsBase && <span className="text-yellow-700">stored (= base)</span>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Full-Market Mover Entry panel (Phase N1) */}
+      {config && (() => {
+        const mmChangedCount = Object.keys(config.runtime_overrides).filter(k =>
+          k.startsWith("PAPER_MARKET_MOVER_") && String(config.runtime_overrides[k]) !== String(config.base_config[k])
+        ).length;
+        const mmEnabled = config.effective_config["PAPER_MARKET_MOVER_ENTRY_ENABLED"];
+        return (
+          <div className="border border-purple-800 rounded p-3 bg-gray-950">
+            <div className="flex items-center gap-2 mb-2 flex-wrap">
+              <span className="text-sm font-semibold text-purple-300">Full-Market Mover Entry</span>
+              <span className={`text-xs px-2 py-0.5 rounded border font-semibold ${
+                mmEnabled
+                  ? "bg-green-900 text-green-300 border-green-700"
+                  : "bg-gray-800 text-gray-500 border-gray-600"
+              }`}>
+                {mmEnabled ? "ENABLED" : "DISABLED"}
+              </span>
+              {mmChangedCount > 0 && (
+                <span className="text-xs px-2 py-0.5 rounded border bg-orange-900 text-orange-300 border-orange-700">
+                  {mmChangedCount} changed override{mmChangedCount > 1 ? "s" : ""}
+                </span>
+              )}
+              <span className="text-xs px-2 py-0.5 rounded border bg-yellow-900 text-yellow-300 border-yellow-700 font-semibold">
+                HIGH-RISK NO-CATALYST PATH
+              </span>
+            </div>
+            <p className="text-xs text-yellow-600 italic mb-2 font-semibold">
+              High-risk no-catalyst full-market mover path — fake-money only. No live trading. No real-money execution.
+            </p>
+            <p className="text-xs text-gray-500 italic mb-2">
+              Separate from: catalyst path · legacy momentum fallback · no-catalyst momentum entry.
+              Fires only for symbols from the full-market movers scanner (source=full_market_movers)
+              during premarket or regular session. Afterhours, closed, non_regular, and overnight are always blocked.
+            </p>
+            <p className="text-xs text-gray-600 mb-3">
+              <span className="font-semibold text-gray-500">Volume gates by session:</span>{" "}
+              Regular → time-adjusted ratio ≥ <span className="font-mono text-gray-400">PAPER_MARKET_MOVER_MIN_TIME_ADJ_VOLUME_RATIO</span> ·
+              Premarket → <span className="font-mono text-gray-400">PAPER_MARKET_MOVER_MIN_PREMARKET_VOLUME_VS_PREV_DAY_RATIO</span>{" "}
+              OR <span className="font-mono text-gray-400">PAPER_MARKET_MOVER_MIN_DOLLAR_VOLUME</span> (fallback).
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {MARKET_MOVER_FIELDS.map((f) => {
                 const base = config.base_config[f.key];
                 const override = config.runtime_overrides[f.key];
                 const effective = config.effective_config[f.key];

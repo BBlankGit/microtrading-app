@@ -386,6 +386,8 @@ async def run_tick() -> dict[str, Any]:
         "today_momentum_entry_count": 0,
         "no_catalyst_entry_enabled": False,
         "today_no_catalyst_entry_count": 0,
+        "market_mover_no_catalyst_enabled": False,
+        "today_market_mover_no_catalyst_entry_count": 0,
         "daily_loss_guard": {"triggered": False, "reason": None, "enabled": False},
         "intrabar_tp_exits_today": 0,
         "intrabar_sl_exits_today": 0,
@@ -826,6 +828,16 @@ async def run_tick() -> dict[str, Any]:
         )
         result["today_no_catalyst_entry_count"] = today_no_catalyst_count
 
+        today_market_mover_count = sum(
+            1 for p in _account.positions.values()
+            if p.entry_mode == "market_mover_no_catalyst" and p.entry_time.startswith(_today_str)
+        ) + sum(
+            1 for t in _account.trades
+            if t.entry_mode == "market_mover_no_catalyst" and t.entry_time.startswith(_today_str)
+        )
+        result["today_market_mover_no_catalyst_entry_count"] = today_market_mover_count
+        result["market_mover_no_catalyst_enabled"] = bool(_cfg("PAPER_MARKET_MOVER_ENTRY_ENABLED"))
+
         # Trading-day baseline rollover — reset if NY calendar date changed
         _today_ny = _ny_trading_date()
         if _account.daily_baseline_date != _today_ny:
@@ -854,6 +866,14 @@ async def run_tick() -> dict[str, Any]:
                 continue
             cats = catalyst_map.get(sym, [])
 
+            # ── Determine candidate sources (Phase I4-B) — must precede hard gates ──
+            _mm_meta = _mover_meta_map.get(sym)
+            _cand_sources: list[str] = []
+            if _mm_meta:
+                _cand_sources.append("full_market_movers")
+            if not _cand_sources:
+                _cand_sources.append("dynamic")
+
             # S1-V1: per-symbol time-adjusted volume computation
             _ta_ratio: float | None = None
             _expected_volume_now: int | None = None
@@ -881,11 +901,19 @@ async def run_tick() -> dict[str, Any]:
             # Score using adjusted quality view so scoring volume component also uses TA ratio.
             scoring = score_candidate(sym, _q_for_paths, cats)
 
-            # ── Hard safety gates shared by both entry paths ───────────────────
+            # ── Hard safety gates shared by all entry paths ────────────────────
             # These gates hard-reject regardless of mode.
             hard_rejection: str | None = None
             is_no_catalyst_rejection: bool = False
             _sym_meta = source_meta_map.get(sym, {})
+
+            # N1: market mover candidates in premarket use their own volume gate — skip
+            # the raw volume_ratio gate so the no-catalyst check can proceed to Path D.
+            _is_mm_premarket = (
+                bool(_cfg("PAPER_MARKET_MOVER_ENTRY_ENABLED"))
+                and _mm_meta is not None
+                and _tick_session_type not in ("regular",)
+            )
 
             if not q.get("tradable"):
                 reasons = q.get("rejection_reasons", [])
@@ -898,7 +926,12 @@ async def run_tick() -> dict[str, Any]:
                 hard_rejection = "missing_time_adjusted_volume"
             elif _use_ta_vol and _ta_ratio < float(_cfg("PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN")):
                 hard_rejection = f"ta_volume_ratio {_ta_ratio} < {_cfg('PAPER_TIME_ADJUSTED_VOLUME_RATIO_MIN')}"
-            elif not _use_ta_vol and q.get("volume_ratio") is not None and q.get("volume_ratio", 1.0) < _cfg("PAPER_MIN_VOLUME_RATIO"):
+            elif (
+                not _use_ta_vol
+                and not _is_mm_premarket
+                and q.get("volume_ratio") is not None
+                and q.get("volume_ratio", 1.0) < _cfg("PAPER_MIN_VOLUME_RATIO")
+            ):
                 hard_rejection = f"volume_ratio {q.get('volume_ratio')} < {_cfg('PAPER_MIN_VOLUME_RATIO')}"
             elif (
                 _cfg("PAPER_REJECT_STRONG_BEARISH_CATALYST")
@@ -915,7 +948,7 @@ async def run_tick() -> dict[str, Any]:
                 is_no_catalyst_rejection = True
 
             # Block new entries when data is stale and fresh cache is required for entries.
-            # Stale data overrides is_no_catalyst_rejection so Path C never fires on stale data.
+            # Stale data overrides is_no_catalyst_rejection so Path C/D never fire on stale data.
             if (
                 _cfg("PAPER_MARKETDATA_CACHE_REQUIRE_FRESH_FOR_ENTRY")
                 and _sym_meta.get("marketdata_stale")
@@ -954,14 +987,126 @@ async def run_tick() -> dict[str, Any]:
                 except Exception:
                     nc_eval = None
 
-            # ── Determine candidate sources (Phase I4-B) ──────────────────────
-            _cand_sources: list[str] = []
-            _mm_meta = _mover_meta_map.get(sym)
-            if _mm_meta:
-                _cand_sources.append("full_market_movers")
-            # Tag with dynamic/watchlist/collector source later if needed
-            if not _cand_sources:
-                _cand_sources.append("dynamic")
+            # ── Market mover no-catalyst evaluation (Phase N1) ─────────────────
+            # Fires for full_market_movers candidates in allowed sessions only.
+            # Separate from nc_eval — different thresholds and volume check.
+            # No Polygon calls. Fake-money only. No broker. No real orders.
+            _mm_eval: dict | None = None
+            _mm_entry_checked = False
+            _mm_entry_eligible = False
+            _mm_entry_reason: str | None = None
+            _mm_entry_blockers: list[str] = []
+            _mm_entry_session: str | None = None
+            _mm_entry_vol_gate_type: str | None = None
+            _mm_entry_vol_ratio_used: float | None = None
+            _mm_entry_size_mult: float | None = None
+
+            if (
+                bool(_cfg("PAPER_MARKET_MOVER_ENTRY_ENABLED"))
+                and _mm_meta is not None
+                and (hard_rejection is None or is_no_catalyst_rejection)
+            ):
+                _mm_entry_checked = True
+                _mm_entry_session = _tick_session_type
+                _mm_allowed = [s.strip() for s in str(_cfg("PAPER_MARKET_MOVER_ALLOWED_SESSIONS")).split(",") if s.strip()]
+
+                if _tick_session_type not in _mm_allowed:
+                    _mm_entry_reason = "session_not_allowed"
+                    _mm_entry_blockers = [f"session_{_tick_session_type}_not_in_allowed"]
+                else:
+                    _mm_blockers: list[str] = []
+
+                    # Rank check
+                    _mm_rank = _mm_meta.get("market_mover_rank")
+                    _mm_rank_max = int(_cfg("PAPER_MARKET_MOVER_TOP_RANK_MAX"))
+                    if _mm_rank is None or _mm_rank > _mm_rank_max:
+                        _mm_blockers.append(f"rank_{_mm_rank}_above_{_mm_rank_max}")
+
+                    # Change percent window
+                    _mm_chg = q.get("change_percent") or 0
+                    _mm_chg_min = float(_cfg("PAPER_MARKET_MOVER_MIN_CHANGE_PERCENT"))
+                    _mm_chg_max = float(_cfg("PAPER_MARKET_MOVER_MAX_CHANGE_PERCENT"))
+                    if _mm_chg < _mm_chg_min:
+                        _mm_blockers.append(f"change_{round(_mm_chg, 2)}_below_{_mm_chg_min}")
+                    elif _mm_chg > _mm_chg_max:
+                        _mm_blockers.append(f"change_{round(_mm_chg, 2)}_above_{_mm_chg_max}")
+
+                    # Spread
+                    _mm_spread = q.get("spread_percent") or 999
+                    _mm_spread_max = float(_cfg("PAPER_MARKET_MOVER_MAX_SPREAD_PERCENT"))
+                    if _mm_spread > _mm_spread_max:
+                        _mm_blockers.append(f"spread_{round(_mm_spread, 4)}_above_{_mm_spread_max}")
+
+                    # Score
+                    _mm_score_val = scoring.get("total_score") or 0
+                    _mm_score_min = int(_cfg("PAPER_MARKET_MOVER_MIN_SCORE"))
+                    if _mm_score_val < _mm_score_min:
+                        _mm_blockers.append(f"score_{_mm_score_val}_below_{_mm_score_min}")
+
+                    # Catalyst type block (fda_regulatory, etc.)
+                    if _blocked_cat_type is not None:
+                        _mm_blockers.append(f"catalyst_type_blocked:{_blocked_cat_type}")
+
+                    # Bearish block
+                    if bool(_cfg("PAPER_MARKET_MOVER_BLOCK_IF_ANY_BEARISH")):
+                        _mm_bearish_mat = scoring.get("catalyst_materiality_score") or 0
+                        if (scoring.get("catalyst_sentiment") == "bearish"
+                                and _mm_bearish_mat >= float(_cfg("PAPER_BEARISH_CATALYST_REJECT_MATERIALITY"))):
+                            _mm_blockers.append("strong_bearish_blocked")
+
+                    # Session-specific volume gate
+                    _mm_day_vol = q.get("day_volume") or 0
+                    _mm_prev_vol = q.get("previous_day_volume") or 0
+                    _mm_price = q.get("last_trade_price") or q.get("ask") or 0
+                    _mm_dollar_vol = int(_mm_day_vol * _mm_price) if _mm_day_vol and _mm_price else 0
+                    _mm_vol_vs_prev = (_mm_day_vol / _mm_prev_vol) if _mm_prev_vol > 0 else None
+
+                    if _tick_session_type == "regular":
+                        _mm_ta_min = float(_cfg("PAPER_MARKET_MOVER_MIN_TIME_ADJ_VOLUME_RATIO"))
+                        _mm_entry_vol_gate_type = "time_adjusted"
+                        if _ta_ratio is None:
+                            _mm_blockers.append("missing_time_adjusted_volume")
+                        elif _ta_ratio < _mm_ta_min:
+                            _mm_blockers.append(f"ta_vol_{round(_ta_ratio, 4)}_below_{_mm_ta_min}")
+                            _mm_entry_vol_ratio_used = _ta_ratio
+                        else:
+                            _mm_entry_vol_ratio_used = _ta_ratio
+
+                    elif _tick_session_type == "premarket":
+                        _mm_pm_vol_min = float(_cfg("PAPER_MARKET_MOVER_MIN_PREMARKET_VOLUME_VS_PREV_DAY_RATIO"))
+                        _mm_dollar_min = int(_cfg("PAPER_MARKET_MOVER_MIN_DOLLAR_VOLUME"))
+                        if _mm_vol_vs_prev is not None and _mm_vol_vs_prev >= _mm_pm_vol_min:
+                            _mm_entry_vol_gate_type = "premarket_volume_vs_prev"
+                            _mm_entry_vol_ratio_used = _mm_vol_vs_prev
+                        elif _mm_dollar_vol >= _mm_dollar_min:
+                            _mm_entry_vol_gate_type = "premarket_dollar_volume"
+                            _mm_entry_vol_ratio_used = float(_mm_dollar_vol)
+                        else:
+                            _mm_entry_vol_gate_type = "premarket"
+                            _mm_blockers.append(
+                                f"premarket_volume_insufficient:"
+                                f"vol_vs_prev={round(_mm_vol_vs_prev, 4) if _mm_vol_vs_prev is not None else None}"
+                                f"_dollar_vol={_mm_dollar_vol}"
+                            )
+
+                    if not _mm_blockers:
+                        _mm_entry_eligible = True
+                        _mm_entry_reason = "eligible"
+                        _mm_entry_size_mult = float(_cfg("PAPER_MARKET_MOVER_POSITION_SIZE_MULTIPLIER"))
+                    else:
+                        _mm_entry_eligible = False
+                        _mm_entry_reason = "blocked"
+                        _mm_entry_blockers = _mm_blockers
+
+                _mm_eval = {
+                    "eligible": _mm_entry_eligible,
+                    "session": _mm_entry_session,
+                    "blockers": _mm_entry_blockers,
+                    "reason": _mm_entry_reason,
+                    "volume_gate_type": _mm_entry_vol_gate_type,
+                    "volume_ratio_used": _mm_entry_vol_ratio_used,
+                    "size_multiplier": _mm_entry_size_mult,
+                }
 
             candidate: dict[str, Any] = {
                 "symbol": sym,
@@ -1021,6 +1166,24 @@ async def run_tick() -> dict[str, Any]:
                 "no_catalyst_momentum_reasons": nc_eval["positive_reasons"] if nc_eval and nc_eval["eligible"] else None,
                 "no_catalyst_momentum_blockers": nc_eval["negative_reasons"] if nc_eval and not nc_eval["eligible"] else None,
                 "no_catalyst_config_snapshot": nc_eval["config_snapshot"] if nc_eval else None,
+                # Phase N1: market mover no-catalyst entry evaluation fields
+                "market_mover_entry_checked": _mm_entry_checked,
+                "market_mover_entry_eligible": _mm_entry_eligible,
+                "market_mover_entry_reason": _mm_entry_reason,
+                "market_mover_entry_blockers": _mm_entry_blockers,
+                "market_mover_entry_session": _mm_entry_session,
+                "market_mover_entry_volume_gate_type": _mm_entry_vol_gate_type,
+                "market_mover_entry_volume_ratio_used": _mm_entry_vol_ratio_used,
+                "market_mover_entry_position_size_multiplier": _mm_entry_size_mult,
+                # Premarket volume metrics (useful for market mover diagnostics)
+                "volume_vs_previous_day_ratio": (
+                    round((q.get("day_volume") or 0) / (q.get("previous_day_volume") or 1), 4)
+                    if (q.get("previous_day_volume") or 0) > 0 else None
+                ),
+                "dollar_volume": (
+                    int((q.get("day_volume") or 0) * (q.get("last_trade_price") or q.get("ask") or 0))
+                    if (q.get("day_volume") or 0) > 0 else 0
+                ),
                 "catalyst_required": True,
                 # Daily loss guard (Phase 2N)
                 "daily_loss_guard_triggered": _guard["triggered"],
@@ -1079,6 +1242,75 @@ async def run_tick() -> dict[str, Any]:
                             candidate["action"] = "no_valid_price"
                     else:
                         candidate["action"] = f"blocked: {block}"
+
+            # Path D: Market mover no-catalyst entry (Phase N1 — fake-money only, no broker, no real orders)
+            # Fires for full_market_movers candidates without accepted catalyst coverage.
+            # Session-aware: premarket and regular only. Afterhours/closed/non_regular blocked.
+            elif (
+                hard_rejection is not None
+                and is_no_catalyst_rejection
+                and _mm_eval is not None
+                and _mm_eval["eligible"]
+            ):
+                # Market mover daily limit gate
+                _mm_day_max = int(_cfg("PAPER_MARKET_MOVER_MAX_TRADES_PER_DAY"))
+                if today_market_mover_count >= _mm_day_max:
+                    candidate["action"] = f"market_mover_blocked: daily limit {_mm_day_max}"
+                    candidate["rejection_reason"] = hard_rejection
+                elif _guard["triggered"]:
+                    candidate["action"] = "daily_max_loss_guard"
+                    candidate["rejection_reason"] = "daily_max_loss_guard"
+                else:
+                    candidate["eligible"] = True
+                    candidate["entry_mode"] = "market_mover_no_catalyst"
+                    candidate["rejection_reason"] = None
+                    candidate["catalyst_required"] = False
+                    can, block = _account.can_enter(
+                        sym,
+                        _cfg("PAPER_MAX_OPEN_POSITIONS"),
+                        _cfg("PAPER_MAX_TRADES_PER_DAY"),
+                    )
+                    if can:
+                        entry_price = q.get("ask") or q.get("last_trade_price", 0)
+                        if entry_price and entry_price > 0:
+                            pos_pct = _cfg("PAPER_POSITION_SIZE_PERCENT")
+                            size_multiplier = float(_cfg("PAPER_MARKET_MOVER_POSITION_SIZE_MULTIPLIER"))
+                            normal_budget = min(
+                                _account.cash * (pos_pct / 100.0),
+                                settings.PAPER_MAX_POSITION_SIZE_USD,
+                            )
+                            position_budget = normal_budget * size_multiplier
+                            pos = _account.enter_position(
+                                sym, entry_price,
+                                position_budget,
+                                "market_mover_no_catalyst",
+                                entry_score=scoring["total_score"],
+                                entry_mode="market_mover_no_catalyst",
+                            )
+                            if pos:
+                                today_market_mover_count += 1
+                                result["today_market_mover_no_catalyst_entry_count"] = today_market_mover_count
+                                candidate["action"] = "entered"
+                                result["entries"].append({
+                                    "symbol": sym,
+                                    "entry_price": round(entry_price, 4),
+                                    "shares": round(pos.shares, 6),
+                                    "cost_basis": round(pos.cost_basis, 4),
+                                    "catalyst_type": "market_mover_no_catalyst",
+                                    "total_score": scoring["total_score"],
+                                    "entry_mode": "market_mover_no_catalyst",
+                                    "position_id": pos.position_id,
+                                    "market_mover_rank": _mm_meta.get("market_mover_rank") if _mm_meta else None,
+                                })
+                            else:
+                                candidate["action"] = "entry_failed"
+                                candidate["eligible"] = False
+                        else:
+                            candidate["action"] = "no_valid_price"
+                            candidate["eligible"] = False
+                    else:
+                        candidate["action"] = f"blocked: {block}"
+                        candidate["eligible"] = False
 
             # Path C: No-catalyst momentum entry (Phase 2R)
             elif (
