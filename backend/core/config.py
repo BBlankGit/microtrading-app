@@ -113,10 +113,16 @@ class Settings(BaseSettings):
     MARKET_TREND_APPLY_TO_SHADOW: bool = True
 
     # Phase L1 — LLM Shadow Analyst (diagnostic only, never affects entries/exits)
+    # Phase G1A: default provider is local Ollama (free, no cloud API costs).
+    # OpenAI remains supported as an optional provider when LLM_PROVIDER="openai"
+    # AND a real OPENAI_API_KEY is set. Default is shadow disabled.
     LLM_SHADOW_ENABLED: bool = False
-    LLM_PROVIDER: str = "openai"
-    LLM_MODEL: str = "gpt-4.1-mini"
+    LLM_PROVIDER: str = "ollama"
+    LLM_MODEL: str = "qwen2.5:7b-instruct"
     LLM_API_KEY_ENV: str = "OPENAI_API_KEY"
+    # Local-provider config (Phase G1A)
+    OLLAMA_BASE_URL: str = "http://host.docker.internal:11434"
+    OLLAMA_PROBE_TIMEOUT_SECONDS: float = 2.0
     LLM_SHADOW_MAX_CANDIDATES_PER_TICK: int = 5
     LLM_SHADOW_MIN_ENGINE_SCORE: int = 60
     LLM_SHADOW_INCLUDE_REJECTED_NEAR_MISSES: bool = True

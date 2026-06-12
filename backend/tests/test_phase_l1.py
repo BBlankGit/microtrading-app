@@ -81,6 +81,7 @@ def test_llm_missing_key_returns_missing_api_key(monkeypatch):
     from intelligence import llm_shadow as L
 
     _reset_llm_module()
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")  # G1A: default is now "ollama"
     monkeypatch.setattr(settings, "LLM_SHADOW_ENABLED", True)
     monkeypatch.setattr(settings, "LLM_API_KEY_ENV", "OPENAI_API_KEY")
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -94,6 +95,7 @@ def test_llm_placeholder_key_treated_as_missing(monkeypatch):
     from intelligence import llm_shadow as L
 
     _reset_llm_module()
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")  # G1A: default is now "ollama"
     monkeypatch.setattr(settings, "LLM_SHADOW_ENABLED", True)
     monkeypatch.setattr(settings, "LLM_API_KEY_ENV", "OPENAI_API_KEY")
     monkeypatch.setenv("OPENAI_API_KEY", "PASTE_YOUR_KEY_HERE")
@@ -348,6 +350,7 @@ def test_invalid_json_returns_error_status(monkeypatch):
 
     _reset_llm_module()
     monkeypatch.setattr(settings, "LLM_SHADOW_ENABLED", True)
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")  # G1A: default is now ollama
     monkeypatch.setattr(settings, "LLM_API_KEY_ENV", "OPENAI_API_KEY")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-realkeyforhttptest1234567890")
     monkeypatch.setattr(settings, "LLM_SHADOW_MAX_RETRIES", 0)
@@ -372,6 +375,7 @@ def test_timeout_returns_error_status(monkeypatch):
     import httpx
 
     _reset_llm_module()
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")  # G1A: default is now ollama
     monkeypatch.setattr(settings, "LLM_SHADOW_ENABLED", True)
     monkeypatch.setattr(settings, "LLM_API_KEY_ENV", "OPENAI_API_KEY")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-realkeyforhttptest1234567890")
@@ -394,6 +398,7 @@ def test_cache_prevents_repeated_calls(monkeypatch):
     from intelligence import llm_shadow as L
     import httpx
 
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")  # G1A: default is now ollama
     _reset_llm_module()
     monkeypatch.setattr(settings, "LLM_SHADOW_ENABLED", True)
     monkeypatch.setattr(settings, "LLM_API_KEY_ENV", "OPENAI_API_KEY")
@@ -438,6 +443,7 @@ def test_api_key_not_logged_on_error(monkeypatch, caplog):
     from core.config import settings
     from intelligence import llm_shadow as L
     import httpx
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openai")  # G1A: default is now ollama
 
     _reset_llm_module()
     monkeypatch.setattr(settings, "LLM_SHADOW_ENABLED", True)

@@ -154,27 +154,90 @@ def _redact(text: str | None) -> str:
     return out
 
 
+# Broadened placeholder denylist (Phase G1A). Operators have used several
+# stand-in values over time; treat all of them as "no key set".
+_PLACEHOLDER_KEY_VALUES = {
+    "PASTE_YOUR_KEY_HERE", "CHANGEME", "CHANGE_ME",
+    "OPTIONAL_CHANGE_ME", "OPTIONAL", "NONE", "NULL",
+    "YOUR_KEY", "YOUR_API_KEY", "SECRET", "TODO",
+}
+
+
 def api_key_present() -> bool:
-    """True iff the env-var named by settings.LLM_API_KEY_ENV is set."""
+    """True iff settings.LLM_API_KEY_ENV resolves to a non-placeholder value."""
     env_name = (settings.LLM_API_KEY_ENV or "").strip()
     if not env_name:
         return False
     val = (os.environ.get(env_name) or "").strip()
     if not val:
         return False
-    return val.upper() not in {"PASTE_YOUR_KEY_HERE", "CHANGEME", "NONE", "NULL"}
+    if val.upper() in _PLACEHOLDER_KEY_VALUES:
+        return False
+    # Also treat any value that "contains" CHANGE_ME / PLACEHOLDER as bogus.
+    upper = val.upper()
+    if any(token in upper for token in ("CHANGE_ME", "CHANGEME", "PLACEHOLDER")):
+        return False
+    return True
 
 
 def provider() -> str:
-    return (settings.LLM_PROVIDER or "openai").strip().lower()
+    return (settings.LLM_PROVIDER or "ollama").strip().lower()
 
 
 def model() -> str:
-    return (settings.LLM_MODEL or "gpt-4.1-mini").strip()
+    return (settings.LLM_MODEL or "qwen2.5:7b-instruct").strip()
+
+
+def ollama_base_url() -> str:
+    return (settings.OLLAMA_BASE_URL or "http://host.docker.internal:11434").rstrip("/")
 
 
 def is_enabled() -> bool:
     return bool(settings.LLM_SHADOW_ENABLED)
+
+
+# ── Local-provider readiness probes ──────────────────────────────────────────
+# These are fast HTTP HEADs/GETs against the configured Ollama base URL.
+# They do NOT trigger model loading or generation.
+
+_probe_cache: dict[str, tuple[bool, float]] = {}
+_PROBE_TTL_SECONDS = 30.0
+
+
+async def _probe_ollama_tags() -> list[str] | None:
+    """Return list of installed model names, or None on any failure."""
+    import httpx
+
+    url = f"{ollama_base_url()}/api/tags"
+    timeout = float(settings.OLLAMA_PROBE_TIMEOUT_SECONDS)
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        models = body.get("models") or []
+        return [m.get("name", "") for m in models if m.get("name")]
+    except Exception:
+        return None
+
+
+async def local_provider_available() -> bool:
+    """True iff the configured Ollama base URL responds to /api/tags."""
+    return (await _probe_ollama_tags()) is not None
+
+
+async def model_available() -> bool:
+    """True iff the configured model is in Ollama's installed list."""
+    names = await _probe_ollama_tags()
+    if names is None:
+        return False
+    want = model()
+    if want in names:
+        return True
+    # Allow a base-name match like "qwen2.5:7b-instruct" matching the tag.
+    base = want.split(":")[0]
+    return any(n.split(":")[0] == base for n in names)
 
 
 # ── Packet hashing ────────────────────────────────────────────────────────────
@@ -731,6 +794,81 @@ async def _openai_call(packet: dict) -> dict:
     return parsed
 
 
+# ── Phase G1A: Ollama (local) provider ──────────────────────────────────────
+#
+# Ollama is local, free, and does not require an API key. It is reached via
+# settings.OLLAMA_BASE_URL which defaults to http://host.docker.internal:11434
+# (the standard Docker bridge gateway). The host's Ollama binds to 127.0.0.1
+# only — Docker reaches it via the `host-gateway` extra_hosts mapping, not
+# any public exposure.
+
+def _extract_json_object(text: str) -> dict:
+    """
+    Robust JSON-object parser for local LLM output. Tries strict decode first,
+    then locates the largest balanced {...} substring if the model added
+    leading/trailing prose despite our instruction to emit JSON only.
+    """
+    text = (text or "").strip()
+    if not text:
+        raise RuntimeError("empty response")
+    # Strict path
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except json.JSONDecodeError:
+        pass
+    # Greedy {...} fallback
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise RuntimeError("no_json_object_found")
+    candidate = text[start:end + 1]
+    try:
+        parsed = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid_json: {exc}")
+    if not isinstance(parsed, dict):
+        raise RuntimeError("response is not a JSON object")
+    return parsed
+
+
+async def _ollama_call(packet: dict) -> dict:
+    """
+    Single Ollama /api/generate call with format=json. Ollama enforces JSON
+    output server-side when `format: "json"` is set. No API key, no internet
+    egress — local Docker bridge only.
+    """
+    import httpx
+
+    timeout = float(settings.LLM_SHADOW_TIMEOUT_SECONDS)
+    user_payload = json.dumps(packet, default=str)
+    prompt = f"{_SYSTEM_PROMPT}\n\nCandidate packet (JSON):\n{user_payload}\n\nReturn ONLY a valid JSON object matching the required schema."
+    body_in = {
+        "model": model(),
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "options": {
+            "temperature": 0.2,
+            "num_predict": 700,
+        },
+    }
+    url = f"{ollama_base_url()}/api/generate"
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, json=body_in)
+    if resp.status_code == 404:
+        raise RuntimeError("model_missing")
+    if resp.status_code >= 400:
+        raise RuntimeError(f"ollama http {resp.status_code}")
+    body = resp.json()
+    content = body.get("response")
+    if not content:
+        raise RuntimeError("ollama empty response")
+    return _extract_json_object(content)
+
+
 async def analyze_candidate_packet(packet: dict) -> dict:
     """
     Analyze a single candidate packet. Cache-first; never raises.
@@ -739,10 +877,32 @@ async def analyze_candidate_packet(packet: dict) -> dict:
     """
     if not is_enabled():
         return _error_result("disabled")
-    if provider() != "openai":
-        return _error_result("provider_not_supported", f"provider={provider()!r}")
-    if not api_key_present():
-        return _error_result("missing_api_key")
+
+    prov = provider()
+    # Provider-specific pre-flight checks. Each short-circuit returns a
+    # stable shape and never makes any network call.
+    if prov == "openai":
+        if not api_key_present():
+            return _error_result("missing_api_key")
+    elif prov == "ollama":
+        # No key required. We do a cheap readiness probe so the dashboard
+        # can distinguish provider_unavailable from model_missing without
+        # waiting on a full generation timeout. The probe is cached briefly
+        # to avoid hammering the local endpoint when many candidates are
+        # analyzed back-to-back.
+        cache = _probe_cache.get("tags")
+        if cache and (time.monotonic() - cache[1]) < _PROBE_TTL_SECONDS:
+            tags_ok = cache[0]
+        else:
+            tags_ok = await local_provider_available()
+            _probe_cache["tags"] = (tags_ok, time.monotonic())
+        if not tags_ok:
+            return _error_result("provider_unavailable",
+                                 f"ollama base_url unreachable: {ollama_base_url()}")
+        if not await model_available():
+            return _error_result("model_missing", f"model {model()!r} not installed in ollama")
+    else:
+        return _error_result("provider_not_supported", f"provider={prov!r}")
 
     pkt_hash = _hash_packet(packet)
     now = time.monotonic()
@@ -764,12 +924,19 @@ async def analyze_candidate_packet(packet: dict) -> dict:
     try:
         for attempt in range(retries + 1):
             try:
-                raw = await asyncio.wait_for(
-                    _openai_call(packet),
-                    timeout=float(settings.LLM_SHADOW_TIMEOUT_SECONDS) + 1.0,
-                )
+                if prov == "openai":
+                    raw = await asyncio.wait_for(
+                        _openai_call(packet),
+                        timeout=float(settings.LLM_SHADOW_TIMEOUT_SECONDS) + 1.0,
+                    )
+                else:  # ollama
+                    raw = await asyncio.wait_for(
+                        _ollama_call(packet),
+                        timeout=float(settings.LLM_SHADOW_TIMEOUT_SECONDS) + 1.0,
+                    )
                 result = normalize_llm_response(raw)
                 result["llm_model"] = model()
+                result["llm_provider"] = prov
                 result["llm_prompt_version"] = settings.LLM_SHADOW_PROMPT_VERSION
                 result["llm_cached"] = False
                 latency_ms = int((time.monotonic() - started) * 1000)
@@ -786,7 +953,8 @@ async def analyze_candidate_packet(packet: dict) -> dict:
                 _status["last_model_used"] = model()
                 if settings.LLM_SHADOW_LOG_RESPONSES:
                     logger.info(
-                        "LLM shadow ok symbol=%s decision=%s confidence=%.2f latency_ms=%d",
+                        "LLM shadow ok provider=%s symbol=%s decision=%s confidence=%.2f latency_ms=%d",
+                        prov,
                         packet.get("identity", {}).get("symbol"),
                         result.get("llm_decision"),
                         result.get("llm_confidence") or 0,
@@ -795,6 +963,18 @@ async def analyze_candidate_packet(packet: dict) -> dict:
                 return result
             except asyncio.TimeoutError:
                 last_err = "timeout"
+                continue
+            except RuntimeError as exc:
+                msg = _redact(str(exc))
+                # Surface model_missing distinctly so the dashboard can guide
+                # the operator. Do not retry — it is a hard precondition.
+                if msg == "model_missing":
+                    _status["calls_total"] += 1
+                    _status["calls_error"] += 1
+                    _status["last_call_at"] = datetime.now(timezone.utc).isoformat()
+                    _status["last_error"] = msg
+                    return _error_result("model_missing", msg)
+                last_err = msg
                 continue
             except Exception as exc:
                 last_err = _redact(str(exc))
@@ -810,16 +990,50 @@ async def analyze_candidate_packet(packet: dict) -> dict:
 
 # ── Public status accessor ───────────────────────────────────────────────────
 
+async def get_status_async() -> dict:
+    """
+    Like get_status() but actively probes the local provider if applicable.
+    Caches the probe result for _PROBE_TTL_SECONDS to keep this endpoint
+    cheap for dashboard polling.
+    """
+    base = get_status()
+    if provider() == "ollama":
+        cache = _probe_cache.get("tags")
+        if cache and (time.monotonic() - cache[1]) < _PROBE_TTL_SECONDS:
+            tags_ok = cache[0]
+            installed = None
+        else:
+            installed = await _probe_ollama_tags()
+            tags_ok = installed is not None
+            _probe_cache["tags"] = (tags_ok, time.monotonic())
+        base["local_provider_available"] = tags_ok
+        if tags_ok:
+            # Defer model_available() to avoid a second probe — re-use names.
+            names = installed if installed is not None else None
+            if names is None:
+                names = await _probe_ollama_tags() or []
+            want = model()
+            base["model_available"] = (want in names) or any(n.split(":")[0] == want.split(":")[0] for n in names)
+            base["models_installed"] = sorted(names)
+        else:
+            base["model_available"] = False
+            base["models_installed"] = []
+    return base
+
+
 def get_status() -> dict:
     avg_latency = None
     if _status["calls_success"] > 0:
         avg_latency = int(_status["latency_ms_sum"] / _status["calls_success"])
+    prov = provider()
     return {
         "enabled":                   is_enabled(),
-        "provider":                  provider(),
+        "provider":                  prov,
         "model":                     model(),
+        "base_url":                  ollama_base_url() if prov == "ollama" else None,
         "api_key_env":               settings.LLM_API_KEY_ENV,
         "api_key_present":           api_key_present(),
+        "api_key_required":          prov == "openai",
         "max_candidates_per_tick":   int(settings.LLM_SHADOW_MAX_CANDIDATES_PER_TICK),
         "calls_total":               _status["calls_total"],
         "calls_last_tick":           _status["calls_last_tick"],

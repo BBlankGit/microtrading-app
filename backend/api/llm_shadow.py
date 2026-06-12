@@ -20,10 +20,11 @@ router = APIRouter(prefix="/api/intelligence/llm", tags=["llm_shadow"])
 @router.get("/status")
 async def get_llm_status():
     """
-    Read-only LLM shadow analyst status. Never triggers an LLM call.
+    Read-only LLM shadow analyst status. Never triggers an LLM call —
+    only a cheap /api/tags probe when provider=ollama (cached 30 s).
     Safe for dashboard polling.
     """
-    return _llm.get_status()
+    return await _llm.get_status_async()
 
 
 @router.post("/analyze-candidate", dependencies=[Depends(require_admin_token)])
