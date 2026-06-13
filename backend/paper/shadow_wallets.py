@@ -47,6 +47,16 @@ _last_decision_at: dict[str, str | None] = {
     "ai_shadow": None,
 }
 
+# G1B-H11 Part F: durable persisted last_decision_at, sourced from
+# paper_candidates.extras_json. Cached with a short TTL so we don't
+# hit Postgres on every dashboard refresh.
+_persisted_last_decision_at: dict[str, str | None] = {
+    "deterministic_shadow": None,
+    "ai_shadow": None,
+}
+_persisted_cache_fetched_at: float = 0.0
+_PERSISTED_CACHE_TTL_SECONDS: int = 60
+
 
 WALLET_DETERMINISTIC = "deterministic_shadow"
 WALLET_AI = "ai_shadow"
@@ -152,9 +162,91 @@ def get_last_decision_at(wallet_id: str) -> str | None:
 
 
 def _reset_last_decision_at() -> None:
-    """Test-only helper: clear the in-memory decision timestamps."""
+    """Test-only helper: clear in-memory + persisted-cache decision state."""
+    global _persisted_cache_fetched_at
     _last_decision_at[WALLET_DETERMINISTIC] = None
     _last_decision_at[WALLET_AI] = None
+    _persisted_last_decision_at[WALLET_DETERMINISTIC] = None
+    _persisted_last_decision_at[WALLET_AI] = None
+    _persisted_cache_fetched_at = 0.0
+
+
+async def refresh_persisted_last_decision_cache(force: bool = False) -> None:
+    """
+    G1B-H11 Part F: refresh the durable persisted last_decision_at values
+    from paper_candidates.extras_json. TTL-cached so dashboard polling
+    doesn't hit Postgres every refresh. Never raises — degrades silently
+    on DB error.
+    """
+    global _persisted_cache_fetched_at
+    import time as _time
+    now = _time.time()
+    if not force and now - _persisted_cache_fetched_at < _PERSISTED_CACHE_TTL_SECONDS:
+        return
+    try:
+        from paper import db as _db
+        pool = await _db.get_pool()
+        if pool is None:
+            return
+        async with pool.acquire() as conn:
+            det_max = await conn.fetchval(
+                """
+                SELECT MAX(created_at) FROM paper_candidates
+                 WHERE extras_json ? 'enhanced_shadow_decision'
+                    OR extras_json ? 'enhanced_shadow_score'
+                """
+            )
+            ai_max = await conn.fetchval(
+                """
+                SELECT MAX(created_at) FROM paper_candidates
+                 WHERE extras_json ? 'llm_decision'
+                    OR extras_json ? 'llm_status'
+                """
+            )
+        _persisted_last_decision_at[WALLET_DETERMINISTIC] = (
+            det_max.isoformat() if det_max else None
+        )
+        _persisted_last_decision_at[WALLET_AI] = (
+            ai_max.isoformat() if ai_max else None
+        )
+        _persisted_cache_fetched_at = now
+    except Exception as exc:
+        logger.debug("refresh_persisted_last_decision_cache failed: %s", exc)
+
+
+def get_last_decision_source(wallet_id: str) -> dict:
+    """G1B-H11 Part F: resolved last_decision_at with provenance.
+
+    Priority:
+      1. runtime (in-memory _last_decision_at, freshest signal)
+      2. persisted_candidate_extras (durable across restarts)
+      3. last_entry_fallback (best-effort; entry IS a decision but
+         WATCH/WOULD_REJECT/no-entry signals are missed by this path)
+      4. none
+    """
+    runtime_ts = _last_decision_at.get(wallet_id)
+    persisted_ts = _persisted_last_decision_at.get(wallet_id)
+    if runtime_ts:
+        return {
+            "last_decision_at": runtime_ts,
+            "last_decision_at_runtime": runtime_ts,
+            "last_decision_at_persisted": persisted_ts,
+            "last_decision_at_source": "runtime",
+        }
+    if persisted_ts:
+        return {
+            "last_decision_at": persisted_ts,
+            "last_decision_at_runtime": None,
+            "last_decision_at_persisted": persisted_ts,
+            "last_decision_at_source": "persisted_candidate_extras",
+        }
+    # Fallback handled by _wallet_snapshot using last_entry_at
+    return {
+        "last_decision_at": None,
+        "last_decision_at_runtime": None,
+        "last_decision_at_persisted": None,
+        "last_decision_at_source": "none",
+    }
 
 
 def _process_exits_for(
@@ -618,13 +710,19 @@ def _wallet_snapshot(wallet_id: str, quality_map: dict[str, dict]) -> dict:
         "depends_on_llm": proc["depends_on_llm"],
         "last_entry_at": last_entry_at,
         "last_exit_at": last_exit_at,
-        # G1B-H10 Part C: true last_decision_at — updated every time the
-        # shadow strategy evaluates a candidate (WOULD_ENTER / WATCH /
-        # WOULD_REJECT / no_decision), independent of whether an entry
-        # actually opened. Falls back to last_entry_at if no decision tick
-        # has been recorded yet (e.g. right after restart).
-        "last_decision_at": _last_decision_at.get(wallet_id) or last_entry_at,
     })
+    # G1B-H11 Part F: resolved last_decision_at with provenance.
+    # Priority: runtime > persisted_candidate_extras > last_entry_fallback > none.
+    src = get_last_decision_source(wallet_id)
+    if src["last_decision_at"] is None and last_entry_at:
+        # Fallback: entries are decisions but this is the lossy path.
+        src = {
+            "last_decision_at": last_entry_at,
+            "last_decision_at_runtime": None,
+            "last_decision_at_persisted": None,
+            "last_decision_at_source": "last_entry_fallback",
+        }
+    base.update(src)
     if wallet_id == WALLET_AI:
         base["no_paid_ai_calls"] = True
     return base

@@ -40,6 +40,9 @@ async def paper_wallets():
     from paper import shadow_wallets as _sw
     from paper import eod as _eod
     from paper.session import is_regular_session_now as _is_session_now
+    # G1B-H11 Part F: refresh persisted last_decision_at cache (TTL-gated)
+    # so the snapshot can surface a durable source after restarts.
+    await _sw.refresh_persisted_last_decision_cache()
     engine_raw = simulator.get_status()
     engine_trades = simulator.get_trades()
     engine_wins = sum(1 for t in engine_trades if (t.get("pnl") or 0) > 0)
@@ -281,6 +284,8 @@ async def paper_wallet_performance(session_date: str | None = None):
         session_date_for,
         is_regular_session_now,
     )
+    # G1B-H11 Part F: refresh persisted last_decision_at cache for snapshots
+    await _sw.refresh_persisted_last_decision_cache()
 
     resolved = (
         latest_session_date_ny()
@@ -338,6 +343,10 @@ async def paper_wallet_performance(session_date: str | None = None):
             "last_entry_at": snap.get("last_entry_at"),
             "last_exit_at": snap.get("last_exit_at"),
             "last_decision_at": snap.get("last_decision_at"),
+            # G1B-H11 Part F: durable persisted last_decision_at provenance
+            "last_decision_at_runtime": snap.get("last_decision_at_runtime"),
+            "last_decision_at_persisted": snap.get("last_decision_at_persisted"),
+            "last_decision_at_source": snap.get("last_decision_at_source"),
             "no_paid_ai_calls": snap.get("no_paid_ai_calls"),
             "session_date": resolved,
             "starting_cash": start,
@@ -379,6 +388,7 @@ async def paper_wallet_performance(session_date: str | None = None):
         if daily_baseline
         else None
     )
+    eng_last_decision = eng_raw.get("last_tick_at")
     eng_snap = {
         **eng_raw,
         "status": "active",
@@ -391,7 +401,11 @@ async def paper_wallet_performance(session_date: str | None = None):
         "depends_on_llm": False,
         "last_entry_at": _last_engine_entry_time(),
         "last_exit_at": _last_engine_exit_time(),
-        "last_decision_at": eng_raw.get("last_tick_at"),
+        "last_decision_at": eng_last_decision,
+        # G1B-H11 Part F
+        "last_decision_at_runtime": eng_last_decision,
+        "last_decision_at_persisted": None,
+        "last_decision_at_source": "runtime" if eng_last_decision else "none",
         "no_paid_ai_calls": True,
     }
     engine_perf = _build(
@@ -450,6 +464,9 @@ async def paper_wallet_analytics():
     from paper.analytics import get_trade_analytics
     from paper import shadow_wallets as _sw
 
+    # G1B-H11 Part F: refresh persisted last_decision_at cache for snapshots
+    await _sw.refresh_persisted_last_decision_cache()
+
     state = simulator.get_state()
     candidates = state.get("last_candidates") or []
     status = simulator.get_status()
@@ -503,6 +520,7 @@ async def paper_wallet_analytics():
 
     def _engine_status_block() -> dict:
         # G1B-H10 Part B: engine status/config field symmetry
+        eng_last_decision = status.get("last_tick_at")
         return {
             "status": "active",
             "active": True,
@@ -512,7 +530,12 @@ async def paper_wallet_analytics():
             "enabled_by_config": [{"flag": "always_active", "value": True}],
             "depends_on_llm": False,
             "no_paid_ai_calls": True,
-            "last_decision_at": status.get("last_tick_at"),
+            "last_decision_at": eng_last_decision,
+            # G1B-H11 Part F: engine last_decision_at is the last tick
+            # (the engine evaluates every candidate on every tick).
+            "last_decision_at_runtime": eng_last_decision,
+            "last_decision_at_persisted": None,
+            "last_decision_at_source": "runtime" if eng_last_decision else "none",
             "last_entry_at": _last_engine_entry_time(),
             "last_exit_at": _last_engine_exit_time(),
         }
@@ -528,6 +551,10 @@ async def paper_wallet_analytics():
             "depends_on_llm": snap.get("depends_on_llm"),
             "no_paid_ai_calls": snap.get("no_paid_ai_calls"),
             "last_decision_at": snap.get("last_decision_at"),
+            # G1B-H11 Part F: durable persisted last_decision_at provenance
+            "last_decision_at_runtime": snap.get("last_decision_at_runtime"),
+            "last_decision_at_persisted": snap.get("last_decision_at_persisted"),
+            "last_decision_at_source": snap.get("last_decision_at_source"),
             "last_entry_at": snap.get("last_entry_at"),
             "last_exit_at": snap.get("last_exit_at"),
         }
