@@ -946,6 +946,55 @@ async def run_tick() -> dict[str, Any]:
                         if bracket["conservative_both_touched"]:
                             result["conservative_both_touched_exits_today"] += 1
 
+        # ── Phase G1B-H1 Part E: end-of-day flatten ─────────────────────────
+        # Close every remaining open engine position once we're inside the
+        # flatten window (defaults: at/after 16:00 ET). Reuses the standard
+        # exit_position mechanics — no TP/SL changes outside this window.
+        # Shadow wallets are flattened by their own helper below.
+        result.setdefault("eod_flatten_warnings", [])
+        try:
+            from paper import eod as _eod
+            if _eod.flatten_due():
+                for sym in list(_account.positions.keys()):
+                    pos = _account.positions.get(sym)
+                    if pos is None:
+                        continue
+                    q = quality_map.get(sym) or {}
+                    exit_price = (
+                        q.get("bid")
+                        or q.get("last_trade_price")
+                        or _last_prices.get(sym)
+                    )
+                    if not exit_price:
+                        result["eod_flatten_warnings"].append({
+                            "wallet_id": "engine",
+                            "symbol": sym,
+                            "reason": "missing_exit_price",
+                        })
+                        continue
+                    trade = _account.exit_position(sym, float(exit_price), "eod_flatten")
+                    if trade is None:
+                        continue
+                    result["exits"].append({
+                        "symbol": sym,
+                        "exit_reason": "eod_flatten",
+                        "entry_price": round(pos.entry_price, 4),
+                        "exit_price": round(float(exit_price), 4),
+                        "pnl": round(trade.pnl, 4),
+                        "pnl_percent": round(trade.pnl_percent, 4),
+                        "hold_minutes": trade.hold_minutes,
+                        "catalyst_type": trade.entry_catalyst_type,
+                        "total_score": trade.entry_score,
+                        "entry_mode": trade.entry_mode,
+                        "position_id": pos.position_id,
+                        "shares": round(pos.shares, 6),
+                        "cost_basis": round(pos.cost_basis, 4),
+                        "wallet_id": "engine",
+                        "strategy_id": "engine",
+                    })
+        except Exception as exc:
+            logger.warning("EOD flatten failed defensively: %s", exc)
+
         # Compute today's momentum entry count from current positions + closed trades
         _today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         today_momentum_count = sum(
@@ -1498,8 +1547,25 @@ async def run_tick() -> dict[str, Any]:
             # market-trend telemetry. No pre-branch inference.
             _final_selected_path = "rejected_before_path"
 
+            # Phase G1B-H1 Part E: short-circuit ALL entry paths inside the
+            # end-of-day cutoff window. Scoring/decision logic upstream is
+            # untouched — we only refuse to act. Applies when overnight
+            # holding is disabled and EOD flatten is enabled (defaults).
+            try:
+                from paper import eod as _eod
+                _eod_block, _eod_reason = _eod.entries_blocked()
+            except Exception:
+                _eod_block, _eod_reason = (False, None)
+            if _eod_block:
+                candidate["eligible"] = False
+                candidate["action"] = _eod_reason
+                candidate["rejection_reason"] = _eod_reason
+                # Skip the branch chain entirely; the rest of the per-
+                # candidate enrichment (trend telemetry, shadow, LLM) still
+                # runs so dashboards remain coherent.
+                pass
             # Path A: Catalyst entry (existing logic, unchanged)
-            if hard_rejection is None and scoring["score_pass"]:
+            elif hard_rejection is None and scoring["score_pass"]:
                 _final_selected_path = "catalyst"
                 candidate["eligible"] = True
                 candidate["entry_mode"] = "catalyst"
@@ -1955,6 +2021,10 @@ async def run_tick() -> dict[str, Any]:
             result["shadow_entries"] = _sw_out.get("entries", [])
             result["shadow_exits"] = _sw_out.get("exits", [])
             result["shadow_wallets_snapshot"] = _sw_out.get("snapshots", {})
+            # Surface EOD flatten warnings (missing exit price etc.) so the
+            # dashboard can warn instead of silently leaving a position open.
+            for w in _sw_out.get("warnings") or []:
+                result.setdefault("eod_flatten_warnings", []).append(w)
         else:
             result["shadow_entries"] = []
             result["shadow_exits"] = []

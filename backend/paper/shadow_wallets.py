@@ -223,6 +223,51 @@ def _process_entries_for(
     return entries
 
 
+def _eod_flatten_for(
+    wallet_id: str, quality_map: dict[str, dict]
+) -> tuple[list[dict], list[dict]]:
+    """Close every open position on `wallet_id` at end-of-day. Returns
+    (exit_records, warnings). Warnings flag positions for which no
+    exit price could be derived (so the dashboard can surface them)."""
+    account = _wallet(wallet_id)
+    exits: list[dict] = []
+    warnings: list[dict] = []
+    for sym in list(account.positions.keys()):
+        pos = account.positions.get(sym)
+        if pos is None:
+            continue
+        q = quality_map.get(sym) or {}
+        exit_price = q.get("bid") or q.get("last_trade_price")
+        if not exit_price:
+            warnings.append({
+                "wallet_id": wallet_id,
+                "symbol": sym,
+                "reason": "missing_exit_price",
+            })
+            continue
+        trade = account.exit_position(sym, float(exit_price), "eod_flatten")
+        if trade is None:
+            continue
+        exits.append({
+            "symbol": sym,
+            "exit_reason": "eod_flatten",
+            "entry_price": round(pos.entry_price, 4),
+            "exit_price": round(float(exit_price), 4),
+            "pnl": round(trade.pnl, 4),
+            "pnl_percent": round(trade.pnl_percent, 4),
+            "hold_minutes": trade.hold_minutes,
+            "catalyst_type": trade.entry_catalyst_type,
+            "total_score": trade.entry_score,
+            "entry_mode": trade.entry_mode,
+            "position_id": pos.position_id,
+            "shares": round(pos.shares, 6),
+            "cost_basis": round(pos.cost_basis, 4),
+            "wallet_id": wallet_id,
+            "strategy_id": wallet_id,
+        })
+    return exits, warnings
+
+
 def process_tick(
     candidates: list[dict],
     quality_map: dict[str, dict],
@@ -231,45 +276,63 @@ def process_tick(
     """
     Run one tick across both shadow wallets.
 
-    Order matches the engine: exits first, then entries.
-    Returns a dict with `entries` and `exits` lists (each tagged with
-    wallet_id/strategy_id) plus a `snapshots` dict for status reporting.
-    Never raises — falls back to empty result on any error.
+    Order matches the engine: exits first, then entries; an end-of-day
+    flatten sweep runs last so any position still open at close exits at
+    the cached point-in-time price. Returns a dict with `entries`,
+    `exits`, `warnings`, and `snapshots`. Never raises — falls back to
+    an empty result on any error.
     """
     if not enabled():
-        return {"entries": [], "exits": [], "snapshots": {}, "skipped": "disabled"}
+        return {"entries": [], "exits": [], "warnings": [], "snapshots": {},
+                "skipped": "disabled"}
 
     intrabar_map = intrabar_map or {}
     try:
+        from paper import eod as _eod
         exits: list[dict] = []
         exits.extend(_process_exits_for(WALLET_DETERMINISTIC, quality_map, intrabar_map))
         if _llm_enabled():
             exits.extend(_process_exits_for(WALLET_AI, quality_map, intrabar_map))
 
+        # Block entries inside the EOD cutoff window for the shadow wallets too.
         entries: list[dict] = []
-        entries.extend(
-            _process_entries_for(
-                WALLET_DETERMINISTIC,
-                "enhanced_shadow_decision",
-                candidates,
-                quality_map,
-            )
-        )
-        if _llm_enabled():
+        _entries_blocked, _ = _eod.entries_blocked()
+        if not _entries_blocked:
             entries.extend(
                 _process_entries_for(
-                    WALLET_AI, "llm_decision", candidates, quality_map
+                    WALLET_DETERMINISTIC,
+                    "enhanced_shadow_decision",
+                    candidates,
+                    quality_map,
                 )
             )
+            if _llm_enabled():
+                entries.extend(
+                    _process_entries_for(
+                        WALLET_AI, "llm_decision", candidates, quality_map
+                    )
+                )
+
+        warnings: list[dict] = []
+        if _eod.flatten_due():
+            flat_exits, flat_warn = _eod_flatten_for(WALLET_DETERMINISTIC, quality_map)
+            exits.extend(flat_exits)
+            warnings.extend(flat_warn)
+            if _llm_enabled():
+                ai_exits, ai_warn = _eod_flatten_for(WALLET_AI, quality_map)
+                exits.extend(ai_exits)
+                warnings.extend(ai_warn)
 
         return {
             "entries": entries,
             "exits": exits,
+            "warnings": warnings,
             "snapshots": snapshot(),
         }
     except Exception as exc:
         logger.warning("shadow_wallets.process_tick failed defensively: %s", exc)
-        return {"entries": [], "exits": [], "snapshots": {}, "error": str(exc)}
+        return {"entries": [], "exits": [], "warnings": [], "snapshots": {},
+                "error": str(exc)}
 
 
 def _last_prices_for(account: PaperAccount, quality_map: dict[str, dict]) -> dict[str, float]:
@@ -284,13 +347,104 @@ def _last_prices_for(account: PaperAccount, quality_map: dict[str, dict]) -> dic
     return out
 
 
+def _win_rate(account: PaperAccount) -> float | None:
+    if not account.trades:
+        return None
+    wins = sum(1 for t in account.trades if t.pnl > 0)
+    return round(wins / len(account.trades) * 100.0, 2)
+
+
+def _last_update_time(account: PaperAccount) -> str | None:
+    """Most recent activity timestamp on this wallet (entry or exit)."""
+    times: list[str] = []
+    for p in account.positions.values():
+        if p.entry_time:
+            times.append(p.entry_time)
+    for t in account.trades:
+        if t.exit_time:
+            times.append(t.exit_time)
+        elif t.entry_time:
+            times.append(t.entry_time)
+    return max(times) if times else None
+
+
+def _wallet_status(wallet_id: str) -> tuple[str, str | None]:
+    """Return (status, inactive_reason)."""
+    if not enabled():
+        return ("inactive", "PAPER_SHADOW_WALLETS_ENABLED=false")
+    if wallet_id == WALLET_AI and not _llm_enabled():
+        return ("inactive", "LLM_SHADOW_ENABLED=false")
+    return ("active", None)
+
+
+def get_positions(wallet_id: str, quality_map: dict[str, dict] | None = None) -> list[dict]:
+    """Open positions on `wallet_id`, formatted for the dashboard API."""
+    if wallet_id not in (WALLET_DETERMINISTIC, WALLET_AI):
+        return []
+    account = _wallet(wallet_id)
+    qmap = quality_map or {}
+    out: list[dict] = []
+    for sym, pos in account.positions.items():
+        q = qmap.get(sym) or {}
+        current = (
+            q.get("last_trade_price") or q.get("bid") or pos.entry_price
+        )
+        try:
+            current = float(current)
+        except (TypeError, ValueError):
+            current = pos.entry_price
+        d = pos.to_dict()
+        d["current_price"] = current
+        d["unrealized_pnl"] = round(pos.unrealized_pnl(current), 4)
+        d["unrealized_pnl_percent"] = round(
+            (pos.unrealized_pnl(current) / pos.cost_basis * 100) if pos.cost_basis else 0,
+            4,
+        )
+        d["wallet_id"] = wallet_id
+        d["strategy_id"] = wallet_id
+        out.append(d)
+    return out
+
+
+def get_trades(wallet_id: str) -> list[dict]:
+    """Closed trades on `wallet_id`."""
+    if wallet_id not in (WALLET_DETERMINISTIC, WALLET_AI):
+        return []
+    account = _wallet(wallet_id)
+    out: list[dict] = []
+    for t in account.trades:
+        d = t.to_dict()
+        d["wallet_id"] = wallet_id
+        d["strategy_id"] = wallet_id
+        out.append(d)
+    return out
+
+
+def _wallet_snapshot(wallet_id: str, quality_map: dict[str, dict]) -> dict:
+    account = _wallet(wallet_id)
+    base = account.to_status(_last_prices_for(account, quality_map))
+    status, inactive_reason = _wallet_status(wallet_id)
+    daily_baseline = account.daily_start_equity or account.starting_cash
+    daily_pnl = round(base["equity"] - daily_baseline, 4) if daily_baseline else 0.0
+    base.update({
+        "wallet_id": wallet_id,
+        "strategy_id": wallet_id,
+        "status": status,
+        "inactive_reason": inactive_reason,
+        "daily_pnl": daily_pnl,
+        "win_rate": _win_rate(account),
+        "last_update_time": _last_update_time(account),
+    })
+    return base
+
+
 def snapshot(quality_map: dict[str, dict] | None = None) -> dict:
     """Return a status dict for both shadow wallets (engine wallet not included)."""
-    det, ai = _ensure_wallets()
+    _ensure_wallets()
     qmap = quality_map or {}
     return {
-        WALLET_DETERMINISTIC: det.to_status(_last_prices_for(det, qmap)),
-        WALLET_AI: ai.to_status(_last_prices_for(ai, qmap)),
+        WALLET_DETERMINISTIC: _wallet_snapshot(WALLET_DETERMINISTIC, qmap),
+        WALLET_AI: _wallet_snapshot(WALLET_AI, qmap),
         "enabled": enabled(),
         "llm_enabled": _llm_enabled(),
     }

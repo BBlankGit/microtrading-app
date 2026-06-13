@@ -27,21 +27,144 @@ async def paper_trades():
 @router.get("/wallets")
 async def paper_wallets():
     """
-    Phase G1B Part C — snapshot of engine + shadow fake wallets.
+    Phase G1B Part C / G1B-H1 Part A — snapshot of all three fake wallets.
 
-    Returns the engine wallet's status alongside the deterministic_shadow and
-    ai_shadow ledgers when ``PAPER_SHADOW_WALLETS_ENABLED``. Read-only;
-    research fake-money only.
+    Always returns the engine plus both shadow wallets, even when a shadow
+    wallet is inactive (so dashboards never have to hide the card). Each
+    bucket includes status, inactive_reason, daily_pnl, win_rate, and
+    last_update_time. Read-only; fake-money only.
     """
     from paper import shadow_wallets as _sw
-    engine_status = simulator.get_status()
+    engine_raw = simulator.get_status()
+    engine_trades = simulator.get_trades()
+    engine_wins = sum(1 for t in engine_trades if (t.get("pnl") or 0) > 0)
+    engine_win_rate = (
+        round(engine_wins / len(engine_trades) * 100.0, 2)
+        if engine_trades
+        else None
+    )
+    engine_last_update = None
+    times = [t.get("exit_time") for t in engine_trades if t.get("exit_time")]
+    times += [p.get("entry_time") for p in simulator.get_positions() if p.get("entry_time")]
+    if times:
+        engine_last_update = max(times)
+    daily_baseline = engine_raw.get("daily_start_equity") or engine_raw.get("starting_cash")
+    daily_pnl = None
+    if daily_baseline:
+        daily_pnl = round((engine_raw.get("equity") or 0) - float(daily_baseline), 4)
+    engine = {
+        **engine_raw,
+        "wallet_id": "engine",
+        "strategy_id": "engine",
+        "status": "active",
+        "inactive_reason": None,
+        "daily_pnl": daily_pnl,
+        "win_rate": engine_win_rate,
+        "last_update_time": engine_last_update,
+    }
     shadow = _sw.snapshot()
     return {
-        "engine": engine_status,
+        "engine": engine,
         "deterministic_shadow": shadow.get(_sw.WALLET_DETERMINISTIC),
         "ai_shadow": shadow.get(_sw.WALLET_AI),
         "shadow_wallets_enabled": shadow.get("enabled"),
         "llm_enabled": shadow.get("llm_enabled"),
+        "wallets": [
+            engine,
+            shadow.get(_sw.WALLET_DETERMINISTIC),
+            shadow.get(_sw.WALLET_AI),
+        ],
+    }
+
+
+@router.get("/wallets/positions")
+async def paper_wallet_positions(wallet_id: str | None = None):
+    """
+    Open positions, optionally filtered by wallet_id. When `wallet_id` is
+    omitted, returns positions across engine + both shadow wallets, each
+    tagged with `wallet_id`/`strategy_id`. Backward-compatible with the
+    existing `/api/paper/positions` endpoint (which still returns engine
+    only).
+    """
+    from paper import shadow_wallets as _sw
+
+    engine_positions = [
+        {**p, "wallet_id": "engine", "strategy_id": "engine"}
+        for p in simulator.get_positions()
+    ]
+    if wallet_id == "engine":
+        return {"wallet_id": "engine", "positions": engine_positions}
+    if wallet_id == _sw.WALLET_DETERMINISTIC:
+        return {
+            "wallet_id": _sw.WALLET_DETERMINISTIC,
+            "positions": _sw.get_positions(_sw.WALLET_DETERMINISTIC),
+        }
+    if wallet_id == _sw.WALLET_AI:
+        return {
+            "wallet_id": _sw.WALLET_AI,
+            "positions": _sw.get_positions(_sw.WALLET_AI),
+        }
+    return {
+        "wallet_id": None,
+        "positions": (
+            engine_positions
+            + _sw.get_positions(_sw.WALLET_DETERMINISTIC)
+            + _sw.get_positions(_sw.WALLET_AI)
+        ),
+    }
+
+
+@router.get("/wallets/trades")
+async def paper_wallet_trades(
+    wallet_id: str | None = None,
+    session_date: str | None = None,
+    latest_session: bool = False,
+):
+    """
+    Closed trades, optionally filtered by wallet_id and/or session_date.
+
+    `session_date` is an America/New_York YYYY-MM-DD trading-session date.
+    `latest_session=true` resolves automatically to the latest completed
+    US session so the dashboard's "latest closed positions" view keeps
+    working after 16:00 ET and over weekends. Trades are matched on the
+    NY session date of their exit_time (or entry_time if exit is missing).
+    """
+    from paper import shadow_wallets as _sw
+    from paper.session import latest_session_date_ny, session_date_for
+
+    engine_trades = [
+        {**t, "wallet_id": "engine", "strategy_id": "engine"}
+        for t in simulator.get_trades()
+    ]
+    det_trades = _sw.get_trades(_sw.WALLET_DETERMINISTIC)
+    ai_trades = _sw.get_trades(_sw.WALLET_AI)
+
+    if wallet_id == "engine":
+        trades = engine_trades
+    elif wallet_id == _sw.WALLET_DETERMINISTIC:
+        trades = det_trades
+    elif wallet_id == _sw.WALLET_AI:
+        trades = ai_trades
+    else:
+        trades = engine_trades + det_trades + ai_trades
+
+    resolved_session = session_date
+    if latest_session and not session_date:
+        resolved_session = latest_session_date_ny()
+
+    if resolved_session:
+        def _matches(t: dict) -> bool:
+            ts = t.get("exit_time") or t.get("entry_time")
+            sd = session_date_for(ts)
+            return sd == resolved_session
+        trades = [t for t in trades if _matches(t)]
+
+    return {
+        "wallet_id": wallet_id,
+        "session_date": resolved_session,
+        "latest_session": bool(latest_session),
+        "count": len(trades),
+        "trades": trades,
     }
 
 

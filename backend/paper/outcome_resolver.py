@@ -34,6 +34,18 @@ _MAX_PER_RUN = 200
 _HIT_POSITIVE = (1.0, 2.0, 3.0, 5.0)
 _HIT_NEGATIVE = (1.0, 2.0)
 
+# Surfaced via /api/audit/persistence/status so dashboards can show the
+# resolver heartbeat without going to the DB.
+_LAST_RUN: dict = {"at": None, "summary": None}
+
+# Caveat surfaced via persistence_status() for Part G of the H1 review:
+# the cache-only resolver cannot observe interval high/low between the
+# reference tick and the horizon.
+_HIGH_LOW_CAVEAT = (
+    "Interval high/low unavailable in current resolver; future_price is "
+    "cache price at resolution time."
+)
+
 
 async def _read_cached_last_price(symbol: str) -> float | None:
     """Pull the most recent cached last_price for `symbol`, or None."""
@@ -126,17 +138,24 @@ async def resolve_pending(max_rows: int = _MAX_PER_RUN) -> dict:
                             UPDATE paper_candidate_outcomes
                                SET status = 'missing_data',
                                    resolved_at = $1,
-                                   error = $2
-                             WHERE id = $3
+                                   error = $2,
+                                   source = $3
+                             WHERE id = $4
                             """,
                             now,
                             "no cached price" if future_price is None else "invalid reference_price",
+                            "missing_cache",
                             row_id,
                         )
                         summary["missing_data"] += 1
                         continue
 
                     fr, hits = _compute_hits(float(ref_price), float(future_price))
+                    # NOTE: interval high/low is not safely available from the
+                    # cache (which only stores a single last_price point), so
+                    # max_high_return_percent and max_low_return_percent stay
+                    # NULL. The resolver does not synthesize them — clients
+                    # should treat NULL as "interval high/low unavailable".
                     await conn.execute(
                         """
                         UPDATE paper_candidate_outcomes
@@ -150,8 +169,9 @@ async def resolve_pending(max_rows: int = _MAX_PER_RUN) -> dict:
                                hit_plus_3pct = $6,
                                hit_plus_5pct = $7,
                                hit_minus_1pct = $8,
-                               hit_minus_2pct = $9
-                         WHERE id = $10
+                               hit_minus_2pct = $9,
+                               source = $10
+                         WHERE id = $11
                         """,
                         now,
                         float(future_price),
@@ -162,6 +182,7 @@ async def resolve_pending(max_rows: int = _MAX_PER_RUN) -> dict:
                         hits.get("hit_plus_5pct"),
                         hits.get("hit_minus_1pct"),
                         hits.get("hit_minus_2pct"),
+                        "marketdata_cache",
                         row_id,
                     )
                     summary["resolved"] += 1
@@ -175,28 +196,43 @@ async def resolve_pending(max_rows: int = _MAX_PER_RUN) -> dict:
                             UPDATE paper_candidate_outcomes
                                SET status = 'error',
                                    resolved_at = $1,
-                                   error = $2
-                             WHERE id = $3
+                                   error = $2,
+                                   source = $3
+                             WHERE id = $4
                             """,
                             now,
                             f"{type(exc).__name__}: {exc}"[:512],
+                            "error",
                             row_id,
                         )
                     except Exception:
                         pass
                     summary["errored"] += 1
 
+        _LAST_RUN["at"] = now.isoformat()
+        _LAST_RUN["summary"] = dict(summary)
         return summary
     except Exception as exc:
         logger.warning("outcome_resolver: resolve_pending failed: %s", exc)
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
+def last_run() -> dict:
+    """Public accessor for the last resolver-run heartbeat."""
+    return dict(_LAST_RUN)
+
+
 async def persistence_status() -> dict:
     """Counts for the /api/audit/persistence/status endpoint."""
     pool = await _db.get_pool()
     if pool is None:
-        return {"ok": False, "skipped": True, "reason": "no pool"}
+        return {
+            "ok": False,
+            "skipped": True,
+            "reason": "no pool",
+            "high_low_caveat": _HIGH_LOW_CAVEAT,
+            "resolver_last_run": last_run(),
+        }
     try:
         async with pool.acquire() as conn:
             cand_total = await conn.fetchval(
@@ -213,12 +249,63 @@ async def persistence_status() -> dict:
                 """
             )
             outcomes_by_status = {r["status"]: int(r["n"]) for r in outcome_counts}
+            by_horizon_rows = await conn.fetch(
+                """
+                SELECT horizon_minutes, status, COUNT(*) AS n
+                  FROM paper_candidate_outcomes
+                 GROUP BY horizon_minutes, status
+                 ORDER BY horizon_minutes
+                """
+            )
+            by_horizon: dict[str, dict[str, int]] = {}
+            for r in by_horizon_rows:
+                bucket = by_horizon.setdefault(str(int(r["horizon_minutes"])), {})
+                bucket[r["status"]] = int(r["n"])
+            by_source_rows = await conn.fetch(
+                """
+                SELECT COALESCE(source, 'unknown') AS source, COUNT(*) AS n
+                  FROM paper_candidate_outcomes
+                 GROUP BY source
+                """
+            )
+            by_source = {r["source"]: int(r["n"]) for r in by_source_rows}
+            recent_extras_examples = await conn.fetch(
+                """
+                SELECT id, symbol, created_at,
+                       (extras_json IS NOT NULL) AS has_extras
+                  FROM paper_candidates
+                 ORDER BY id DESC
+                 LIMIT 5
+                """
+            )
+        total = int(cand_total or 0)
+        with_extras = int(cand_with_extras or 0)
+        coverage_percent = round(with_extras / total * 100.0, 2) if total else 0.0
         return {
             "ok": True,
-            "candidates_total": int(cand_total or 0),
-            "candidates_with_extras_json": int(cand_with_extras or 0),
+            "candidates_total": total,
+            "candidates_with_extras_json": with_extras,
+            "extras_json_coverage_percent": coverage_percent,
             "outcomes_by_status": outcomes_by_status,
+            "outcomes_by_horizon": by_horizon,
+            "outcomes_by_source": by_source,
+            "recent_extras_examples": [
+                {
+                    "id": int(r["id"]),
+                    "symbol": r["symbol"],
+                    "has_extras": bool(r["has_extras"]),
+                    "created_at": r["created_at"].isoformat() if r["created_at"] else None,
+                }
+                for r in recent_extras_examples
+            ],
+            "high_low_caveat": _HIGH_LOW_CAVEAT,
+            "resolver_last_run": last_run(),
         }
     except Exception as exc:
         logger.warning("outcome_resolver: persistence_status failed: %s", exc)
-        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}: {exc}",
+            "high_low_caveat": _HIGH_LOW_CAVEAT,
+            "resolver_last_run": last_run(),
+        }

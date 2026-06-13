@@ -32,6 +32,16 @@ class Settings(BaseSettings):
     # LLM_SHADOW_ENABLED). Same starting capital, sizing, TP/SL, max-hold as the
     # engine wallet, but independent ledgers — never affects engine decisions.
     PAPER_SHADOW_WALLETS_ENABLED: bool = False
+
+    # Phase G1B-H1 Part E: end-of-day flattening (fake-money only).
+    # Microtrading targets are intraday; default behavior is to refuse new
+    # entries inside a cutoff window before the regular close and to flatten
+    # all open fake positions at/after the close. Applies to engine + both
+    # shadow wallets.
+    PAPER_ALLOW_OVERNIGHT_POSITIONS: bool = False
+    PAPER_EOD_FLATTEN_ENABLED: bool = True
+    PAPER_ENTRY_CUTOFF_MINUTES_BEFORE_CLOSE: int = 10
+    PAPER_EOD_FLATTEN_MINUTES_BEFORE_CLOSE: int = 0
     PAPER_POLL_INTERVAL_SECONDS: int = 60
     JOURNAL_RETRY_SECONDS: int = 30
     JOURNAL_RETENTION_DAYS: int = 14

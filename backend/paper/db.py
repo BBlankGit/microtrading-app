@@ -184,6 +184,10 @@ CREATE INDEX IF NOT EXISTS idx_paper_outcomes_pending_created_at
     ON paper_candidate_outcomes (created_at)
     WHERE status = 'pending';
 
+-- Phase G1B-H1 Part G: provenance for the future_price lookup.
+-- One of: marketdata_cache | missing_cache | error.
+ALTER TABLE paper_candidate_outcomes ADD COLUMN IF NOT EXISTS source TEXT;
+
 -- Phase G1B Part C: parallel fake wallets (engine + deterministic_shadow + ai_shadow).
 ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS wallet_id TEXT;
 ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS strategy_id TEXT;

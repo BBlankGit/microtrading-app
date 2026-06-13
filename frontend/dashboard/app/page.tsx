@@ -386,6 +386,46 @@ interface Dashboard {
   disclaimer: string;
 }
 
+// ── Phase G1B-H1: Wallets ────────────────────────────────────────────────────
+
+interface WalletSnapshot {
+  wallet_id: string;
+  strategy_id?: string;
+  status: "active" | "inactive";
+  inactive_reason?: string | null;
+  starting_cash: number;
+  cash: number;
+  equity: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  total_pnl_percent: number;
+  daily_pnl: number | null;
+  open_position_count: number;
+  closed_trade_count: number;
+  win_rate: number | null;
+  last_update_time: string | null;
+}
+
+interface WalletsResponse {
+  engine: WalletSnapshot;
+  deterministic_shadow: WalletSnapshot;
+  ai_shadow: WalletSnapshot;
+  shadow_wallets_enabled: boolean;
+  llm_enabled: boolean;
+  wallets: WalletSnapshot[];
+}
+
+interface WalletPosition extends Position {
+  wallet_id?: string;
+  strategy_id?: string;
+}
+
+interface WalletTrade extends Trade {
+  wallet_id?: string;
+  strategy_id?: string;
+}
+
 // ── Intelligence types ────────────────────────────────────────────────────────
 
 interface RedditRow {
@@ -830,6 +870,42 @@ async function fetchDashboard(): Promise<Dashboard | null> {
   }
 }
 
+async function fetchWallets(): Promise<WalletsResponse | null> {
+  try {
+    const r = await fetch("/api/paper/wallets");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWalletPositions(walletId?: string): Promise<WalletPosition[]> {
+  try {
+    const qs = walletId ? `?wallet_id=${encodeURIComponent(walletId)}` : "";
+    const r = await fetch(`/api/paper/wallets/positions${qs}`);
+    if (!r.ok) return [];
+    const body = await r.json();
+    return body.positions ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function fetchWalletTrades(walletId?: string, latestSession = true): Promise<WalletTrade[]> {
+  try {
+    const params = new URLSearchParams();
+    if (walletId) params.set("wallet_id", walletId);
+    if (latestSession) params.set("latest_session", "true");
+    const r = await fetch(`/api/paper/wallets/trades?${params.toString()}`);
+    if (!r.ok) return [];
+    const body = await r.json();
+    return body.trades ?? [];
+  } catch {
+    return [];
+  }
+}
+
 async function fetchJournal(): Promise<JournalData | null> {
   try {
     const [statusR, summaryR, ticksR, perfR] = await Promise.all([
@@ -997,6 +1073,227 @@ function StatBox({
     <div className="bg-gray-800 rounded p-3 border border-gray-700">
       <div className="text-xs text-gray-400 mb-1">{label}</div>
       <div className={`font-mono font-semibold text-sm ${cls}`}>{value}</div>
+    </div>
+  );
+}
+
+// ── Phase G1B-H1 Part A/C: 3-wallet dashboard panel ──────────────────────────
+
+function WalletCard({ wallet, label }: { wallet: WalletSnapshot | undefined; label: string }) {
+  const active = wallet?.status === "active";
+  const cardCls = active
+    ? "bg-gray-800 border-gray-700"
+    : "bg-gray-900 border-gray-800 opacity-80";
+  const badgeCls = active
+    ? "bg-green-900 text-green-300 border-green-700"
+    : "bg-gray-800 text-gray-400 border-gray-600";
+  return (
+    <div className={`rounded-lg border p-3 ${cardCls}`}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-semibold text-yellow-200">{label}</span>
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${badgeCls}`}>
+          {active ? "● ACTIVE" : "○ INACTIVE"}
+        </span>
+      </div>
+      {!active && wallet?.inactive_reason && (
+        <p className="text-[11px] text-gray-400 mb-2 font-mono">{wallet.inactive_reason}</p>
+      )}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+        <div className="text-gray-400">Cash</div>
+        <div className="font-mono text-right">${fmt(wallet?.cash)}</div>
+        <div className="text-gray-400">Equity</div>
+        <div className="font-mono text-right">${fmt(wallet?.equity)}</div>
+        <div className="text-gray-400">Realized P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(wallet?.realized_pnl ?? 0)}`}>{fmtUSD(wallet?.realized_pnl ?? 0)}</div>
+        <div className="text-gray-400">Unrealized P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(wallet?.unrealized_pnl ?? 0)}`}>{fmtUSD(wallet?.unrealized_pnl ?? 0)}</div>
+        <div className="text-gray-400">Total P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(wallet?.total_pnl ?? 0)}`}>
+          {fmtUSD(wallet?.total_pnl ?? 0)} ({fmt(wallet?.total_pnl_percent ?? 0)}%)
+        </div>
+        <div className="text-gray-400">Daily P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(wallet?.daily_pnl ?? 0)}`}>
+          {wallet?.daily_pnl != null ? fmtUSD(wallet.daily_pnl) : "—"}
+        </div>
+        <div className="text-gray-400">Open positions</div>
+        <div className="font-mono text-right">{wallet?.open_position_count ?? 0}</div>
+        <div className="text-gray-400">Closed trades</div>
+        <div className="font-mono text-right">{wallet?.closed_trade_count ?? 0}</div>
+        <div className="text-gray-400">Win rate</div>
+        <div className="font-mono text-right">{wallet?.win_rate != null ? `${wallet.win_rate}%` : "—"}</div>
+        <div className="text-gray-400">Last update</div>
+        <div className="font-mono text-right text-[10px] text-gray-400">{wallet?.last_update_time ? utcShort(wallet.last_update_time) : "—"}</div>
+      </div>
+    </div>
+  );
+}
+
+function WalletsPanel({ wallets }: { wallets: WalletsResponse | null }) {
+  if (!wallets) {
+    return <p className="text-gray-500 text-sm">Wallets unavailable.</p>;
+  }
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+      <WalletCard wallet={wallets.engine} label="ENGINE" />
+      <WalletCard wallet={wallets.deterministic_shadow} label="DETERMINISTIC_SHADOW" />
+      <WalletCard wallet={wallets.ai_shadow} label="AI_SHADOW" />
+    </div>
+  );
+}
+
+const WALLET_OPTIONS: { value: string; label: string }[] = [
+  { value: "all", label: "All wallets" },
+  { value: "engine", label: "ENGINE" },
+  { value: "deterministic_shadow", label: "DETERMINISTIC_SHADOW" },
+  { value: "ai_shadow", label: "AI_SHADOW" },
+];
+
+function WalletPositionRow({ p }: { p: WalletPosition }) {
+  return (
+    <tr className="border-b border-gray-800 hover:bg-gray-800">
+      <td className="py-2 pr-3 text-xs text-gray-400 font-mono">{p.wallet_id ?? "—"}</td>
+      <td className="py-2 pr-3 font-semibold text-yellow-300">{p.symbol}</td>
+      <td className="py-2 pr-3 font-mono">${fmt(p.entry_price, 4)}</td>
+      <td className="py-2 pr-3 font-mono">${fmt(p.current_price, 4)}</td>
+      <td className="py-2 pr-3 font-mono">{fmt(p.shares, 4)}</td>
+      <td className="py-2 pr-3 font-mono">${fmt(p.cost_basis)}</td>
+      <td className={`py-2 pr-3 font-mono ${pnlClass(p.unrealized_pnl)}`}>
+        {fmtUSD(p.unrealized_pnl)} ({fmt(p.unrealized_pnl_percent)}%)
+      </td>
+      <td className="py-2 pr-3 text-blue-300">{p.entry_catalyst_type}</td>
+      <td className="py-2 pr-3 text-gray-400 text-xs">{utcShort(p.entry_time)}</td>
+    </tr>
+  );
+}
+
+function WalletTradeRow({ t }: { t: WalletTrade }) {
+  return (
+    <tr className="border-b border-gray-800 hover:bg-gray-800">
+      <td className="py-2 pr-3 text-xs text-gray-400 font-mono">{t.wallet_id ?? "—"}</td>
+      <td className="py-2 pr-3 font-semibold text-yellow-300">{t.symbol}</td>
+      <td className="py-2 pr-3 font-mono">${fmt(t.entry_price, 4)}</td>
+      <td className="py-2 pr-3 font-mono">${fmt(t.exit_price, 4)}</td>
+      <td className={`py-2 pr-3 font-mono ${pnlClass(t.pnl)}`}>{fmtUSD(t.pnl)}</td>
+      <td className={`py-2 pr-3 font-mono ${pnlClass(t.pnl_percent)}`}>{fmt(t.pnl_percent)}%</td>
+      <td className="py-2 pr-3 text-gray-300">{t.exit_reason}</td>
+      <td className="py-2 pr-3 font-mono">{t.hold_minutes}m</td>
+      <td className="py-2 pr-3 text-blue-300">{t.entry_catalyst_type}</td>
+      <td className="py-2 pr-3 text-gray-400 text-xs">{utcShort(t.exit_time)}</td>
+    </tr>
+  );
+}
+
+function WalletExplorer() {
+  const [walletId, setWalletId] = useState<string>("all");
+  const [positions, setPositions] = useState<WalletPosition[]>([]);
+  const [trades, setTrades] = useState<WalletTrade[]>([]);
+  const [sessionDate, setSessionDate] = useState<string | null>(null);
+  const [openWarning, setOpenWarning] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    const wid = walletId === "all" ? undefined : walletId;
+    const [pos, trd, tradeMeta] = await Promise.all([
+      fetchWalletPositions(wid),
+      fetchWalletTrades(wid, true),
+      fetch(`/api/paper/wallets/trades?${wid ? `wallet_id=${encodeURIComponent(wid)}&` : ""}latest_session=true`).then(r => r.ok ? r.json() : null).catch(() => null),
+    ]);
+    setPositions(pos);
+    setTrades(trd);
+    setSessionDate(tradeMeta?.session_date ?? null);
+
+    // Part E warning: positions still open while overnight disabled and we are
+    // past close → surface as a banner.
+    try {
+      const ny = new Date().toLocaleTimeString("en-US", { hour12: false, timeZone: "America/New_York" });
+      const [hh] = ny.split(":").map(Number);
+      const afterClose = hh >= 16;
+      if (afterClose && pos.length > 0) {
+        setOpenWarning(`${pos.length} fake position(s) still open after US market close — EOD flatten may have missed an exit price.`);
+      } else {
+        setOpenWarning(null);
+      }
+    } catch {
+      setOpenWarning(null);
+    }
+  }, [walletId]);
+
+  useEffect(() => {
+    refresh();
+    const id = setInterval(refresh, 30_000);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="text-xs text-gray-400">Wallet</label>
+        <select
+          value={walletId}
+          onChange={(e) => setWalletId(e.target.value)}
+          className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono"
+        >
+          {WALLET_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        {sessionDate && (
+          <span className="text-xs text-gray-400 border border-gray-700 rounded px-2 py-0.5">
+            Latest US session: <span className="font-mono">{sessionDate}</span>
+          </span>
+        )}
+      </div>
+
+      {openWarning && (
+        <div className="rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300">
+          ⚠ {openWarning}
+        </div>
+      )}
+
+      <div>
+        <h3 className="text-sm font-semibold mb-2">Open Positions by Wallet ({positions.length})</h3>
+        {positions.length === 0 ? (
+          <p className="text-gray-500 text-sm">No open positions.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-gray-400 border-b border-gray-700">
+                <tr>
+                  {["Wallet","Symbol","Entry","Current","Shares","Cost","Unreal P&L","Catalyst","Entered"].map((h) => (
+                    <th key={h} className="pb-2 pr-3 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {positions.map(p => <WalletPositionRow key={`${p.wallet_id}-${p.position_id}`} p={p} />)}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div>
+        <h3 className="text-sm font-semibold mb-2">Latest-Session Closed Trades by Wallet ({trades.length})</h3>
+        {trades.length === 0 ? (
+          <p className="text-gray-500 text-sm">No closed positions for latest trading session.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="text-gray-400 border-b border-gray-700">
+                <tr>
+                  {["Wallet","Symbol","Entry","Exit","P&L","%","Reason","Hold","Catalyst","Closed"].map((h) => (
+                    <th key={h} className="pb-2 pr-3 font-medium whitespace-nowrap">{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...trades].reverse().map(t => (
+                  <WalletTradeRow key={`${t.wallet_id}-${t.position_id}-${t.exit_time}`} t={t} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -4189,24 +4486,37 @@ function NewsTab({ token }: { token: string }) {
       {items.length === 0 ? (
         <p className="text-gray-500 text-sm py-4 text-center">No news items match the current filters.</p>
       ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+        <div className="w-full">
+          {/*
+            Phase G1B-H1 Part H: layout reworked to fit the standard
+            max-w-[1800px] dashboard container without a horizontal
+            scrollbar on a normal desktop. Removed the always-"inactive"
+            AI Analysis column, merged Impact + Sentiment + Bull/Bear into
+            a single Signal column, dropped Materiality/Sent.Score into a
+            tooltip on the Signal cell, and let Title wrap rather than
+            truncate. `table-fixed` keeps column widths predictable.
+          */}
+          <table className="w-full text-sm table-fixed">
+            <colgroup>
+              <col className="w-[7%]" />   {/* Time */}
+              <col className="w-[7%]" />   {/* Ticker */}
+              <col className="w-[34%]" />  {/* Title */}
+              <col className="w-[10%]" />  {/* Source */}
+              <col className="w-[10%]" />  {/* Event */}
+              <col className="w-[14%]" />  {/* Signal (impact + sent + flags) */}
+              <col className="w-[14%]" />  {/* Explanation */}
+              <col className="w-[4%]" />   {/* URL */}
+            </colgroup>
             <thead>
               <tr className="text-xs text-gray-400 border-b border-gray-700">
                 <th className="pb-2 pr-2 text-left whitespace-nowrap">Time</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Ticker(s)</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Ticker</th>
                 <th className="pb-2 pr-2 text-left">Title</th>
                 <th className="pb-2 pr-2 text-left whitespace-nowrap">Source</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Rule Event Type</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Rule Impact</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Rule Sentiment</th>
-                <th className="pb-2 pr-2 text-right whitespace-nowrap">Materiality</th>
-                <th className="pb-2 pr-2 text-right whitespace-nowrap">Sent. Score</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Bullish Flags</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">Bearish Flags</th>
-                <th className="pb-2 pr-2 text-left">Rule Explanation</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">AI Analysis</th>
-                <th className="pb-2 pr-2 text-left whitespace-nowrap">URL</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Event</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Signal</th>
+                <th className="pb-2 pr-2 text-left">Explanation</th>
+                <th className="pb-2 pr-2 text-left whitespace-nowrap">Link</th>
               </tr>
             </thead>
             <tbody>
@@ -4235,54 +4545,49 @@ function NewsTab({ token }: { token: string }) {
                 const explanation = item.rule_explanation ?? (reasons.length > 0 ? reasons.join("; ") : "");
                 const sentScore = item.rule_sentiment_score ?? item.sentiment_score;
                 const materiality = item.rule_materiality_score ?? item.materiality_score;
+                const signalTitle = [
+                  `impact=${impactVal}`,
+                  `sentiment=${sentVal}`,
+                  materiality != null ? `materiality=${Number(materiality).toFixed(2)}` : null,
+                  sentScore != null ? `sent_score=${Number(sentScore).toFixed(2)}` : null,
+                  bull.length ? `bullish: ${bull.join(", ")}` : null,
+                  bear.length ? `bearish: ${bear.join(", ")}` : null,
+                ].filter(Boolean).join(" · ");
 
                 return (
                   <tr key={item.catalyst_id ?? `${item.symbol}-${i}`} className="border-b border-gray-800 hover:bg-gray-800/40 align-top">
-                    <td className="py-1.5 pr-2 text-xs text-gray-500 font-mono whitespace-nowrap">{pub}</td>
+                    <td className="py-1.5 pr-2 text-[11px] text-gray-500 font-mono whitespace-nowrap">{pub}</td>
                     <td className="py-1.5 pr-2 font-mono font-semibold text-yellow-300 whitespace-nowrap" title={(item.tickers ?? [item.symbol]).join(", ")}>
                       <span className="text-yellow-200">{item.symbol}</span>
                       {item.tickers && item.tickers.length > 1 && (
-                        <span className="text-gray-500 text-xs ml-1">({tickers})</span>
+                        <span className="text-gray-500 text-[10px] ml-1">+{item.tickers.length - 1}</span>
                       )}
                     </td>
-                    <td className="py-1.5 pr-2 text-gray-200 max-w-[360px] truncate" title={item.title}>{item.title || "—"}</td>
-                    <td className="py-1.5 pr-2 text-xs text-gray-500 whitespace-nowrap max-w-[120px] truncate" title={item.publisher || item.source || ""}>
+                    <td className="py-1.5 pr-2 text-gray-200 break-words" title={`${item.title || ""}\n${tickers || ""}`}>
+                      {item.title || "—"}
+                    </td>
+                    <td className="py-1.5 pr-2 text-xs text-gray-500 break-words" title={item.publisher || item.source || ""}>
                       {item.publisher || item.source || "—"}
                     </td>
-                    <td className="py-1.5 pr-2 text-xs text-blue-300 whitespace-nowrap">{evType}</td>
-                    <td className="py-1.5 pr-2 whitespace-nowrap">
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${impactBadge}`}>
-                        {impactVal.toUpperCase()}
-                      </span>
+                    <td className="py-1.5 pr-2 text-xs text-blue-300 break-words">{evType}</td>
+                    <td className="py-1.5 pr-2 whitespace-nowrap" title={signalTitle}>
+                      <div className="flex flex-wrap gap-1">
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${impactBadge}`}>
+                          {impactVal.toUpperCase()}
+                        </span>
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${sentBadge}`}>
+                          {sentVal}
+                        </span>
+                        {bull.length > 0 && (
+                          <span className="text-[10px] font-semibold text-green-400" title={bull.join(", ")}>+{bull.length}</span>
+                        )}
+                        {bear.length > 0 && (
+                          <span className="text-[10px] font-semibold text-red-400" title={bear.join(", ")}>−{bear.length}</span>
+                        )}
+                      </div>
                     </td>
-                    <td className="py-1.5 pr-2 whitespace-nowrap">
-                      <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${sentBadge}`}>
-                        {sentVal}
-                      </span>
-                    </td>
-                    <td className="py-1.5 pr-2 text-xs font-mono text-right whitespace-nowrap text-gray-300">
-                      {materiality != null ? Number(materiality).toFixed(2) : "—"}
-                    </td>
-                    <td className="py-1.5 pr-2 text-xs font-mono text-right whitespace-nowrap text-gray-300">
-                      {sentScore != null ? Number(sentScore).toFixed(2) : "—"}
-                    </td>
-                    <td className="py-1.5 pr-2 text-xs whitespace-nowrap" title={bull.join(", ")}>
-                      {bull.length > 0 ? (
-                        <span className="text-green-400 font-semibold">+{bull.length}</span>
-                      ) : <span className="text-gray-600">—</span>}
-                    </td>
-                    <td className="py-1.5 pr-2 text-xs whitespace-nowrap" title={bear.join(", ")}>
-                      {bear.length > 0 ? (
-                        <span className="text-red-400 font-semibold">−{bear.length}</span>
-                      ) : <span className="text-gray-600">—</span>}
-                    </td>
-                    <td className="py-1.5 pr-2 text-xs text-gray-400 max-w-[220px] truncate" title={explanation || "—"}>
+                    <td className="py-1.5 pr-2 text-[11px] text-gray-400 break-words" title={explanation || "—"}>
                       {explanation || <span className="text-gray-600">—</span>}
-                    </td>
-                    <td className="py-1.5 pr-2 text-xs whitespace-nowrap" title="AI analysis not active yet — no OpenAI/Anthropic/Ollama calls in this phase.">
-                      <span className="text-xs font-semibold px-2 py-0.5 rounded border bg-purple-950 text-purple-400 border-purple-800">
-                        inactive
-                      </span>
                     </td>
                     <td className="py-1.5 pr-2 text-xs whitespace-nowrap">
                       {item.article_url ? (
@@ -4984,6 +5289,7 @@ export default function Home() {
   const [marketTrend, setMarketTrend] = useState<MarketTrendData | null>(null);
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigState | null>(null);
   const [topTab, setTopTab] = useState<"main" | "intelligence" | "strategy">("main");
+  const [wallets, setWallets] = useState<WalletsResponse | null>(null);
 
   // Note: NewsTab / EarningsTab / InsidersTab manage their own cache-first
   // fetches with filters. They are not part of the global 30s loop so the
@@ -4991,9 +5297,10 @@ export default function Home() {
   // is not open.
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, mtdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, mtdata, wdata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
       fetchReddit(), fetchPremarket(), fetchRuntimeConfig(), fetchMarketTrend(),
+      fetchWallets(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -5004,6 +5311,7 @@ export default function Home() {
     setPremarket(pmdata);
     setRuntimeConfig(rcfgdata);
     setMarketTrend(mtdata);
+    setWallets(wdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -5200,6 +5508,17 @@ export default function Home() {
         </section>
       )}
 
+      {/* Phase G1B-H1 Part A — 3-wallet summary */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Fake Wallets
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            engine + 2 shadow strategies · fake-money · no broker · no real orders
+          </span>
+        </h2>
+        <WalletsPanel wallets={wallets} />
+      </section>
+
       {/* Controls */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
         <h2 className="text-lg font-semibold mb-3">Controls</h2>
@@ -5235,20 +5554,31 @@ export default function Home() {
         )}
       </section>
 
-      {/* Open positions */}
+      {/* Open positions — engine wallet (backward-compat) */}
       <section className="mb-6">
         <h2 className="text-xl font-semibold mb-3">
-          Open Positions ({dashboard?.positions.length ?? 0})
+          Open Positions — ENGINE ({dashboard?.positions.length ?? 0})
         </h2>
         <PositionsTable positions={dashboard?.positions ?? []} />
       </section>
 
-      {/* Closed trades */}
+      {/* Closed trades — engine wallet (backward-compat) */}
       <section className="mb-6">
         <h2 className="text-xl font-semibold mb-3">
-          Closed Trades ({dashboard?.trades.length ?? 0})
+          Closed Trades — ENGINE ({dashboard?.trades.length ?? 0})
         </h2>
         <TradesTable trades={dashboard?.trades ?? []} />
+      </section>
+
+      {/* Phase G1B-H1 Parts C+D — per-wallet open/closed positions */}
+      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+        <h2 className="text-lg font-semibold mb-3">
+          Per-Wallet Positions &amp; Trades
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            filter by wallet · latest US trading session · stays visible after close
+          </span>
+        </h2>
+        <WalletExplorer />
       </section>
 
       {/* Last tick candidates */}
