@@ -278,22 +278,36 @@ async def paper_wallet_performance(session_date: str | None = None):
         else session_date
     )
 
+    _OOS_REASON = "invalid_out_of_session_entry_flatten"
+
     def _build(wallet_id: str, trades_all: list, positions_all: list, snap: dict) -> dict:
         session_trades = [
             t for t in trades_all
             if session_date_for(t.get("exit_time") or t.get("entry_time")) == resolved
         ]
-        pnls = [t.get("pnl") or 0.0 for t in session_trades]
-        wins = [p for p in pnls if p > 0]
-        losses = [p for p in pnls if p <= 0]
-        realized = round(sum(pnls), 6)
+        # Split valid vs out-of-session trades (Part F: OOS excluded from normal metrics)
+        oos_trades = [t for t in session_trades if t.get("exit_reason") == _OOS_REASON]
+        valid_trades = [t for t in session_trades if t.get("exit_reason") != _OOS_REASON]
+
+        valid_pnls = [t.get("pnl") or 0.0 for t in valid_trades]
+        wins = [p for p in valid_pnls if p > 0]
+        losses = [p for p in valid_pnls if p <= 0]
+        realized = round(sum(valid_pnls), 6)
         unrealized = round(
             sum(p.get("unrealized_pnl") or 0.0 for p in positions_all), 6
         )
         total = round(realized + unrealized, 6)
         start = float(snap.get("starting_cash") or 1000.0)
         ret_pct = round(total / start * 100.0, 4) if start else None
-        n = len(session_trades)
+        n = len(valid_trades)
+
+        # Raw/audit fields including OOS trades
+        all_pnls = [t.get("pnl") or 0.0 for t in session_trades]
+        oos_pnls = [t.get("pnl") or 0.0 for t in oos_trades]
+        raw_realized = round(sum(all_pnls), 6)
+        raw_total = round(raw_realized + unrealized, 6)
+        raw_ret_pct = round(raw_total / start * 100.0, 4) if start else None
+
         last_trade = (
             max((t.get("exit_time") or "" for t in session_trades), default=None) or None
         )
@@ -307,6 +321,7 @@ async def paper_wallet_performance(session_date: str | None = None):
             "starting_cash": start,
             "cash": snap.get("cash"),
             "equity": snap.get("equity"),
+            # Normal (OOS-excluded) performance metrics
             "realized_pnl": realized,
             "unrealized_pnl": unrealized,
             "total_pnl": total,
@@ -317,18 +332,20 @@ async def paper_wallet_performance(session_date: str | None = None):
             "winning_trades_count": len(wins),
             "losing_trades_count": len(losses),
             "win_rate": round(len(wins) / n * 100.0, 1) if n else None,
-            "avg_trade_pnl": round(sum(pnls) / n, 6) if n else None,
-            "best_trade_pnl": round(max(pnls), 6) if pnls else None,
-            "worst_trade_pnl": round(min(pnls), 6) if pnls else None,
+            "avg_trade_pnl": round(sum(valid_pnls) / n, 6) if n else None,
+            "best_trade_pnl": round(max(valid_pnls), 6) if valid_pnls else None,
+            "worst_trade_pnl": round(min(valid_pnls), 6) if valid_pnls else None,
             "max_drawdown": None,
-            "invalid_out_of_session_count": sum(
-                1 for t in session_trades
-                if t.get("exit_reason") == "invalid_out_of_session_entry_flatten"
-            ),
             "eod_flatten_count": sum(
-                1 for t in session_trades
+                1 for t in valid_trades
                 if (t.get("exit_reason") or "").startswith("eod_flatten")
             ),
+            # OOS audit fields (separate from normal metrics)
+            "invalid_out_of_session_count": len(oos_trades),
+            "invalid_out_of_session_realized_pnl": round(sum(oos_pnls), 6),
+            "raw_realized_pnl_including_invalid": raw_realized,
+            "raw_total_pnl_including_invalid": raw_total,
+            "raw_return_percent_including_invalid": raw_ret_pct,
             "last_trade_time": last_trade,
             "last_update_time": snap.get("last_update_time"),
         }

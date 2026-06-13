@@ -469,6 +469,10 @@ interface WalletPerf {
   worst_trade_pnl: number | null;
   max_drawdown: number | null;
   invalid_out_of_session_count: number;
+  invalid_out_of_session_realized_pnl: number;
+  raw_realized_pnl_including_invalid: number;
+  raw_total_pnl_including_invalid: number;
+  raw_return_percent_including_invalid: number | null;
   eod_flatten_count: number;
   last_trade_time: string | null;
   last_update_time: string | null;
@@ -1290,6 +1294,7 @@ function WalletExplorer({ walletId: propWalletId, onWalletChange }: { walletId?:
   const [ownId, setOwnId] = useState<string>("all");
   const walletId = propWalletId ?? ownId;
   const handleChange = (id: string) => { setOwnId(id); onWalletChange?.(id); };
+  const filterLabel = WALLET_OPTIONS.find(o => o.value === walletId)?.label ?? "All wallets";
   const [positions, setPositions] = useState<WalletPosition[]>([]);
   const [backendWarnings, setBackendWarnings] = useState<WalletPositionWarning[]>([]);
   const [trades, setTrades] = useState<WalletTrade[]>([]);
@@ -1378,7 +1383,7 @@ function WalletExplorer({ walletId: propWalletId, onWalletChange }: { walletId?:
       )}
 
       <div>
-        <h3 className="text-sm font-semibold mb-2">Open Positions by Wallet ({positions.length})</h3>
+        <h3 className="text-sm font-semibold mb-2">Open Positions — {filterLabel} ({positions.length})</h3>
         {positions.length === 0 ? (
           <p className="text-gray-500 text-sm">No open positions.</p>
         ) : (
@@ -1400,7 +1405,7 @@ function WalletExplorer({ walletId: propWalletId, onWalletChange }: { walletId?:
       </div>
 
       <div>
-        <h3 className="text-sm font-semibold mb-2">Latest-Session Closed Trades by Wallet ({trades.length})</h3>
+        <h3 className="text-sm font-semibold mb-2">Closed Trades — {filterLabel} ({trades.length})</h3>
         {trades.length === 0 ? (
           <p className="text-gray-500 text-sm">No closed positions for latest trading session.</p>
         ) : (
@@ -5459,13 +5464,20 @@ function WalletPerfCard({ perf, isBest }: { perf: WalletPerf; isBest: boolean })
           )}
           {perf.invalid_out_of_session_count > 0 && (
             <>
-              <div className="text-gray-500">OOS closed</div>
-              <div className="font-mono text-orange-400">{perf.invalid_out_of_session_count}</div>
+              <div className="text-gray-500">OOS excluded</div>
+              <div className="font-mono text-orange-400">{perf.invalid_out_of_session_count} ({fmtUSD(perf.invalid_out_of_session_realized_pnl)})</div>
+              <div className="text-gray-500">Raw total P&L</div>
+              <div className={`font-mono ${pnlCls(perf.raw_total_pnl_including_invalid)}`}>{fmtUSD(perf.raw_total_pnl_including_invalid)}</div>
             </>
           )}
         </div>
       )}
-      <div className="mt-2 text-xs text-gray-600 font-mono">
+      {perf.invalid_out_of_session_count > 0 && (
+        <div className="mt-2 text-xs text-orange-400/80 font-mono">
+          ⚠ OOS trades excluded from normal metrics
+        </div>
+      )}
+      <div className="mt-1 text-xs text-gray-600 font-mono">
         Fake wallet · Paper P&L · Simulated only
       </div>
     </div>
@@ -5539,10 +5551,15 @@ function WalletDailyAnalytics({ perf, walletId }: { perf: WalletPerfResponse | n
         <StatBox label="Win Rate" value={winRate != null ? `${winRate.toFixed(1)}% (${wins}W/${losses}L)` : "—"} />
         <StatBox label="Best Trade" value={bestTrade != null ? fmtUSD(bestTrade) : "—"} cls={pnlCls(bestTrade)} />
       </div>
-      {(oosCount > 0 || eodCount > 0) && (
+      {oosCount > 0 && (
+        <div className="mt-2 rounded border border-orange-800 bg-orange-950/30 px-3 py-2 text-xs text-orange-300">
+          ⚠ {oosCount} invalid out-of-session trade(s) excluded from normal performance metrics above.
+          {" "}<span className="text-orange-400/70">Raw P&L including OOS: {fmtUSD(wallets.reduce((s, w) => s + w.raw_total_pnl_including_invalid, 0))}</span>
+        </div>
+      )}
+      {(eodCount > 0 || worstTrade != null) && (
         <div className="flex flex-wrap gap-4 text-xs font-mono text-gray-400 mt-1">
           {eodCount > 0 && <span>EOD flattened: <span className="text-gray-300">{eodCount}</span></span>}
-          {oosCount > 0 && <span>OOS closed: <span className="text-orange-400">{oosCount}</span></span>}
           {worstTrade != null && <span>Worst trade: <span className={pnlCls(worstTrade)}>{fmtUSD(worstTrade)}</span></span>}
         </div>
       )}
@@ -5838,28 +5855,12 @@ export default function Home() {
         )}
       </section>
 
-      {/* Open positions — engine wallet (backward-compat) */}
-      <section className="mb-6">
-        <h2 className="text-xl font-semibold mb-3">
-          Open Positions — ENGINE ({dashboard?.positions.length ?? 0})
-        </h2>
-        <PositionsTable positions={dashboard?.positions ?? []} />
-      </section>
-
-      {/* Closed trades — engine wallet (backward-compat) */}
-      <section className="mb-6">
-        <h2 className="text-xl font-semibold mb-3">
-          Closed Trades — ENGINE ({dashboard?.trades.length ?? 0})
-        </h2>
-        <TradesTable trades={dashboard?.trades ?? []} />
-      </section>
-
-      {/* Phase G1B-H1 Parts C+D — per-wallet open/closed positions */}
+      {/* Phase G1B-H5 Part B — unified wallet-aware Positions & Trades (replaces legacy ENGINE-only sections) */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
         <h2 className="text-lg font-semibold mb-3">
-          Per-Wallet Positions &amp; Trades
+          Trading Activity
           <span className="ml-2 text-xs font-normal text-gray-400">
-            filter by wallet · latest US trading session · stays visible after close
+            all fake wallets · latest US trading session · stays visible after close · filter by wallet below
           </span>
         </h2>
         <WalletExplorer walletId={walletId} onWalletChange={setWalletId} />
@@ -5900,23 +5901,23 @@ export default function Home() {
         />
       </section>
 
-      {/* Analytics */}
+      {/* ENGINE Analytics — candidate funnel, score distribution, rejection reasons (ENGINE-only) */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
         <h2 className="text-lg font-semibold mb-3">
-          Analytics
+          ENGINE Analytics
           <span className="ml-2 text-xs font-normal text-gray-400">
-            fake-money · no broker · research-only
+            candidate funnel · score distribution · rejection reasons · ENGINE-only · fake-money
           </span>
         </h2>
         <AnalyticsPanel analytics={dashboard?.analytics ?? null} />
       </section>
 
-      {/* Today / Session Report */}
+      {/* ENGINE Journal Report (engine-only journal data) */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
         <h2 className="text-lg font-semibold mb-3">
-          Today / Session Report
+          ENGINE Journal Report
           <span className="ml-2 text-xs font-normal text-gray-400">
-            daily journal · fake-money · no broker
+            engine-only journal · daily summary · fake-money · no broker
           </span>
         </h2>
         <TodayReportPanel report={todayReport} />
