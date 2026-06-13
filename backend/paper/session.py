@@ -104,6 +104,41 @@ def latest_session_date_ny(d: datetime | None = None) -> str:
     return probe.strftime("%Y-%m-%d")
 
 
+def entries_allowed_now(d: datetime | None = None) -> bool:
+    """True iff `d` (default: now) falls within the regular US session."""
+    return is_regular_session_now(d)
+
+
+def entry_block_reason(d: datetime | None = None) -> str | None:
+    """Return a stable block-reason string, or None when entries are allowed."""
+    d = d or now_ny()
+    if not is_weekday(d):
+        return "market_closed_weekend"
+    t = d.time()
+    if t < dtime(9, 30):
+        return "market_preopen"
+    if t >= dtime(16, 0):
+        return "market_postclose"
+    return None
+
+
+def is_valid_entry_time(entry_time_iso: str | None) -> bool:
+    """True iff the timestamp falls within a regular US session (Mon–Fri 09:30–16:00 ET)."""
+    if not entry_time_iso:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(entry_time_iso).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    ny = dt.astimezone(_ny_tz())
+    if not is_weekday(ny):
+        return False
+    t = ny.time()
+    return dtime(9, 30) <= t < dtime(16, 0)
+
+
 def session_date_for(timestamp_iso: str | None) -> str | None:
     """Compute the NY trading-session date for an ISO-8601 timestamp."""
     if not timestamp_iso:

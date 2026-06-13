@@ -204,8 +204,13 @@ def test_api_positions_annotates_stale_overnight(client, monkeypatch):
 
 
 def test_api_positions_no_warning_for_current_session(client, monkeypatch):
-    from paper import simulator
+    from paper import simulator, session as s
     from datetime import datetime, timezone
+    # Fix "now" to Friday 10:00 ET so stale-overnight logic uses Thursday's
+    # close as the reference (not Saturday's), and the entry at 10:30 ET Fri
+    # is within regular session hours — ensuring no stale OR OOS warnings.
+    fixed_now = datetime(2026, 6, 12, 14, 0, tzinfo=timezone.utc).astimezone(s._ny_tz())
+    monkeypatch.setattr(s, "now_ny", lambda: fixed_now)
     monkeypatch.setattr(simulator, "get_positions", lambda: [{
         "position_id": "p2",
         "symbol": "NVDA",
@@ -215,7 +220,7 @@ def test_api_positions_no_warning_for_current_session(client, monkeypatch):
         "current_price": 50.0,
         "unrealized_pnl": 0.0,
         "unrealized_pnl_percent": 0.0,
-        "entry_time": datetime.now(timezone.utc).isoformat(),
+        "entry_time": "2026-06-12T14:30:00+00:00",  # 10:30 ET Friday — valid session
         "entry_catalyst_type": "test",
     }])
     r = client.get("/api/paper/wallets/positions?wallet_id=engine")

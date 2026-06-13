@@ -996,6 +996,54 @@ async def run_tick() -> dict[str, Any]:
         except Exception as exc:
             logger.warning("Late EOD flatten failed defensively: %s", exc)
 
+        # ── Phase G1B-H3 Part C: out-of-session position remediation ──────────
+        # Close positions whose entry timestamp falls outside a regular US
+        # session (Mon–Fri 09:30–16:00 ET). Catches positions that slipped
+        # through before the universal gate was deployed (e.g. TSLA opened at
+        # 00:08 ET Saturday 2026-06-13 before this patch).
+        try:
+            from paper import eod as _eod_oos
+            for sym in list(_account.positions.keys()):
+                pos = _account.positions.get(sym)
+                if pos is None or not _eod_oos.position_entry_is_out_of_session(pos.entry_time):
+                    continue
+                q = quality_map.get(sym) or {}
+                exit_price = (
+                    q.get("bid")
+                    or q.get("last_trade_price")
+                    or _last_prices.get(sym)
+                )
+                if not exit_price:
+                    result["eod_flatten_warnings"].append({
+                        "wallet_id": "engine",
+                        "symbol": sym,
+                        "entry_time": pos.entry_time,
+                        "reason": "missing_exit_price_invalid_session",
+                    })
+                    continue
+                trade = _account.exit_position(sym, float(exit_price), _eod_oos.OUT_OF_SESSION_REASON)
+                if trade is None:
+                    continue
+                result["exits"].append({
+                    "symbol": sym,
+                    "exit_reason": _eod_oos.OUT_OF_SESSION_REASON,
+                    "entry_price": round(pos.entry_price, 4),
+                    "exit_price": round(float(exit_price), 4),
+                    "pnl": round(trade.pnl, 4),
+                    "pnl_percent": round(trade.pnl_percent, 4),
+                    "hold_minutes": trade.hold_minutes,
+                    "catalyst_type": trade.entry_catalyst_type,
+                    "total_score": trade.entry_score,
+                    "entry_mode": trade.entry_mode,
+                    "position_id": pos.position_id,
+                    "shares": round(pos.shares, 6),
+                    "cost_basis": round(pos.cost_basis, 4),
+                    "wallet_id": "engine",
+                    "strategy_id": "engine",
+                })
+        except Exception as exc:
+            logger.warning("Out-of-session remediation failed defensively: %s", exc)
+
         # ── Phase G1B-H1 Part E: end-of-day flatten ─────────────────────────
         # Close every remaining open engine position once we're inside the
         # flatten window (defaults: at/after 16:00 ET). Reuses the standard

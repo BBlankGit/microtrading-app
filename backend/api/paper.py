@@ -33,8 +33,13 @@ async def paper_wallets():
     wallet is inactive (so dashboards never have to hide the card). Each
     bucket includes status, inactive_reason, daily_pnl, win_rate, and
     last_update_time. Read-only; fake-money only.
+
+    Phase G1B-H3: also surfaces session status — market_session_open,
+    entries_allowed, entry_block_reason — and out-of-session position counts.
     """
     from paper import shadow_wallets as _sw
+    from paper import eod as _eod
+    from paper.session import is_regular_session_now as _is_session_now
     engine_raw = simulator.get_status()
     engine_trades = simulator.get_trades()
     engine_wins = sum(1 for t in engine_trades if (t.get("pnl") or 0) > 0)
@@ -63,6 +68,16 @@ async def paper_wallets():
         "last_update_time": engine_last_update,
     }
     shadow = _sw.snapshot()
+    _eb, _ebr = _eod.entries_blocked()
+    all_positions = (
+        simulator.get_positions()
+        + _sw.get_positions(_sw.WALLET_DETERMINISTIC)
+        + _sw.get_positions(_sw.WALLET_AI)
+    )
+    out_of_session_count = sum(
+        1 for p in all_positions
+        if _eod.position_entry_is_out_of_session(p.get("entry_time"))
+    )
     return {
         "engine": engine,
         "deterministic_shadow": shadow.get(_sw.WALLET_DETERMINISTIC),
@@ -74,7 +89,39 @@ async def paper_wallets():
             shadow.get(_sw.WALLET_DETERMINISTIC),
             shadow.get(_sw.WALLET_AI),
         ],
+        "market_session_open": _is_session_now(),
+        "entries_allowed": not _eb,
+        "entry_block_reason": _ebr,
+        "out_of_session_open_positions": out_of_session_count,
+        "invalid_out_of_session_positions": out_of_session_count,
     }
+
+
+def _annotate_out_of_session(positions: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    Stamp `out_of_session: true` on positions entered outside regular US
+    session hours (Mon–Fri 09:30–16:00 ET). Returns (positions, warnings).
+
+    Phase G1B-H3 Part C: surfaces positions that will be force-closed on the
+    next tick as invalid_out_of_session_entry_flatten.
+    """
+    from paper import eod as _eod
+    warnings: list[dict] = []
+    for p in positions:
+        entry_time = p.get("entry_time")
+        if _eod.position_entry_is_out_of_session(entry_time):
+            p["out_of_session"] = True
+            warnings.append({
+                "wallet_id": p.get("wallet_id"),
+                "strategy_id": p.get("strategy_id"),
+                "symbol": p.get("symbol"),
+                "entry_time": entry_time,
+                "reason": "invalid_out_of_session_open_position",
+                "remediation": "pending_flatten",
+            })
+        else:
+            p["out_of_session"] = False
+    return positions, warnings
 
 
 def _annotate_stale_overnight(positions: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -119,22 +166,23 @@ async def paper_wallet_positions(wallet_id: str | None = None):
         {**p, "wallet_id": "engine", "strategy_id": "engine"}
         for p in simulator.get_positions()
     ]
+    def _annotate(pos_list: list[dict]) -> tuple[list[dict], list[dict]]:
+        pos_list, stale_warns = _annotate_stale_overnight(pos_list)
+        pos_list, oos_warns = _annotate_out_of_session(pos_list)
+        return pos_list, stale_warns + oos_warns
+
     if wallet_id == "engine":
-        positions, warnings = _annotate_stale_overnight(engine_positions)
+        positions, warnings = _annotate(engine_positions)
         return {"wallet_id": "engine", "positions": positions, "warnings": warnings}
     if wallet_id == _sw.WALLET_DETERMINISTIC:
-        positions, warnings = _annotate_stale_overnight(
-            _sw.get_positions(_sw.WALLET_DETERMINISTIC)
-        )
+        positions, warnings = _annotate(_sw.get_positions(_sw.WALLET_DETERMINISTIC))
         return {
             "wallet_id": _sw.WALLET_DETERMINISTIC,
             "positions": positions,
             "warnings": warnings,
         }
     if wallet_id == _sw.WALLET_AI:
-        positions, warnings = _annotate_stale_overnight(
-            _sw.get_positions(_sw.WALLET_AI)
-        )
+        positions, warnings = _annotate(_sw.get_positions(_sw.WALLET_AI))
         return {
             "wallet_id": _sw.WALLET_AI,
             "positions": positions,
@@ -145,7 +193,7 @@ async def paper_wallet_positions(wallet_id: str | None = None):
         + _sw.get_positions(_sw.WALLET_DETERMINISTIC)
         + _sw.get_positions(_sw.WALLET_AI)
     )
-    positions, warnings = _annotate_stale_overnight(all_positions)
+    positions, warnings = _annotate(all_positions)
     return {
         "wallet_id": None,
         "positions": positions,

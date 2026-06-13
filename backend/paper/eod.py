@@ -30,14 +30,24 @@ def entries_blocked(now: datetime | None = None) -> tuple[bool, str | None]:
 
     Returns (blocked, reason). reason is a short stable string suitable
     for `candidate["rejection_reason"]` and dashboard surfacing.
-    Only blocks during the regular US session window; outside session
-    the entry path is already gated by the normal session checks.
+
+    G1B-H3: the universal session gate fires first — entries are blocked
+    entirely outside Mon–Fri 09:30–16:00 ET (PAPER_REGULAR_SESSION_ONLY).
+    The legacy EOD cutoff (10 min before close) then narrows the window
+    further inside a live session.
     """
+    d = now or _session.now_ny()
+    # G1B-H3: universal session gate — block all entries outside regular hours.
+    if getattr(settings, "PAPER_REGULAR_SESSION_ONLY", True):
+        if not getattr(settings, "PAPER_ALLOW_EXTENDED_HOURS_ENTRIES", False):
+            reason = _session.entry_block_reason(d)
+            if reason:
+                return (True, reason)
+    # Legacy EOD cutoff inside regular session (G1B-H1).
     if not getattr(settings, "PAPER_EOD_FLATTEN_ENABLED", True):
         return (False, None)
     if getattr(settings, "PAPER_ALLOW_OVERNIGHT_POSITIONS", False):
         return (False, None)
-    d = now or _session.now_ny()
     if not _session.is_regular_session_now(d):
         return (False, None)
     cutoff = float(getattr(settings, "PAPER_ENTRY_CUTOFF_MINUTES_BEFORE_CLOSE", 10))
@@ -114,3 +124,35 @@ def position_is_stale_overnight(
 
 
 LATE_FLATTEN_REASON = "eod_flatten_late"
+
+# ── Phase G1B-H3 Part C: out-of-session position remediation ─────────────────
+
+OUT_OF_SESSION_REASON = "invalid_out_of_session_entry_flatten"
+
+
+def position_entry_is_out_of_session(entry_time_iso: str | None) -> bool:
+    """
+    True when the position was entered outside a regular US session
+    (Mon–Fri 09:30–16:00 ET) and the session gate is enabled.
+
+    Used to remediate positions that slipped through before G1B-H3
+    enforced the universal session gate (e.g. TSLA opened at 00:08 ET
+    Saturday 2026-06-13 before this patch was deployed).
+
+    Note: this is distinct from `position_is_stale_overnight` — a
+    position can be out-of-session (opened at midnight Saturday) without
+    being stale (its entry timestamp is after the last Friday close).
+    """
+    if not getattr(settings, "PAPER_REGULAR_SESSION_ONLY", True):
+        return False
+    if getattr(settings, "PAPER_ALLOW_EXTENDED_HOURS_ENTRIES", False):
+        return False
+    if not entry_time_iso:
+        return False
+    # Corrupt / unparseable timestamps must not trigger a force-close.
+    try:
+        from datetime import datetime as _dt
+        _dt.fromisoformat(str(entry_time_iso).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return not _session.is_valid_entry_time(entry_time_iso)

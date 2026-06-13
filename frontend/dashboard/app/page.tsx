@@ -414,12 +414,18 @@ interface WalletsResponse {
   shadow_wallets_enabled: boolean;
   llm_enabled: boolean;
   wallets: WalletSnapshot[];
+  // Phase G1B-H3: session gate status
+  market_session_open?: boolean;
+  entries_allowed?: boolean;
+  entry_block_reason?: string | null;
+  out_of_session_open_positions?: number;
 }
 
 interface WalletPosition extends Position {
   wallet_id?: string;
   strategy_id?: string;
   stale_overnight?: boolean;
+  out_of_session?: boolean;
 }
 
 interface WalletTrade extends Trade {
@@ -429,9 +435,11 @@ interface WalletTrade extends Trade {
 
 interface WalletPositionWarning {
   wallet_id?: string | null;
+  strategy_id?: string | null;
   symbol?: string | null;
   entry_time?: string | null;
   reason?: string | null;
+  remediation?: string | null;
 }
 
 // ── Intelligence types ────────────────────────────────────────────────────────
@@ -1140,11 +1148,25 @@ function WalletsPanel({ wallets }: { wallets: WalletsResponse | null }) {
   if (!wallets) {
     return <p className="text-gray-500 text-sm">Wallets unavailable.</p>;
   }
+  const entriesAllowed = wallets.entries_allowed !== false;
+  const oosCount = wallets.out_of_session_open_positions ?? 0;
   return (
-    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-      <WalletCard wallet={wallets.engine} label="ENGINE" />
-      <WalletCard wallet={wallets.deterministic_shadow} label="DETERMINISTIC_SHADOW" />
-      <WalletCard wallet={wallets.ai_shadow} label="AI_SHADOW" />
+    <div className="space-y-3">
+      {!entriesAllowed && (
+        <div className="rounded border border-gray-600 bg-gray-900 px-3 py-2 text-xs text-gray-400">
+          ○ Market closed — fake entries disabled.{wallets.entry_block_reason ? ` (${wallets.entry_block_reason})` : ""}
+        </div>
+      )}
+      {oosCount > 0 && (
+        <div className="rounded border border-red-700 bg-red-950 px-3 py-2 text-xs text-red-300">
+          ⚠ {oosCount} out-of-session position(s) detected — will be force-closed on next tick.
+        </div>
+      )}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <WalletCard wallet={wallets.engine} label="ENGINE" />
+        <WalletCard wallet={wallets.deterministic_shadow} label="DETERMINISTIC_SHADOW" />
+        <WalletCard wallet={wallets.ai_shadow} label="AI_SHADOW" />
+      </div>
     </div>
   );
 }
@@ -1157,13 +1179,23 @@ const WALLET_OPTIONS: { value: string; label: string }[] = [
 ];
 
 function WalletPositionRow({ p }: { p: WalletPosition }) {
+  const rowClass = p.out_of_session
+    ? "bg-red-950/30"
+    : p.stale_overnight
+    ? "bg-yellow-950/30"
+    : "";
   return (
-    <tr className={`border-b border-gray-800 hover:bg-gray-800 ${p.stale_overnight ? "bg-yellow-950/30" : ""}`}>
+    <tr className={`border-b border-gray-800 hover:bg-gray-800 ${rowClass}`}>
       <td className="py-2 pr-3 text-xs text-gray-400 font-mono">{p.wallet_id ?? "—"}</td>
       <td className="py-2 pr-3 text-xs text-gray-500 font-mono">{p.strategy_id ?? p.wallet_id ?? "—"}</td>
       <td className="py-2 pr-3 font-semibold text-yellow-300">
         {p.symbol}
-        {p.stale_overnight && (
+        {p.out_of_session && (
+          <span className="ml-2 text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-red-900 text-red-300 border-red-700" title="Entered outside regular session hours; next tick will flatten">
+            OOS
+          </span>
+        )}
+        {!p.out_of_session && p.stale_overnight && (
           <span className="ml-2 text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-yellow-900 text-yellow-300 border-yellow-700" title="Position from a prior NY trading session; next tick will flatten">
             STALE
           </span>
@@ -1268,10 +1300,20 @@ function WalletExplorer() {
         </div>
       )}
 
-      {backendWarnings.length > 0 && (
+      {backendWarnings.filter(w => w.reason === "invalid_out_of_session_open_position").length > 0 && (
+        <div className="rounded border border-red-700 bg-red-950 px-3 py-2 text-xs text-red-300 space-y-1">
+          <div className="font-semibold">⚠ Out-of-session positions ({backendWarnings.filter(w => w.reason === "invalid_out_of_session_open_position").length}) — entered outside regular hours, will be force-closed:</div>
+          {backendWarnings.filter(w => w.reason === "invalid_out_of_session_open_position").slice(0, 8).map((w, i) => (
+            <div key={i} className="font-mono">
+              · {w.wallet_id ?? "—"} / {w.symbol ?? "—"} (entered {w.entry_time ? utcShort(w.entry_time) : "—"}) — {w.remediation ?? w.reason ?? "—"}
+            </div>
+          ))}
+        </div>
+      )}
+      {backendWarnings.filter(w => w.reason !== "invalid_out_of_session_open_position").length > 0 && (
         <div className="rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300 space-y-1">
-          <div className="font-semibold">⚠ Stale overnight positions ({backendWarnings.length}) — will be force-closed on next tick:</div>
-          {backendWarnings.slice(0, 8).map((w, i) => (
+          <div className="font-semibold">⚠ Stale overnight positions ({backendWarnings.filter(w => w.reason !== "invalid_out_of_session_open_position").length}) — will be force-closed on next tick:</div>
+          {backendWarnings.filter(w => w.reason !== "invalid_out_of_session_open_position").slice(0, 8).map((w, i) => (
             <div key={i} className="font-mono">
               · {w.wallet_id ?? "—"} / {w.symbol ?? "—"} (entered {w.entry_time ? utcShort(w.entry_time) : "—"}) — {w.reason ?? "—"}
             </div>

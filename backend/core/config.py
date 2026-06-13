@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     PAPER_EOD_FLATTEN_ENABLED: bool = True
     PAPER_ENTRY_CUTOFF_MINUTES_BEFORE_CLOSE: int = 10
     PAPER_EOD_FLATTEN_MINUTES_BEFORE_CLOSE: int = 0
+    # Phase G1B-H3: universal regular-session entry gate (fake-money only).
+    # Blocks all fake entries outside Mon–Fri 09:30–16:00 ET by default.
+    PAPER_REGULAR_SESSION_ONLY: bool = True
+    PAPER_ALLOW_EXTENDED_HOURS_ENTRIES: bool = False
     PAPER_POLL_INTERVAL_SECONDS: int = 60
     JOURNAL_RETRY_SECONDS: int = 30
     JOURNAL_RETENTION_DAYS: int = 14

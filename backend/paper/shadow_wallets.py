@@ -229,13 +229,20 @@ def _eod_flatten_for(
     *,
     exit_reason: str = "eod_flatten",
     only_stale_overnight: bool = False,
+    only_out_of_session: bool = False,
 ) -> tuple[list[dict], list[dict]]:
     """Close positions on `wallet_id` and return (exit_records, warnings).
 
     With ``only_stale_overnight=True`` we close ONLY positions whose entry
-    NY trading-session date is strictly older than the latest session — the
-    Phase G1B-H2 Part F "late flatten" path. Otherwise we close everything
-    open (Phase G1B-H1 Part E close-of-day path).
+    NY trading-session date is strictly older than the latest session —
+    the Phase G1B-H2 Part F "late flatten" path.
+
+    With ``only_out_of_session=True`` we close ONLY positions whose entry
+    timestamp falls outside regular session hours — the Phase G1B-H3
+    Part C remediation path.
+
+    Without either flag we close everything open (the Phase G1B-H1 Part E
+    close-of-day path).
     """
     from paper import eod as _eod_mod
     account = _wallet(wallet_id)
@@ -247,6 +254,8 @@ def _eod_flatten_for(
             continue
         if only_stale_overnight and not _eod_mod.position_is_stale_overnight(pos.entry_time):
             continue
+        if only_out_of_session and not _eod_mod.position_entry_is_out_of_session(pos.entry_time):
+            continue
         q = quality_map.get(sym) or {}
         exit_price = q.get("bid") or q.get("last_trade_price")
         if not exit_price:
@@ -255,7 +264,9 @@ def _eod_flatten_for(
                 "symbol": sym,
                 "entry_time": pos.entry_time,
                 "reason": (
-                    "missing_exit_price_late_flatten"
+                    "missing_exit_price_invalid_session"
+                    if only_out_of_session
+                    else "missing_exit_price_late_flatten"
                     if only_stale_overnight
                     else "missing_exit_price"
                 ),
@@ -323,6 +334,20 @@ def process_tick(
         )
         exits.extend(late_ai)
         warnings.extend(late_ai_warn)
+
+        # Phase G1B-H3 Part C: close positions entered outside regular session.
+        oos_det, oos_det_warn = _eod_flatten_for(
+            WALLET_DETERMINISTIC, quality_map,
+            exit_reason=_eod.OUT_OF_SESSION_REASON, only_out_of_session=True,
+        )
+        exits.extend(oos_det)
+        warnings.extend(oos_det_warn)
+        oos_ai, oos_ai_warn = _eod_flatten_for(
+            WALLET_AI, quality_map,
+            exit_reason=_eod.OUT_OF_SESSION_REASON, only_out_of_session=True,
+        )
+        exits.extend(oos_ai)
+        warnings.extend(oos_ai_warn)
 
         exits.extend(_process_exits_for(WALLET_DETERMINISTIC, quality_map, intrabar_map))
         if _llm_enabled():
