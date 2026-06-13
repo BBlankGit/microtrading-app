@@ -442,6 +442,50 @@ interface WalletPositionWarning {
   remediation?: string | null;
 }
 
+// ── Phase G1B-H4: Wallet performance analytics ───────────────────────────────
+
+interface WalletPerf {
+  wallet_id: string;
+  strategy_id: string;
+  display_name: string;
+  status: "active" | "inactive";
+  inactive_reason: string | null;
+  session_date: string;
+  starting_cash: number;
+  cash: number | null;
+  equity: number | null;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  daily_pnl: number | null;
+  return_percent: number | null;
+  open_positions_count: number;
+  closed_trades_count: number;
+  winning_trades_count: number;
+  losing_trades_count: number;
+  win_rate: number | null;
+  avg_trade_pnl: number | null;
+  best_trade_pnl: number | null;
+  worst_trade_pnl: number | null;
+  max_drawdown: number | null;
+  invalid_out_of_session_count: number;
+  eod_flatten_count: number;
+  last_trade_time: string | null;
+  last_update_time: string | null;
+}
+
+interface WalletPerfResponse {
+  session_date: string;
+  wallets: WalletPerf[];
+  best_wallet_by_total_pnl: string | null;
+  best_wallet_by_win_rate: string | null;
+  best_wallet_by_return_percent: string | null;
+  wallets_ranked_by_total_pnl: string[];
+  market_session_open: boolean;
+  entries_allowed: boolean;
+  session_status: string | null;
+}
+
 // ── Intelligence types ────────────────────────────────────────────────────────
 
 interface RedditRow {
@@ -922,6 +966,16 @@ async function fetchWalletTrades(walletId?: string, latestSession = true): Promi
   }
 }
 
+async function fetchWalletPerformance(): Promise<WalletPerfResponse | null> {
+  try {
+    const r = await fetch("/api/paper/wallets/performance?session_date=latest");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
 async function fetchJournal(): Promise<JournalData | null> {
   try {
     const [statusR, summaryR, ticksR, perfR] = await Promise.all([
@@ -1232,8 +1286,10 @@ function WalletTradeRow({ t }: { t: WalletTrade }) {
   );
 }
 
-function WalletExplorer() {
-  const [walletId, setWalletId] = useState<string>("all");
+function WalletExplorer({ walletId: propWalletId, onWalletChange }: { walletId?: string; onWalletChange?: (id: string) => void } = {}) {
+  const [ownId, setOwnId] = useState<string>("all");
+  const walletId = propWalletId ?? ownId;
+  const handleChange = (id: string) => { setOwnId(id); onWalletChange?.(id); };
   const [positions, setPositions] = useState<WalletPosition[]>([]);
   const [backendWarnings, setBackendWarnings] = useState<WalletPositionWarning[]>([]);
   const [trades, setTrades] = useState<WalletTrade[]>([]);
@@ -1280,7 +1336,7 @@ function WalletExplorer() {
         <label className="text-xs text-gray-400">Wallet</label>
         <select
           value={walletId}
-          onChange={(e) => setWalletId(e.target.value)}
+          onChange={(e) => handleChange(e.target.value)}
           className="bg-gray-900 border border-gray-600 rounded px-3 py-1.5 text-sm font-mono"
         >
           {WALLET_OPTIONS.map(o => (
@@ -5344,6 +5400,156 @@ function LLMPlaceholderTab() {
   );
 }
 
+// ── Phase G1B-H4: WalletPerfCard ─────────────────────────────────────────────
+
+function WalletPerfCard({ perf, isBest }: { perf: WalletPerf; isBest: boolean }) {
+  const pnlCls = (v: number | null) =>
+    v == null ? "text-gray-400" : v > 0 ? "text-green-400" : v < 0 ? "text-red-400" : "text-gray-300";
+  const borderCls = isBest
+    ? "border-yellow-500 bg-yellow-950/20"
+    : "border-gray-600 bg-gray-900";
+  const inactive = perf.status === "inactive";
+  return (
+    <div className={`rounded-lg border p-4 ${borderCls} ${inactive ? "opacity-60" : ""}`}>
+      <div className="flex items-center justify-between mb-3">
+        <div>
+          <span className="text-sm font-bold font-mono uppercase tracking-wide">{perf.wallet_id}</span>
+          {isBest && <span className="ml-2 text-xs bg-yellow-700 text-yellow-200 px-1.5 py-0.5 rounded font-semibold">BEST</span>}
+        </div>
+        <span className={`text-xs px-2 py-0.5 rounded border ${
+          inactive
+            ? "border-gray-600 text-gray-500 bg-gray-800"
+            : "border-green-700 text-green-400 bg-green-950"
+        }`}>
+          {inactive ? (perf.inactive_reason ?? "inactive") : "active"}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+        <div className="text-gray-400">Total P&L</div>
+        <div className={`font-mono font-semibold ${pnlCls(perf.total_pnl)}`}>{fmtUSD(perf.total_pnl)}</div>
+        <div className="text-gray-400">Realized</div>
+        <div className={`font-mono ${pnlCls(perf.realized_pnl)}`}>{fmtUSD(perf.realized_pnl)}</div>
+        <div className="text-gray-400">Unrealized</div>
+        <div className={`font-mono ${pnlCls(perf.unrealized_pnl)}`}>{fmtUSD(perf.unrealized_pnl)}</div>
+        <div className="text-gray-400">Return</div>
+        <div className={`font-mono ${pnlCls(perf.return_percent)}`}>
+          {perf.return_percent != null ? `${perf.return_percent > 0 ? "+" : ""}${perf.return_percent.toFixed(2)}%` : "—"}
+        </div>
+        <div className="text-gray-400">Open Pos.</div>
+        <div className="font-mono text-gray-200">{perf.open_positions_count}</div>
+        <div className="text-gray-400">Closed</div>
+        <div className="font-mono text-gray-200">{perf.closed_trades_count}</div>
+        <div className="text-gray-400">Win Rate</div>
+        <div className="font-mono text-gray-200">
+          {perf.win_rate != null ? `${perf.win_rate.toFixed(1)}%` : "—"}
+          {perf.closed_trades_count > 0 ? ` (${perf.winning_trades_count}W/${perf.losing_trades_count}L)` : ""}
+        </div>
+        <div className="text-gray-400">Avg Trade</div>
+        <div className={`font-mono ${pnlCls(perf.avg_trade_pnl)}`}>
+          {perf.avg_trade_pnl != null ? fmtUSD(perf.avg_trade_pnl) : "—"}
+        </div>
+      </div>
+      {(perf.invalid_out_of_session_count > 0 || perf.eod_flatten_count > 0) && (
+        <div className="mt-2 pt-2 border-t border-gray-700 grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+          {perf.eod_flatten_count > 0 && (
+            <>
+              <div className="text-gray-500">EOD flattened</div>
+              <div className="font-mono text-gray-400">{perf.eod_flatten_count}</div>
+            </>
+          )}
+          {perf.invalid_out_of_session_count > 0 && (
+            <>
+              <div className="text-gray-500">OOS closed</div>
+              <div className="font-mono text-orange-400">{perf.invalid_out_of_session_count}</div>
+            </>
+          )}
+        </div>
+      )}
+      <div className="mt-2 text-xs text-gray-600 font-mono">
+        Fake wallet · Paper P&L · Simulated only
+      </div>
+    </div>
+  );
+}
+
+function EnginePerformanceSection({ perf }: { perf: WalletPerfResponse | null }) {
+  if (!perf) return null;
+  const best = perf.best_wallet_by_total_pnl;
+  return (
+    <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+      <div className="flex flex-wrap items-center justify-between mb-3 gap-2">
+        <h2 className="text-lg font-semibold">
+          Engine Performance Today
+          <span className="ml-2 text-xs font-normal text-gray-400">
+            fake wallets · paper P&L · simulated only · session {perf.session_date}
+          </span>
+        </h2>
+        <span className={`text-xs px-2 py-0.5 rounded border ${
+          perf.market_session_open
+            ? "border-green-700 text-green-400 bg-green-950"
+            : "border-gray-600 text-gray-400 bg-gray-900"
+        }`}>
+          {perf.market_session_open ? "market open" : perf.session_status ?? "market closed"}
+        </span>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        {perf.wallets.map(w => (
+          <WalletPerfCard key={w.wallet_id} perf={w} isBest={w.wallet_id === best} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function WalletDailyAnalytics({ perf, walletId }: { perf: WalletPerfResponse | null; walletId: string }) {
+  if (!perf) return null;
+  const wallets = walletId === "all" ? perf.wallets : perf.wallets.filter(w => w.wallet_id === walletId);
+  const pnlCls = (v: number | null) =>
+    v == null ? "text-gray-400" : v > 0 ? "text-green-400" : v < 0 ? "text-red-400" : "text-gray-300";
+  if (wallets.length === 0) return null;
+  const isAggregate = walletId === "all";
+  const totalPnl = wallets.reduce((s, w) => s + w.total_pnl, 0);
+  const realizedPnl = wallets.reduce((s, w) => s + w.realized_pnl, 0);
+  const unrealizedPnl = wallets.reduce((s, w) => s + w.unrealized_pnl, 0);
+  const closedTrades = wallets.reduce((s, w) => s + w.closed_trades_count, 0);
+  const wins = wallets.reduce((s, w) => s + w.winning_trades_count, 0);
+  const losses = wallets.reduce((s, w) => s + w.losing_trades_count, 0);
+  const winRate = closedTrades > 0 ? (wins / closedTrades * 100) : null;
+  const allPnls = perf.wallets
+    .filter(w => walletId === "all" || w.wallet_id === walletId)
+    .flatMap(w => [w.best_trade_pnl, w.worst_trade_pnl])
+    .filter((v): v is number => v != null);
+  const bestTrade = allPnls.length > 0 ? Math.max(...allPnls) : null;
+  const worstTrade = allPnls.length > 0 ? Math.min(...allPnls) : null;
+  const oosCount = wallets.reduce((s, w) => s + w.invalid_out_of_session_count, 0);
+  const eodCount = wallets.reduce((s, w) => s + w.eod_flatten_count, 0);
+  return (
+    <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+      <h2 className="text-lg font-semibold mb-3">
+        {isAggregate ? "All Wallets" : walletId.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())} — Daily Analytics
+        <span className="ml-2 text-xs font-normal text-gray-400">
+          {isAggregate ? "aggregate across engine + shadows" : "wallet-scoped"} · fake P&L · session {perf.session_date}
+        </span>
+      </h2>
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-3">
+        <StatBox label="Total P&L" value={fmtUSD(totalPnl)} cls={pnlCls(totalPnl)} />
+        <StatBox label="Realized P&L" value={fmtUSD(realizedPnl)} cls={pnlCls(realizedPnl)} />
+        <StatBox label="Unrealized P&L" value={fmtUSD(unrealizedPnl)} cls={pnlCls(unrealizedPnl)} />
+        <StatBox label="Closed Trades" value={String(closedTrades)} />
+        <StatBox label="Win Rate" value={winRate != null ? `${winRate.toFixed(1)}% (${wins}W/${losses}L)` : "—"} />
+        <StatBox label="Best Trade" value={bestTrade != null ? fmtUSD(bestTrade) : "—"} cls={pnlCls(bestTrade)} />
+      </div>
+      {(oosCount > 0 || eodCount > 0) && (
+        <div className="flex flex-wrap gap-4 text-xs font-mono text-gray-400 mt-1">
+          {eodCount > 0 && <span>EOD flattened: <span className="text-gray-300">{eodCount}</span></span>}
+          {oosCount > 0 && <span>OOS closed: <span className="text-orange-400">{oosCount}</span></span>}
+          {worstTrade != null && <span>Worst trade: <span className={pnlCls(worstTrade)}>{fmtUSD(worstTrade)}</span></span>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -5362,6 +5568,8 @@ export default function Home() {
   const [runtimeConfig, setRuntimeConfig] = useState<RuntimeConfigState | null>(null);
   const [topTab, setTopTab] = useState<"main" | "intelligence" | "strategy">("main");
   const [wallets, setWallets] = useState<WalletsResponse | null>(null);
+  const [walletId, setWalletId] = useState<string>("all");
+  const [walletPerf, setWalletPerf] = useState<WalletPerfResponse | null>(null);
 
   // Note: NewsTab / EarningsTab / InsidersTab manage their own cache-first
   // fetches with filters. They are not part of the global 30s loop so the
@@ -5369,10 +5577,10 @@ export default function Home() {
   // is not open.
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, mtdata, wdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, mtdata, wdata, wpdata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
       fetchReddit(), fetchPremarket(), fetchRuntimeConfig(), fetchMarketTrend(),
-      fetchWallets(),
+      fetchWallets(), fetchWalletPerformance(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -5384,6 +5592,7 @@ export default function Home() {
     setRuntimeConfig(rcfgdata);
     setMarketTrend(mtdata);
     setWallets(wdata);
+    setWalletPerf(wpdata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -5499,6 +5708,9 @@ export default function Home() {
         <h2 className="text-lg font-semibold mb-3">Session Readiness</h2>
         <SessionReadiness analytics={dashboard?.analytics ?? null} status={dashboard?.status} />
       </section>
+
+      {/* Phase G1B-H4 Part C — Engine Performance Today / Wallet Comparison */}
+      <EnginePerformanceSection perf={walletPerf} />
 
       {/* Account stats */}
       {s && (
@@ -5650,8 +5862,11 @@ export default function Home() {
             filter by wallet · latest US trading session · stays visible after close
           </span>
         </h2>
-        <WalletExplorer />
+        <WalletExplorer walletId={walletId} onWalletChange={setWalletId} />
       </section>
+
+      {/* Phase G1B-H4 Part D — wallet-scoped daily analytics */}
+      <WalletDailyAnalytics perf={walletPerf} walletId={walletId} />
 
       {/* Last tick candidates */}
       <section className="mb-6">

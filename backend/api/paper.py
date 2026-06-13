@@ -255,6 +255,140 @@ async def paper_wallet_trades(
     }
 
 
+@router.get("/wallets/performance")
+async def paper_wallet_performance(session_date: str | None = None):
+    """
+    Phase G1B-H4 Part A — per-wallet performance analytics for a given session.
+
+    `session_date` defaults to the latest completed NY trading-session date
+    (or pass "latest" explicitly). Returns per-wallet metrics and aggregate
+    comparison fields. Fake-money paper simulation only.
+    """
+    from paper import shadow_wallets as _sw
+    from paper import eod as _eod
+    from paper.session import (
+        latest_session_date_ny,
+        session_date_for,
+        is_regular_session_now,
+    )
+
+    resolved = (
+        latest_session_date_ny()
+        if (not session_date or session_date == "latest")
+        else session_date
+    )
+
+    def _build(wallet_id: str, trades_all: list, positions_all: list, snap: dict) -> dict:
+        session_trades = [
+            t for t in trades_all
+            if session_date_for(t.get("exit_time") or t.get("entry_time")) == resolved
+        ]
+        pnls = [t.get("pnl") or 0.0 for t in session_trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        realized = round(sum(pnls), 6)
+        unrealized = round(
+            sum(p.get("unrealized_pnl") or 0.0 for p in positions_all), 6
+        )
+        total = round(realized + unrealized, 6)
+        start = float(snap.get("starting_cash") or 1000.0)
+        ret_pct = round(total / start * 100.0, 4) if start else None
+        n = len(session_trades)
+        last_trade = (
+            max((t.get("exit_time") or "" for t in session_trades), default=None) or None
+        )
+        return {
+            "wallet_id": wallet_id,
+            "strategy_id": wallet_id,
+            "display_name": wallet_id.replace("_", " ").title(),
+            "status": snap.get("status", "unknown"),
+            "inactive_reason": snap.get("inactive_reason"),
+            "session_date": resolved,
+            "starting_cash": start,
+            "cash": snap.get("cash"),
+            "equity": snap.get("equity"),
+            "realized_pnl": realized,
+            "unrealized_pnl": unrealized,
+            "total_pnl": total,
+            "daily_pnl": snap.get("daily_pnl"),
+            "return_percent": ret_pct,
+            "open_positions_count": len(positions_all),
+            "closed_trades_count": n,
+            "winning_trades_count": len(wins),
+            "losing_trades_count": len(losses),
+            "win_rate": round(len(wins) / n * 100.0, 1) if n else None,
+            "avg_trade_pnl": round(sum(pnls) / n, 6) if n else None,
+            "best_trade_pnl": round(max(pnls), 6) if pnls else None,
+            "worst_trade_pnl": round(min(pnls), 6) if pnls else None,
+            "max_drawdown": None,
+            "invalid_out_of_session_count": sum(
+                1 for t in session_trades
+                if t.get("exit_reason") == "invalid_out_of_session_entry_flatten"
+            ),
+            "eod_flatten_count": sum(
+                1 for t in session_trades
+                if (t.get("exit_reason") or "").startswith("eod_flatten")
+            ),
+            "last_trade_time": last_trade,
+            "last_update_time": snap.get("last_update_time"),
+        }
+
+    eng_raw = simulator.get_status()
+    daily_baseline = eng_raw.get("daily_start_equity") or eng_raw.get("starting_cash")
+    eng_daily_pnl = (
+        round((eng_raw.get("equity") or 0) - float(daily_baseline), 4)
+        if daily_baseline
+        else None
+    )
+    eng_snap = {
+        **eng_raw,
+        "status": "active",
+        "inactive_reason": None,
+        "daily_pnl": eng_daily_pnl,
+    }
+    engine_perf = _build(
+        "engine",
+        [{**t, "wallet_id": "engine", "strategy_id": "engine"} for t in simulator.get_trades()],
+        simulator.get_positions(),
+        eng_snap,
+    )
+
+    shadow = _sw.snapshot()
+    det_perf = _build(
+        _sw.WALLET_DETERMINISTIC,
+        _sw.get_trades(_sw.WALLET_DETERMINISTIC),
+        _sw.get_positions(_sw.WALLET_DETERMINISTIC),
+        shadow.get(_sw.WALLET_DETERMINISTIC) or {},
+    )
+    ai_perf = _build(
+        _sw.WALLET_AI,
+        _sw.get_trades(_sw.WALLET_AI),
+        _sw.get_positions(_sw.WALLET_AI),
+        shadow.get(_sw.WALLET_AI) or {},
+    )
+
+    all_perfs = [engine_perf, det_perf, ai_perf]
+    ranked = sorted(all_perfs, key=lambda w: w["total_pnl"], reverse=True)
+    wr_eligible = [w for w in all_perfs if (w["closed_trades_count"] or 0) >= 3]
+    best_wr = (
+        max(wr_eligible, key=lambda w: w["win_rate"] or 0.0)["wallet_id"]
+        if wr_eligible
+        else None
+    )
+    _eb, _ebr = _eod.entries_blocked()
+    return {
+        "session_date": resolved,
+        "wallets": all_perfs,
+        "best_wallet_by_total_pnl": ranked[0]["wallet_id"] if ranked else None,
+        "best_wallet_by_return_percent": ranked[0]["wallet_id"] if ranked else None,
+        "best_wallet_by_win_rate": best_wr,
+        "wallets_ranked_by_total_pnl": [w["wallet_id"] for w in ranked],
+        "market_session_open": is_regular_session_now(),
+        "entries_allowed": not _eb,
+        "session_status": _ebr or ("open" if is_regular_session_now() else "closed"),
+    }
+
+
 @router.get("/universe")
 async def paper_universe():
     return await get_active_paper_universe()
