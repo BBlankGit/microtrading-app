@@ -143,6 +143,54 @@ ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS no_catalyst_config_snapsho
 ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS position_id TEXT;
 CREATE INDEX IF NOT EXISTS idx_paper_trades_position_id
     ON paper_trades_journal (position_id);
+
+-- Phase G1B Part A: full runtime candidate snapshot (sanitized + bounded).
+ALTER TABLE paper_candidates ADD COLUMN IF NOT EXISTS extras_json JSONB;
+
+-- Phase G1B Part B: per-candidate forward-return outcomes.
+CREATE TABLE IF NOT EXISTS paper_candidate_outcomes (
+    id                      SERIAL PRIMARY KEY,
+    candidate_id            INT NOT NULL REFERENCES paper_candidates(id) ON DELETE CASCADE,
+    tick_id                 TEXT NOT NULL,
+    symbol                  TEXT NOT NULL,
+    horizon_minutes         INT NOT NULL,
+    reference_price         NUMERIC(12,4),
+    reference_at            TIMESTAMPTZ,
+    future_price            NUMERIC(12,4),
+    future_at               TIMESTAMPTZ,
+    future_return_percent   NUMERIC(10,4),
+    max_high_return_percent NUMERIC(10,4),
+    max_low_return_percent  NUMERIC(10,4),
+    hit_plus_1pct           BOOLEAN,
+    hit_plus_2pct           BOOLEAN,
+    hit_plus_3pct           BOOLEAN,
+    hit_plus_5pct           BOOLEAN,
+    hit_minus_1pct          BOOLEAN,
+    hit_minus_2pct          BOOLEAN,
+    status                  TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','resolved','missing_data','error')),
+    error                   TEXT,
+    resolved_at             TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (candidate_id, horizon_minutes)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_outcomes_status
+    ON paper_candidate_outcomes (status);
+CREATE INDEX IF NOT EXISTS idx_paper_outcomes_symbol_status
+    ON paper_candidate_outcomes (symbol, status);
+CREATE INDEX IF NOT EXISTS idx_paper_outcomes_tick_id
+    ON paper_candidate_outcomes (tick_id);
+CREATE INDEX IF NOT EXISTS idx_paper_outcomes_pending_created_at
+    ON paper_candidate_outcomes (created_at)
+    WHERE status = 'pending';
+
+-- Phase G1B Part C: parallel fake wallets (engine + deterministic_shadow + ai_shadow).
+ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS wallet_id TEXT;
+ALTER TABLE paper_trades_journal ADD COLUMN IF NOT EXISTS strategy_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_paper_trades_wallet_id
+    ON paper_trades_journal (wallet_id);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_wallet_event_created_at
+    ON paper_trades_journal (wallet_id, event, created_at DESC);
 """
 
 

@@ -266,6 +266,11 @@ async def reset_simulator() -> None:
         _account.reset()
         _account.daily_baseline_date = _ny_trading_date()
         _account.daily_start_equity = _account.starting_cash
+        try:
+            from paper import shadow_wallets as _sw
+            _sw.reset()
+        except Exception:
+            pass
         _last_prices = {}
         _state["last_tick_at"] = None
         _state["last_tick_symbols_evaluated"] = 0
@@ -1936,6 +1941,29 @@ async def run_tick() -> dict[str, Any]:
     except Exception as exc:
         # Defensive: LLM layer must never break a tick.
         logger.warning("LLM shadow layer failed defensively: %s", type(exc).__name__)
+
+    # ── 4d. Phase G1B Part C: parallel fake wallets ─────────────────────────
+    # Off by default; gated by settings.PAPER_SHADOW_WALLETS_ENABLED. Runs
+    # independent DETERMINISTIC_SHADOW + AI_SHADOW ledgers using the same
+    # sizing/TP/SL/max-hold as the engine wallet. Never touches _account.
+    try:
+        from paper import shadow_wallets as _sw
+        if _sw.enabled():
+            _sw_out = _sw.process_tick(
+                result["candidates"], quality_map, intrabar_map
+            )
+            result["shadow_entries"] = _sw_out.get("entries", [])
+            result["shadow_exits"] = _sw_out.get("exits", [])
+            result["shadow_wallets_snapshot"] = _sw_out.get("snapshots", {})
+        else:
+            result["shadow_entries"] = []
+            result["shadow_exits"] = []
+            result["shadow_wallets_snapshot"] = {}
+    except Exception as exc:
+        logger.warning("Shadow wallets layer failed defensively: %s", exc)
+        result["shadow_entries"] = []
+        result["shadow_exits"] = []
+        result["shadow_wallets_snapshot"] = {}
 
     # ── 5. Update in-memory state ─────────────────────────────────────────────
     result["exits_made"] = len(result["exits"])

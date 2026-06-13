@@ -24,6 +24,27 @@ async def paper_trades():
     return {"trades": simulator.get_trades()}
 
 
+@router.get("/wallets")
+async def paper_wallets():
+    """
+    Phase G1B Part C — snapshot of engine + shadow fake wallets.
+
+    Returns the engine wallet's status alongside the deterministic_shadow and
+    ai_shadow ledgers when ``PAPER_SHADOW_WALLETS_ENABLED``. Read-only;
+    research fake-money only.
+    """
+    from paper import shadow_wallets as _sw
+    engine_status = simulator.get_status()
+    shadow = _sw.snapshot()
+    return {
+        "engine": engine_status,
+        "deterministic_shadow": shadow.get(_sw.WALLET_DETERMINISTIC),
+        "ai_shadow": shadow.get(_sw.WALLET_AI),
+        "shadow_wallets_enabled": shadow.get("enabled"),
+        "llm_enabled": shadow.get("llm_enabled"),
+    }
+
+
 @router.get("/universe")
 async def paper_universe():
     return await get_active_paper_universe()

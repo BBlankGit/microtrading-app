@@ -16,6 +16,21 @@ from paper import db as _db
 
 logger = logging.getLogger(__name__)
 
+# Phase G1B Part A: bound the per-candidate sanitized snapshot.
+# 32 KB is generous for the typical 100-150 runtime fields while keeping
+# total write volume sane (≤ ~3 MB per 100-candidate tick).
+_EXTRAS_MAX_BYTES = 32 * 1024
+
+# Fields that may legitimately carry large/raw payloads — keep counts/IDs
+# but strip the bulky body before snapshotting. Adjust as new sections are added.
+_EXTRAS_DROP_KEYS = {
+    "news_items_raw", "raw_news_items", "reddit_posts_raw", "raw_reddit_posts",
+    "marketdata_quote_raw", "raw_quote",
+}
+
+# Phase G1B Part B: forward-return horizons (minutes).
+_OUTCOME_HORIZONS = (5, 10, 15, 30, 60)
+
 _journal_enabled: bool = False
 _last_persist_ok: bool | None = None
 _last_retry_at: float | None = None
@@ -128,9 +143,12 @@ async def persist_tick_result(
                     _float(account_status.get("total_pnl_percent")),
                 )
 
-                # 2. Candidates
-                if candidates:
-                    await conn.executemany(
+                # 2. Candidates — per-row INSERT ... RETURNING id so Part B
+                # can queue forward-return outcomes for the inserted rows.
+                # Columns include sentiment ($19/$20/$21) and extras_json ($38).
+                inserted_candidate_ids: list[tuple[int, dict]] = []
+                for c in candidates:
+                    row_id = await conn.fetchval(
                         """
                         INSERT INTO paper_candidates (
                             tick_id, symbol, eligible, action, rejection_reason,
@@ -150,61 +168,93 @@ async def persist_tick_result(
                             no_catalyst_momentum_eligible,
                             no_catalyst_momentum_reasons_json,
                             no_catalyst_momentum_blockers_json,
-                            no_catalyst_config_snapshot_json
+                            no_catalyst_config_snapshot_json,
+                            extras_json
                         ) VALUES (
                             $1,$2,$3,$4,$5,$6,$7,$8,
                             $9,$10,$11,$12,$13,$14,
                             $15,$16,$17,$18,$19,$20,$21,
                             $22,$23,$24,$25,$26,$27,
                             $28,$29,$30,$31,$32,
-                            $33,$34,$35,$36,$37
+                            $33,$34,$35,$36,$37,
+                            $38
                         )
+                        RETURNING id
                         """,
-                        [
-                            (
-                                tick_id,
-                                c.get("symbol"),
-                                _bool(c.get("eligible")),
-                                c.get("action"),
-                                c.get("rejection_reason"),
-                                _bool(c.get("quality_tradable")),
-                                _float(c.get("spread_percent")),
-                                _float(c.get("change_percent")),
-                                _float(c.get("volume_ratio")),
-                                _int(c.get("catalyst_count")),
-                                c.get("catalyst_type"),
-                                _int(c.get("total_score")),
-                                _int(c.get("score_threshold")),
-                                _bool(c.get("score_pass")),
-                                json.dumps(c["score_components"]) if c.get("score_components") else None,
-                                json.dumps(c["positive_reasons"]) if c.get("positive_reasons") else None,
-                                json.dumps(c["negative_reasons"]) if c.get("negative_reasons") else None,
-                                c.get("decision_reason"),
-                                c.get("catalyst_sentiment"),
-                                _float(c.get("catalyst_sentiment_score")),
-                                _float(c.get("catalyst_materiality_score")),
-                                c.get("entry_mode"),
-                                _bool(c.get("momentum_eligible")),
-                                _int(c.get("momentum_score")),
-                                _int(c.get("momentum_score_threshold")),
-                                c.get("momentum_rejection_reason"),
-                                json.dumps(c["momentum_gate_results"]) if c.get("momentum_gate_results") else None,
-                                c.get("marketdata_source"),
-                                _float(c.get("marketdata_age_seconds")),
-                                _bool(c.get("marketdata_stale")) if c.get("marketdata_stale") is not None else None,
-                                _bool(c.get("marketdata_fallback_used")) if c.get("marketdata_fallback_used") is not None else None,
-                                c.get("marketdata_error"),
-                                _bool(c.get("catalyst_required")) if c.get("catalyst_required") is not None else None,
-                                _bool(c.get("no_catalyst_momentum_eligible")) if c.get("no_catalyst_momentum_eligible") is not None else None,
-                                json.dumps(c["no_catalyst_momentum_reasons"]) if c.get("no_catalyst_momentum_reasons") else None,
-                                json.dumps(c["no_catalyst_momentum_blockers"]) if c.get("no_catalyst_momentum_blockers") else None,
-                                json.dumps(c["no_catalyst_config_snapshot"]) if c.get("no_catalyst_config_snapshot") else None,
-                            )
-                            for c in candidates
-                        ],
+                        tick_id,
+                        c.get("symbol"),
+                        _bool(c.get("eligible")),
+                        c.get("action"),
+                        c.get("rejection_reason"),
+                        _bool(c.get("quality_tradable")),
+                        _float(c.get("spread_percent")),
+                        _float(c.get("change_percent")),
+                        _float(c.get("volume_ratio")),
+                        _int(c.get("catalyst_count")),
+                        c.get("catalyst_type"),
+                        _int(c.get("total_score")),
+                        _int(c.get("score_threshold")),
+                        _bool(c.get("score_pass")),
+                        json.dumps(c["score_components"]) if c.get("score_components") else None,
+                        json.dumps(c["positive_reasons"]) if c.get("positive_reasons") else None,
+                        json.dumps(c["negative_reasons"]) if c.get("negative_reasons") else None,
+                        c.get("decision_reason"),
+                        c.get("catalyst_sentiment"),
+                        _float(c.get("catalyst_sentiment_score")),
+                        _float(c.get("catalyst_materiality_score")),
+                        c.get("entry_mode"),
+                        _bool(c.get("momentum_eligible")),
+                        _int(c.get("momentum_score")),
+                        _int(c.get("momentum_score_threshold")),
+                        c.get("momentum_rejection_reason"),
+                        json.dumps(c["momentum_gate_results"]) if c.get("momentum_gate_results") else None,
+                        c.get("marketdata_source"),
+                        _float(c.get("marketdata_age_seconds")),
+                        _bool(c.get("marketdata_stale")) if c.get("marketdata_stale") is not None else None,
+                        _bool(c.get("marketdata_fallback_used")) if c.get("marketdata_fallback_used") is not None else None,
+                        c.get("marketdata_error"),
+                        _bool(c.get("catalyst_required")) if c.get("catalyst_required") is not None else None,
+                        _bool(c.get("no_catalyst_momentum_eligible")) if c.get("no_catalyst_momentum_eligible") is not None else None,
+                        json.dumps(c["no_catalyst_momentum_reasons"]) if c.get("no_catalyst_momentum_reasons") else None,
+                        json.dumps(c["no_catalyst_momentum_blockers"]) if c.get("no_catalyst_momentum_blockers") else None,
+                        json.dumps(c["no_catalyst_config_snapshot"]) if c.get("no_catalyst_config_snapshot") else None,
+                        _sanitize_extras_json(c),
                     )
+                    if row_id is not None:
+                        inserted_candidate_ids.append((int(row_id), c))
 
-                # 3. Entry events
+                # 2b. Forward-return outcomes: queue one pending row per
+                # (candidate, horizon). Resolver fills future_* later.
+                if inserted_candidate_ids:
+                    outcome_rows = []
+                    for cand_id, cand in inserted_candidate_ids:
+                        ref_price = _float(cand.get("price"))
+                        if ref_price is None:
+                            ref_price = _float(cand.get("close")) or _float(cand.get("last_price"))
+                        for horizon in _OUTCOME_HORIZONS:
+                            outcome_rows.append(
+                                (
+                                    cand_id,
+                                    tick_id,
+                                    cand.get("symbol"),
+                                    int(horizon),
+                                    ref_price,
+                                    now,
+                                )
+                            )
+                    if outcome_rows:
+                        await conn.executemany(
+                            """
+                            INSERT INTO paper_candidate_outcomes (
+                                candidate_id, tick_id, symbol, horizon_minutes,
+                                reference_price, reference_at, status
+                            ) VALUES ($1,$2,$3,$4,$5,$6,'pending')
+                            ON CONFLICT (candidate_id, horizon_minutes) DO NOTHING
+                            """,
+                            outcome_rows,
+                        )
+
+                # 3. Entry events (wallet_id default 'engine' preserves old rows)
                 for entry in tick_result.get("entries") or []:
                     await conn.execute(
                         """
@@ -212,8 +262,8 @@ async def persist_tick_result(
                             tick_id, symbol, side, event,
                             entry_price, shares, cost_basis,
                             catalyst_type, total_score, opened_at, entry_mode,
-                            position_id
-                        ) VALUES ($1,$2,'long','entry',$3,$4,$5,$6,$7,$8,$9,$10)
+                            position_id, wallet_id, strategy_id
+                        ) VALUES ($1,$2,'long','entry',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                         """,
                         tick_id,
                         entry.get("symbol"),
@@ -225,6 +275,8 @@ async def persist_tick_result(
                         now,
                         entry.get("entry_mode"),
                         entry.get("position_id"),
+                        entry.get("wallet_id") or "engine",
+                        entry.get("strategy_id") or "engine",
                     )
 
                 # 4. Exit events
@@ -235,8 +287,9 @@ async def persist_tick_result(
                             tick_id, symbol, side, event,
                             entry_price, exit_price, pnl, pnl_percent,
                             exit_reason, catalyst_type, total_score, closed_at,
-                            entry_mode, position_id, shares, cost_basis
-                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                            entry_mode, position_id, shares, cost_basis,
+                            wallet_id, strategy_id
+                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                         """,
                         tick_id,
                         exit_.get("symbol"),
@@ -252,6 +305,62 @@ async def persist_tick_result(
                         exit_.get("position_id"),
                         _float(exit_.get("shares")),
                         _float(exit_.get("cost_basis")),
+                        exit_.get("wallet_id") or "engine",
+                        exit_.get("strategy_id") or "engine",
+                    )
+
+                # 4b. Shadow wallet entries / exits (Phase G1B Part C).
+                # Tagged with wallet_id ∈ {deterministic_shadow, ai_shadow}.
+                for entry in tick_result.get("shadow_entries") or []:
+                    await conn.execute(
+                        """
+                        INSERT INTO paper_trades_journal (
+                            tick_id, symbol, side, event,
+                            entry_price, shares, cost_basis,
+                            catalyst_type, total_score, opened_at, entry_mode,
+                            position_id, wallet_id, strategy_id
+                        ) VALUES ($1,$2,'long','entry',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+                        """,
+                        tick_id,
+                        entry.get("symbol"),
+                        _float(entry.get("entry_price")),
+                        _float(entry.get("shares")),
+                        _float(entry.get("cost_basis")),
+                        entry.get("catalyst_type"),
+                        _int(entry.get("total_score")),
+                        now,
+                        entry.get("entry_mode"),
+                        entry.get("position_id"),
+                        entry.get("wallet_id"),
+                        entry.get("strategy_id") or entry.get("wallet_id"),
+                    )
+                for exit_ in tick_result.get("shadow_exits") or []:
+                    await conn.execute(
+                        """
+                        INSERT INTO paper_trades_journal (
+                            tick_id, symbol, side, event,
+                            entry_price, exit_price, pnl, pnl_percent,
+                            exit_reason, catalyst_type, total_score, closed_at,
+                            entry_mode, position_id, shares, cost_basis,
+                            wallet_id, strategy_id
+                        ) VALUES ($1,$2,'long','exit',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                        """,
+                        tick_id,
+                        exit_.get("symbol"),
+                        _float(exit_.get("entry_price")),
+                        _float(exit_.get("exit_price")),
+                        _float(exit_.get("pnl")),
+                        _float(exit_.get("pnl_percent")),
+                        exit_.get("exit_reason"),
+                        exit_.get("catalyst_type"),
+                        _int(exit_.get("total_score")),
+                        now,
+                        exit_.get("entry_mode"),
+                        exit_.get("position_id"),
+                        _float(exit_.get("shares")),
+                        _float(exit_.get("cost_basis")),
+                        exit_.get("wallet_id"),
+                        exit_.get("strategy_id") or exit_.get("wallet_id"),
                     )
 
                 # 5. Universe snapshot (if available)
@@ -313,3 +422,61 @@ def _parse_dt(s: Any) -> datetime | None:
         return datetime.fromisoformat(str(s))
     except (ValueError, TypeError):
         return None
+
+
+# ── Phase G1B Part A: sanitized full-candidate snapshot ──────────────────────
+
+def _sanitize_extras_json(candidate: dict) -> str | None:
+    """
+    Build the JSON payload for `paper_candidates.extras_json`.
+
+    Includes the full runtime candidate dict (deterministic shadow, LLM,
+    catalyst/news, reddit, premarket, earnings, insider, market regime,
+    market trend, marketdata metadata, runtime config snapshot) so the
+    freeze produces a complete record for later analysis. Secrets are
+    redacted, raw bulky payloads are dropped, and the result is bounded
+    to `_EXTRAS_MAX_BYTES` to keep write volume sane.
+
+    Returns a JSON string ready for the JSONB column, or None if the
+    candidate cannot be serialized.
+    """
+    try:
+        from intelligence.llm_shadow import _redact
+    except Exception:  # pragma: no cover — import safety
+        def _redact(s: str | None) -> str:  # type: ignore[misc]
+            return s or ""
+
+    pruned = {k: v for k, v in candidate.items() if k not in _EXTRAS_DROP_KEYS}
+    try:
+        encoded = json.dumps(pruned, default=str, separators=(",", ":"))
+    except Exception as exc:
+        logger.debug("extras_json: encode failed for %s: %s",
+                     candidate.get("symbol"), exc)
+        return None
+
+    redacted = _redact(encoded)
+
+    if len(redacted.encode("utf-8")) > _EXTRAS_MAX_BYTES:
+        envelope = {
+            "_truncated": True,
+            "_reason": "max_bytes_exceeded",
+            "_max_bytes": _EXTRAS_MAX_BYTES,
+            "symbol": candidate.get("symbol"),
+            "tick_id": candidate.get("tick_id"),
+            "eligible": candidate.get("eligible"),
+            "action": candidate.get("action"),
+            "rejection_reason": candidate.get("rejection_reason"),
+            "entry_mode": candidate.get("entry_mode"),
+            "final_selected_path": candidate.get("final_selected_path"),
+            "total_score": candidate.get("total_score"),
+            "enhanced_shadow_decision": candidate.get("enhanced_shadow_decision"),
+            "llm_decision": candidate.get("llm_decision"),
+            "llm_status": candidate.get("llm_status"),
+        }
+        try:
+            redacted = _redact(json.dumps(envelope, default=str, separators=(",", ":")))
+        except Exception:
+            return None
+    return redacted
+
+

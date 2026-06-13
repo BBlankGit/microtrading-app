@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     PAPER_TAKE_PROFIT_PERCENT: float = 0.60
     PAPER_STOP_LOSS_PERCENT: float = 0.35
     PAPER_MAX_HOLD_MINUTES: int = 15
+    # Phase G1B Part C: parallel fake wallets for shadow strategies.
+    # Default OFF. When enabled, each tick also feeds a separate
+    # DETERMINISTIC_SHADOW wallet (enters when enhanced_shadow_decision=WOULD_ENTER)
+    # and an AI_SHADOW wallet (enters when llm_decision=WOULD_ENTER, only if
+    # LLM_SHADOW_ENABLED). Same starting capital, sizing, TP/SL, max-hold as the
+    # engine wallet, but independent ledgers — never affects engine decisions.
+    PAPER_SHADOW_WALLETS_ENABLED: bool = False
     PAPER_POLL_INTERVAL_SECONDS: int = 60
     JOURNAL_RETRY_SECONDS: int = 30
     JOURNAL_RETENTION_DAYS: int = 14

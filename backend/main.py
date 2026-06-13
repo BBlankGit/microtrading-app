@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.audit import router as audit_router
 from api.catalysts import router as catalysts_router
 from api.intelligence import router as intelligence_router
 from api.readiness import router as readiness_router
@@ -81,6 +82,7 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type"],
 )
 
+app.include_router(audit_router)
 app.include_router(catalysts_router)
 app.include_router(intelligence_router)
 app.include_router(data_status_router)
