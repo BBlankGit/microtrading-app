@@ -43,12 +43,14 @@ async def persistence_status() -> dict:
 @router.get("/persistence/deep-status")
 async def persistence_deep_status() -> dict:
     """
-    Phase G1B-H6 Part D — comprehensive persistence audit.
+    Phase G1B-H6 Part D + G1B-H8 — comprehensive persistence audit.
 
-    Reports candidate / outcome / trade row counts by key dimensions
-    (wallet_id, strategy_id, source, status, exit_reason, horizon),
-    timestamp integrity, and analysis joinability so we can confirm
-    raw data is preserved for later engine improvement. Fake-money only.
+    Reports candidate / outcome / trade persistence with evidence-based
+    flags so we can prove each engine's data is separately analysable.
+    Includes tick_ts column status, candidate grouping, extras_json
+    field-family coverage, evidence-based shadow/AI decision persistence,
+    NY-session grouping, outcome completeness, and an analysis_ready
+    summary with blocking_gaps and warnings. Fake-money only.
     """
     pool = await _db.get_pool()
     if pool is None:
@@ -56,6 +58,9 @@ async def persistence_deep_status() -> dict:
             "ok": False,
             "skipped": True,
             "reason": "no pool",
+            "analysis_ready": False,
+            "blocking_gaps": ["postgres_pool_unavailable"],
+            "warnings": [],
         }
     try:
         from paper import shadow_wallets as _sw
@@ -251,6 +256,8 @@ async def persistence_deep_status() -> dict:
                 "deterministic_shadow": ["enhanced_shadow_decision", "enhanced_shadow_score"],
                 "ai_shadow": ["llm_decision", "llm_status"],
                 "ai_shadow_disabled_state": ["llm_status", "llm_error"],
+                "selected_path": ["entry_mode", "candidate_sources", "market_trend_path_name"],
+                "score_components": ["score_components", "total_score", "final_score_after_intelligence_adjustments"],
             }
             # Use LATERAL probe over recent 5k extras rows to stay fast on 600k tables
             field_family_coverage: dict[str, dict] = {}
@@ -296,6 +303,174 @@ async def persistence_deep_status() -> dict:
                 "unattributed_missing_wallet_id": trade_by_wallet.get("missing", 0),
             }
 
+            # ── Phase G1B-H8 Part B: tick_ts column audit ───────────────
+            # paper_candidates has no `tick_ts` column. The candidate's
+            # `created_at` is the insert timestamp; the actual tick start
+            # is in paper_ticks.started_at, joinable via tick_id. We audit
+            # both honestly and report `tick_ts_persistence_status`.
+            ticks_total = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM paper_ticks"
+            ) or 0)
+            tick_started_min = await conn.fetchval(
+                "SELECT MIN(started_at) FROM paper_ticks"
+            )
+            tick_started_max = await conn.fetchval(
+                "SELECT MAX(started_at) FROM paper_ticks"
+            )
+            tick_missing_started = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM paper_ticks WHERE started_at IS NULL"
+            ) or 0)
+            candidates_join_ticks_count = int(await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM paper_candidates c
+                  INNER JOIN paper_ticks t ON t.tick_id = c.tick_id
+                """
+            ) or 0)
+            cand_tick_join_coverage_pct = (
+                round(candidates_join_ticks_count / cand_total * 100.0, 2)
+                if cand_total else 0.0
+            )
+
+            # ── Phase G1B-H8 Part C: additional candidate grouping ──────
+            cand_by_catalyst_type = {
+                (r["catalyst_type"] or "none"): int(r["n"])
+                for r in await conn.fetch(
+                    """
+                    SELECT catalyst_type, COUNT(*) AS n
+                      FROM paper_candidates
+                     GROUP BY catalyst_type
+                     ORDER BY n DESC LIMIT 25
+                    """
+                )
+            }
+            cand_by_entry_mode = {
+                (r["entry_mode"] or "none"): int(r["n"])
+                for r in await conn.fetch(
+                    """
+                    SELECT entry_mode, COUNT(*) AS n
+                      FROM paper_candidates
+                     GROUP BY entry_mode
+                     ORDER BY n DESC LIMIT 25
+                    """
+                )
+            }
+            cand_by_decision_reason = {
+                (r["decision_reason"] or "none"): int(r["n"])
+                for r in await conn.fetch(
+                    """
+                    SELECT decision_reason, COUNT(*) AS n
+                      FROM paper_candidates
+                     GROUP BY decision_reason
+                     ORDER BY n DESC LIMIT 25
+                    """
+                )
+            }
+
+            # ── Phase G1B-H8 Part E: evidence-based shadow audit ────────
+            # Sample the most recent 5K extras rows and count actual values
+            # of enhanced_shadow_decision / llm_decision / llm_status.
+            shadow_evidence_sample = 5000
+            shadow_row = await conn.fetchrow(
+                f"""
+                SELECT
+                    COUNT(*) AS sample_size,
+                    COUNT(*) FILTER (WHERE extras_json ? 'enhanced_shadow_decision') AS det_decision_rows,
+                    COUNT(*) FILTER (WHERE extras_json ? 'enhanced_shadow_score') AS det_score_rows,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'enhanced_shadow_decision' = 'WOULD_ENTER') AS det_would_enter,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'enhanced_shadow_decision' = 'WATCH') AS det_watch,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'enhanced_shadow_decision' = 'WOULD_REJECT') AS det_would_reject,
+                    COUNT(*) FILTER (WHERE extras_json ? 'llm_decision') AS ai_decision_rows,
+                    COUNT(*) FILTER (WHERE extras_json ? 'llm_status') AS ai_status_rows,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'llm_decision' = 'WOULD_ENTER') AS ai_would_enter,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'llm_decision' = 'WATCH') AS ai_watch,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'llm_decision' = 'WOULD_REJECT') AS ai_would_reject,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'llm_status' = 'disabled') AS ai_disabled,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'llm_status' = 'error') AS ai_error,
+                    COUNT(*) FILTER (WHERE extras_json ->> 'llm_status' = 'not_selected') AS ai_not_selected
+                  FROM (
+                    SELECT extras_json FROM paper_candidates
+                     WHERE extras_json IS NOT NULL
+                     ORDER BY id DESC LIMIT {shadow_evidence_sample}
+                  ) s
+                """
+            )
+
+            # ── Phase G1B-H8 Part G: NY-session grouping ────────────────
+            trade_by_ny_session = {
+                str(r["sd"]): int(r["n"])
+                for r in await conn.fetch(
+                    """
+                    SELECT to_char(
+                             COALESCE(closed_at, opened_at, created_at)
+                             AT TIME ZONE 'America/New_York', 'YYYY-MM-DD'
+                           ) AS sd,
+                           COUNT(*) AS n
+                      FROM paper_trades_journal
+                     WHERE COALESCE(closed_at, opened_at, created_at) IS NOT NULL
+                     GROUP BY sd
+                     ORDER BY sd DESC LIMIT 30
+                    """
+                )
+            }
+            cand_by_ny_session = {
+                str(r["sd"]): int(r["n"])
+                for r in await conn.fetch(
+                    """
+                    SELECT to_char(
+                             created_at AT TIME ZONE 'America/New_York',
+                             'YYYY-MM-DD'
+                           ) AS sd,
+                           COUNT(*) AS n
+                      FROM paper_candidates
+                     WHERE created_at IS NOT NULL
+                     GROUP BY sd
+                     ORDER BY sd DESC LIMIT 30
+                    """
+                )
+            }
+            out_by_ny_session = {
+                str(r["sd"]): int(r["n"])
+                for r in await conn.fetch(
+                    """
+                    SELECT to_char(
+                             COALESCE(resolved_at, created_at)
+                             AT TIME ZONE 'America/New_York', 'YYYY-MM-DD'
+                           ) AS sd,
+                           COUNT(*) AS n
+                      FROM paper_candidate_outcomes
+                     WHERE COALESCE(resolved_at, created_at) IS NOT NULL
+                     GROUP BY sd
+                     ORDER BY sd DESC LIMIT 30
+                    """
+                )
+            }
+
+            # ── Phase G1B-H8 Part G: trade timestamp min/max ────────────
+            trade_min_opened = await conn.fetchval(
+                "SELECT MIN(opened_at) FROM paper_trades_journal WHERE opened_at IS NOT NULL"
+            )
+            trade_max_opened = await conn.fetchval(
+                "SELECT MAX(opened_at) FROM paper_trades_journal WHERE opened_at IS NOT NULL"
+            )
+            trade_min_closed = await conn.fetchval(
+                "SELECT MIN(closed_at) FROM paper_trades_journal WHERE closed_at IS NOT NULL"
+            )
+            trade_max_closed = await conn.fetchval(
+                "SELECT MAX(closed_at) FROM paper_trades_journal WHERE closed_at IS NOT NULL"
+            )
+            trade_future_opened = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM paper_trades_journal "
+                "WHERE opened_at > now() + interval '5 minutes'"
+            ) or 0)
+            trade_future_closed = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM paper_trades_journal "
+                "WHERE closed_at > now() + interval '5 minutes'"
+            ) or 0)
+            trade_missing_entry_time_overall = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM paper_trades_journal WHERE opened_at IS NULL"
+            ) or 0)
+            trade_missing_exit_time_for_closed = trade_missing_closed_at
+
         # ── Future-timestamp integrity (small tolerance for clock skew) ─
         now_utc = datetime.now(timezone.utc)
         def _future(ts) -> bool:
@@ -329,9 +504,80 @@ async def persistence_deep_status() -> dict:
                 "last_update_time": snap.get("last_update_time"),
             })
 
+        # ── Phase G1B-H8 Part E/F: evidence-based shadow persistence ──
+        sw_sample = int(shadow_row["sample_size"] or 0) if shadow_row else 0
+        det_decision_rows = int(shadow_row["det_decision_rows"] or 0) if shadow_row else 0
+        ai_decision_rows = int(shadow_row["ai_decision_rows"] or 0) if shadow_row else 0
+        ai_status_rows = int(shadow_row["ai_status_rows"] or 0) if shadow_row else 0
+
+        det_persistence = {
+            "sample_size": sw_sample,
+            "decision_field_present_rows": det_decision_rows,
+            "score_field_present_rows": int(shadow_row["det_score_rows"] or 0) if shadow_row else 0,
+            "would_enter_count": int(shadow_row["det_would_enter"] or 0) if shadow_row else 0,
+            "watch_count": int(shadow_row["det_watch"] or 0) if shadow_row else 0,
+            "would_reject_count": int(shadow_row["det_would_reject"] or 0) if shadow_row else 0,
+            "missing_decision_count": sw_sample - det_decision_rows,
+            "evidence_based_separable": det_decision_rows > 0,
+            "status": "collected" if det_decision_rows > 0 else "not_collected",
+        }
+        ai_persistence = {
+            "sample_size": sw_sample,
+            "decision_field_present_rows": ai_decision_rows,
+            "status_field_present_rows": ai_status_rows,
+            "would_enter_count": int(shadow_row["ai_would_enter"] or 0) if shadow_row else 0,
+            "watch_count": int(shadow_row["ai_watch"] or 0) if shadow_row else 0,
+            "would_reject_count": int(shadow_row["ai_would_reject"] or 0) if shadow_row else 0,
+            "disabled_count": int(shadow_row["ai_disabled"] or 0) if shadow_row else 0,
+            "error_count": int(shadow_row["ai_error"] or 0) if shadow_row else 0,
+            "not_selected_count": int(shadow_row["ai_not_selected"] or 0) if shadow_row else 0,
+            "missing_decision_count": sw_sample - ai_decision_rows,
+            "missing_status_count": sw_sample - ai_status_rows,
+            "evidence_based_separable": ai_decision_rows > 0 or ai_status_rows > 0,
+            "status": "collected" if (ai_decision_rows > 0 or ai_status_rows > 0) else "not_collected",
+            "no_paid_ai_calls": True,
+        }
+
+        det_separable = det_persistence["evidence_based_separable"]
+        ai_separable = ai_persistence["evidence_based_separable"]
+        engine_separable = (
+            engine_trade_counts["engine"] > 0
+            or engine_trade_counts["unattributed_missing_wallet_id"] == 0
+        )
+
+        # ── Phase G1B-H8 Part I: analysis-ready summary ──────────────
+        blocking_gaps: list[str] = []
+        warnings_list: list[str] = []
+        if cand_total == 0:
+            blocking_gaps.append("no_candidates_persisted")
+        if joinable_cand_outcome == 0 and cand_total > 0:
+            blocking_gaps.append("no_candidate_to_outcome_joins")
+        if not engine_separable:
+            warnings_list.append("engine_trade_attribution_incomplete")
+        if not det_separable:
+            warnings_list.append("deterministic_shadow_decisions_not_persisted")
+        if not ai_separable:
+            warnings_list.append("ai_shadow_decisions_not_persisted")
+        if cand_coverage_pct < 50.0 and cand_total > 0:
+            warnings_list.append(
+                f"low_extras_json_coverage_{cand_coverage_pct:.1f}_percent"
+            )
+        if engine_trade_counts["unattributed_missing_wallet_id"] > 0:
+            warnings_list.append(
+                f"trades_missing_wallet_id_{engine_trade_counts['unattributed_missing_wallet_id']}"
+            )
+        analysis_ready = (
+            len(blocking_gaps) == 0
+            and engine_separable
+            and joinable_cand_outcome > 0
+        )
+
         return {
             "ok": True,
             "generated_at": now_utc.isoformat(),
+            "analysis_ready": analysis_ready,
+            "blocking_gaps": blocking_gaps,
+            "warnings": warnings_list,
             "candidates": {
                 "total": cand_total,
                 "with_extras_json": cand_with_extras,
@@ -340,10 +586,37 @@ async def persistence_deep_status() -> dict:
                 "max_created_at": cand_max_created.isoformat() if cand_max_created else None,
                 "by_action": cand_by_action,
                 "by_rejection_reason": cand_by_rejection,
+                "by_catalyst_type": cand_by_catalyst_type,
+                "by_entry_mode": cand_by_entry_mode,
+                "by_decision_reason": cand_by_decision_reason,
                 "by_marketdata_source": cand_by_marketdata_source,
                 "missing_tick_id": cand_missing_tick_id,
                 "missing_created_at": cand_missing_created_at,
                 "future_max_created_at": _future(cand_max_created),
+            },
+            "tick_ts_audit": {
+                "tick_ts_persistence_status": "not_persisted_as_candidate_column",
+                "tick_ts_persistence_note": (
+                    "paper_candidates has no `tick_ts` column. The actual tick "
+                    "start time is in paper_ticks.started_at; candidates link via "
+                    "tick_id. paper_candidates.created_at is the insert timestamp."
+                ),
+                "paper_ticks_total": ticks_total,
+                "paper_ticks_started_at_min": tick_started_min.isoformat() if tick_started_min else None,
+                "paper_ticks_started_at_max": tick_started_max.isoformat() if tick_started_max else None,
+                "paper_ticks_missing_started_at": tick_missing_started,
+                "candidates_joinable_to_ticks_count": candidates_join_ticks_count,
+                "candidates_joinable_to_ticks_coverage_percent": cand_tick_join_coverage_pct,
+                "missing_tick_id_on_candidates": cand_missing_tick_id,
+                "derivation_supported": True,
+            },
+            "extras_json_field_family_coverage": field_family_coverage,
+            "shadow_decision_persistence": {
+                "deterministic_shadow": det_persistence,
+                "ai_shadow": ai_persistence,
+                "evidence_source": (
+                    f"sampled most-recent {sw_sample} candidate rows with extras_json"
+                ),
             },
             "outcomes": {
                 "total": out_total,
@@ -352,6 +625,12 @@ async def persistence_deep_status() -> dict:
                 "by_source": out_by_source,
                 "min_resolved_at": out_min_resolved.isoformat() if out_min_resolved else None,
                 "max_resolved_at": out_max_resolved.isoformat() if out_max_resolved else None,
+                "missing_resolved_at_count": out_by_status.get("pending", 0)
+                    + out_by_status.get("missing_data", 0)
+                    + out_by_status.get("error", 0),
+                "distinct_candidates_with_any_outcome": distinct_candidates_with_any_outcome,
+                "candidates_with_all_5_horizons": candidates_with_all_5_horizons,
+                "missing_outcome_count_by_horizon": missing_by_horizon,
             },
             "trades": {
                 "total": trade_total,
@@ -361,15 +640,39 @@ async def persistence_deep_status() -> dict:
                 "by_exit_reason": trade_by_exit_reason,
                 "missing_wallet_id": trade_missing_wallet,
                 "missing_strategy_id": trade_missing_strategy,
+                "missing_entry_time": trade_missing_entry_time_overall,
+                "missing_exit_time_for_closed": trade_missing_exit_time_for_closed,
                 "missing_opened_at_for_entry": trade_missing_opened_at,
                 "missing_closed_at_for_exit": trade_missing_closed_at,
                 "invalid_out_of_session_count": invalid_oos_trade_count,
                 "min_created_at": trade_min_created.isoformat() if trade_min_created else None,
                 "max_created_at": trade_max_created.isoformat() if trade_max_created else None,
+                "min_opened_at": trade_min_opened.isoformat() if trade_min_opened else None,
+                "max_opened_at": trade_max_opened.isoformat() if trade_max_opened else None,
+                "min_closed_at": trade_min_closed.isoformat() if trade_min_closed else None,
+                "max_closed_at": trade_max_closed.isoformat() if trade_max_closed else None,
                 "future_max_created_at": _future(trade_max_created),
+                "future_opened_at_count": trade_future_opened,
+                "future_closed_at_count": trade_future_closed,
+                "column_mapping_note": (
+                    "opened_at IS the entry timestamp; closed_at IS the exit "
+                    "timestamp. entry_time and exit_time in API responses derive "
+                    "from these columns."
+                ),
+            },
+            "ny_session_grouping": {
+                "session_date_ny_storage": "derived",
+                "derivation_method": (
+                    "Postgres `AT TIME ZONE 'America/New_York'` on closed_at | "
+                    "opened_at | created_at; mirrors session.session_date_for()."
+                ),
+                "trade_by_ny_session": trade_by_ny_session,
+                "candidates_by_ny_session": cand_by_ny_session,
+                "outcomes_by_ny_session": out_by_ny_session,
+                "latest_session_date": next(iter(trade_by_ny_session), None),
+                "weekend_after_close_derivation_supported": True,
             },
             "wallet_snapshots": wallet_snapshots,
-            "extras_json_field_family_coverage": field_family_coverage,
             "analysis_readiness": {
                 "candidate_to_outcome_joinable_rows": joinable_cand_outcome,
                 "candidate_to_outcome_join_supported": True,
@@ -385,10 +688,19 @@ async def persistence_deep_status() -> dict:
                 "invalid_out_of_session_separable_via_exit_reason": True,
                 "wallet_breakdown_supported": ["engine", "deterministic_shadow", "ai_shadow"],
                 "per_engine_trade_counts": engine_trade_counts,
-                "engine_data_separable": engine_trade_counts["engine"] > 0
-                    or engine_trade_counts["unattributed_missing_wallet_id"] == 0,
-                "deterministic_shadow_data_separable": True,
-                "ai_shadow_data_separable": True,
+                "engine_data_separable": engine_separable,
+                # Evidence-based (Phase G1B-H8 Part F)
+                "deterministic_shadow_data_separable": det_separable,
+                "deterministic_shadow_data_separable_evidence": {
+                    "decision_field_present_rows": det_decision_rows,
+                    "sample_size": sw_sample,
+                },
+                "ai_shadow_data_separable": ai_separable,
+                "ai_shadow_data_separable_evidence": {
+                    "decision_field_present_rows": ai_decision_rows,
+                    "status_field_present_rows": ai_status_rows,
+                    "sample_size": sw_sample,
+                },
             },
             "timestamps": {
                 "stored_as": "TIMESTAMPTZ (UTC)",
@@ -404,4 +716,7 @@ async def persistence_deep_status() -> dict:
         return {
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
+            "analysis_ready": False,
+            "blocking_gaps": ["audit_query_failed"],
+            "warnings": [],
         }

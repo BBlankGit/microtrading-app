@@ -5577,59 +5577,10 @@ function EnginePerformanceSection({ perf }: { perf: WalletPerfResponse | null })
   );
 }
 
-function WalletDailyAnalytics({ perf, walletId }: { perf: WalletPerfResponse | null; walletId: string }) {
-  if (!perf) return null;
-  const wallets = walletId === "all" ? perf.wallets : perf.wallets.filter(w => w.wallet_id === walletId);
-  const pnlCls = (v: number | null) =>
-    v == null ? "text-gray-400" : v > 0 ? "text-green-400" : v < 0 ? "text-red-400" : "text-gray-300";
-  if (wallets.length === 0) return null;
-  const isAggregate = walletId === "all";
-  const totalPnl = wallets.reduce((s, w) => s + w.total_pnl, 0);
-  const realizedPnl = wallets.reduce((s, w) => s + w.realized_pnl, 0);
-  const unrealizedPnl = wallets.reduce((s, w) => s + w.unrealized_pnl, 0);
-  const closedTrades = wallets.reduce((s, w) => s + w.closed_trades_count, 0);
-  const wins = wallets.reduce((s, w) => s + w.winning_trades_count, 0);
-  const losses = wallets.reduce((s, w) => s + w.losing_trades_count, 0);
-  const winRate = closedTrades > 0 ? (wins / closedTrades * 100) : null;
-  const allPnls = perf.wallets
-    .filter(w => walletId === "all" || w.wallet_id === walletId)
-    .flatMap(w => [w.best_trade_pnl, w.worst_trade_pnl])
-    .filter((v): v is number => v != null);
-  const bestTrade = allPnls.length > 0 ? Math.max(...allPnls) : null;
-  const worstTrade = allPnls.length > 0 ? Math.min(...allPnls) : null;
-  const oosCount = wallets.reduce((s, w) => s + w.invalid_out_of_session_count, 0);
-  const eodCount = wallets.reduce((s, w) => s + w.eod_flatten_count, 0);
-  return (
-    <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
-      <h2 className="text-lg font-semibold mb-3">
-        {isAggregate ? "All Wallets" : walletId.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())} — Daily Analytics
-        <span className="ml-2 text-xs font-normal text-gray-400">
-          {isAggregate ? "aggregate across engine + shadows" : "wallet-scoped"} · fake P&L · session {perf.session_date}
-        </span>
-      </h2>
-      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3 mb-3">
-        <StatBox label="Total P&L" value={fmtUSD(totalPnl)} cls={pnlCls(totalPnl)} />
-        <StatBox label="Realized P&L" value={fmtUSD(realizedPnl)} cls={pnlCls(realizedPnl)} />
-        <StatBox label="Unrealized P&L" value={fmtUSD(unrealizedPnl)} cls={pnlCls(unrealizedPnl)} />
-        <StatBox label="Closed Trades" value={String(closedTrades)} />
-        <StatBox label="Win Rate" value={winRate != null ? `${winRate.toFixed(1)}% (${wins}W/${losses}L)` : "—"} />
-        <StatBox label="Best Trade" value={bestTrade != null ? fmtUSD(bestTrade) : "—"} cls={pnlCls(bestTrade)} />
-      </div>
-      {oosCount > 0 && (
-        <div className="mt-2 rounded border border-orange-800 bg-orange-950/30 px-3 py-2 text-xs text-orange-300">
-          ⚠ {oosCount} invalid out-of-session trade(s) excluded from normal performance metrics above.
-          {" "}<span className="text-orange-400/70">Raw P&L including OOS: {fmtUSD(wallets.reduce((s, w) => s + w.raw_total_pnl_including_invalid, 0))}</span>
-        </div>
-      )}
-      {(eodCount > 0 || worstTrade != null) && (
-        <div className="flex flex-wrap gap-4 text-xs font-mono text-gray-400 mt-1">
-          {eodCount > 0 && <span>EOD flattened: <span className="text-gray-300">{eodCount}</span></span>}
-          {worstTrade != null && <span>Worst trade: <span className={pnlCls(worstTrade)}>{fmtUSD(worstTrade)}</span></span>}
-        </div>
-      )}
-    </section>
-  );
-}
+// Phase G1B-H8 Part A: dead aggregate WalletDailyAnalytics component removed.
+// The three experimental wallets are parallel experiments — never combine
+// them as a single portfolio. Per-engine daily reports live in
+// EngineDailyReportsSection (one card per engine, no summing across).
 
 // ── Phase G1B-H7: per-engine account/report/analytics components ────────────
 
