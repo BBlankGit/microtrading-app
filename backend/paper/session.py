@@ -63,6 +63,23 @@ def minutes_to_close(d: datetime | None = None) -> float:
     return (regular_close_today_ny(d) - d).total_seconds() / 60.0
 
 
+def latest_completed_close_ny(d: datetime | None = None) -> datetime:
+    """
+    Return the most recent 16:00 ET timestamp on a weekday that is at or
+    before `d`. Used by the late-flatten/stale-overnight logic — a
+    position is "stale" iff its entry timestamp is strictly before this
+    value (the regular close after which it could not legitimately remain
+    open with PAPER_ALLOW_OVERNIGHT_POSITIONS=false).
+    """
+    d = d or now_ny()
+    if is_weekday(d) and d.time() >= dtime(16, 0):
+        return d.replace(hour=16, minute=0, second=0, microsecond=0)
+    probe = d - timedelta(days=1)
+    while probe.weekday() >= 5:
+        probe -= timedelta(days=1)
+    return probe.replace(hour=16, minute=0, second=0, microsecond=0)
+
+
 def latest_session_date_ny(d: datetime | None = None) -> str:
     """
     Return the YYYY-MM-DD of the *latest* US trading session relative to `d`.

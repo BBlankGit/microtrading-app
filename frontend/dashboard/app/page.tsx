@@ -419,11 +419,19 @@ interface WalletsResponse {
 interface WalletPosition extends Position {
   wallet_id?: string;
   strategy_id?: string;
+  stale_overnight?: boolean;
 }
 
 interface WalletTrade extends Trade {
   wallet_id?: string;
   strategy_id?: string;
+}
+
+interface WalletPositionWarning {
+  wallet_id?: string | null;
+  symbol?: string | null;
+  entry_time?: string | null;
+  reason?: string | null;
 }
 
 // ── Intelligence types ────────────────────────────────────────────────────────
@@ -880,15 +888,15 @@ async function fetchWallets(): Promise<WalletsResponse | null> {
   }
 }
 
-async function fetchWalletPositions(walletId?: string): Promise<WalletPosition[]> {
+async function fetchWalletPositions(walletId?: string): Promise<{ positions: WalletPosition[]; warnings: WalletPositionWarning[] }> {
   try {
     const qs = walletId ? `?wallet_id=${encodeURIComponent(walletId)}` : "";
     const r = await fetch(`/api/paper/wallets/positions${qs}`);
-    if (!r.ok) return [];
+    if (!r.ok) return { positions: [], warnings: [] };
     const body = await r.json();
-    return body.positions ?? [];
+    return { positions: body.positions ?? [], warnings: body.warnings ?? [] };
   } catch {
-    return [];
+    return { positions: [], warnings: [] };
   }
 }
 
@@ -1150,9 +1158,17 @@ const WALLET_OPTIONS: { value: string; label: string }[] = [
 
 function WalletPositionRow({ p }: { p: WalletPosition }) {
   return (
-    <tr className="border-b border-gray-800 hover:bg-gray-800">
+    <tr className={`border-b border-gray-800 hover:bg-gray-800 ${p.stale_overnight ? "bg-yellow-950/30" : ""}`}>
       <td className="py-2 pr-3 text-xs text-gray-400 font-mono">{p.wallet_id ?? "—"}</td>
-      <td className="py-2 pr-3 font-semibold text-yellow-300">{p.symbol}</td>
+      <td className="py-2 pr-3 text-xs text-gray-500 font-mono">{p.strategy_id ?? p.wallet_id ?? "—"}</td>
+      <td className="py-2 pr-3 font-semibold text-yellow-300">
+        {p.symbol}
+        {p.stale_overnight && (
+          <span className="ml-2 text-[10px] font-semibold px-1.5 py-0.5 rounded border bg-yellow-900 text-yellow-300 border-yellow-700" title="Position from a prior NY trading session; next tick will flatten">
+            STALE
+          </span>
+        )}
+      </td>
       <td className="py-2 pr-3 font-mono">${fmt(p.entry_price, 4)}</td>
       <td className="py-2 pr-3 font-mono">${fmt(p.current_price, 4)}</td>
       <td className="py-2 pr-3 font-mono">{fmt(p.shares, 4)}</td>
@@ -1170,6 +1186,7 @@ function WalletTradeRow({ t }: { t: WalletTrade }) {
   return (
     <tr className="border-b border-gray-800 hover:bg-gray-800">
       <td className="py-2 pr-3 text-xs text-gray-400 font-mono">{t.wallet_id ?? "—"}</td>
+      <td className="py-2 pr-3 text-xs text-gray-500 font-mono">{t.strategy_id ?? t.wallet_id ?? "—"}</td>
       <td className="py-2 pr-3 font-semibold text-yellow-300">{t.symbol}</td>
       <td className="py-2 pr-3 font-mono">${fmt(t.entry_price, 4)}</td>
       <td className="py-2 pr-3 font-mono">${fmt(t.exit_price, 4)}</td>
@@ -1186,18 +1203,20 @@ function WalletTradeRow({ t }: { t: WalletTrade }) {
 function WalletExplorer() {
   const [walletId, setWalletId] = useState<string>("all");
   const [positions, setPositions] = useState<WalletPosition[]>([]);
+  const [backendWarnings, setBackendWarnings] = useState<WalletPositionWarning[]>([]);
   const [trades, setTrades] = useState<WalletTrade[]>([]);
   const [sessionDate, setSessionDate] = useState<string | null>(null);
   const [openWarning, setOpenWarning] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     const wid = walletId === "all" ? undefined : walletId;
-    const [pos, trd, tradeMeta] = await Promise.all([
+    const [posResult, trd, tradeMeta] = await Promise.all([
       fetchWalletPositions(wid),
       fetchWalletTrades(wid, true),
       fetch(`/api/paper/wallets/trades?${wid ? `wallet_id=${encodeURIComponent(wid)}&` : ""}latest_session=true`).then(r => r.ok ? r.json() : null).catch(() => null),
     ]);
-    setPositions(pos);
+    setPositions(posResult.positions);
+    setBackendWarnings(posResult.warnings);
     setTrades(trd);
     setSessionDate(tradeMeta?.session_date ?? null);
 
@@ -1207,8 +1226,8 @@ function WalletExplorer() {
       const ny = new Date().toLocaleTimeString("en-US", { hour12: false, timeZone: "America/New_York" });
       const [hh] = ny.split(":").map(Number);
       const afterClose = hh >= 16;
-      if (afterClose && pos.length > 0) {
-        setOpenWarning(`${pos.length} fake position(s) still open after US market close — EOD flatten may have missed an exit price.`);
+      if (afterClose && posResult.positions.length > 0) {
+        setOpenWarning(`${posResult.positions.length} fake position(s) still open after US market close — EOD flatten may have missed an exit price.`);
       } else {
         setOpenWarning(null);
       }
@@ -1249,6 +1268,17 @@ function WalletExplorer() {
         </div>
       )}
 
+      {backendWarnings.length > 0 && (
+        <div className="rounded border border-yellow-700 bg-yellow-950 px-3 py-2 text-xs text-yellow-300 space-y-1">
+          <div className="font-semibold">⚠ Stale overnight positions ({backendWarnings.length}) — will be force-closed on next tick:</div>
+          {backendWarnings.slice(0, 8).map((w, i) => (
+            <div key={i} className="font-mono">
+              · {w.wallet_id ?? "—"} / {w.symbol ?? "—"} (entered {w.entry_time ? utcShort(w.entry_time) : "—"}) — {w.reason ?? "—"}
+            </div>
+          ))}
+        </div>
+      )}
+
       <div>
         <h3 className="text-sm font-semibold mb-2">Open Positions by Wallet ({positions.length})</h3>
         {positions.length === 0 ? (
@@ -1258,7 +1288,7 @@ function WalletExplorer() {
             <table className="w-full text-sm text-left">
               <thead className="text-gray-400 border-b border-gray-700">
                 <tr>
-                  {["Wallet","Symbol","Entry","Current","Shares","Cost","Unreal P&L","Catalyst","Entered"].map((h) => (
+                  {["Wallet","Strategy","Symbol","Entry","Current","Shares","Cost","Unreal P&L","Catalyst","Entered"].map((h) => (
                     <th key={h} className="pb-2 pr-3 font-medium whitespace-nowrap">{h}</th>
                   ))}
                 </tr>
@@ -1280,7 +1310,7 @@ function WalletExplorer() {
             <table className="w-full text-sm text-left">
               <thead className="text-gray-400 border-b border-gray-700">
                 <tr>
-                  {["Wallet","Symbol","Entry","Exit","P&L","%","Reason","Hold","Catalyst","Closed"].map((h) => (
+                  {["Wallet","Strategy","Symbol","Entry","Exit","P&L","%","Reason","Hold","Catalyst","Closed"].map((h) => (
                     <th key={h} className="pb-2 pr-3 font-medium whitespace-nowrap">{h}</th>
                   ))}
                 </tr>

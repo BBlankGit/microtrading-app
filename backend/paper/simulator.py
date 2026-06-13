@@ -946,12 +946,61 @@ async def run_tick() -> dict[str, Any]:
                         if bracket["conservative_both_touched"]:
                             result["conservative_both_touched_exits_today"] += 1
 
+        # ── Phase G1B-H2 Part F: late EOD flatten ──────────────────────────
+        # Catches positions that survived a prior NY session (e.g. the
+        # simulator was stopped over the weekend, or the close window was
+        # missed entirely). Runs on EVERY tick while overnight holding is
+        # disabled — independent of `flatten_due()` which only fires at or
+        # after 16:00 ET on the current session.
+        result.setdefault("eod_flatten_warnings", [])
+        try:
+            from paper import eod as _eod_late
+            for sym in list(_account.positions.keys()):
+                pos = _account.positions.get(sym)
+                if pos is None or not _eod_late.position_is_stale_overnight(pos.entry_time):
+                    continue
+                q = quality_map.get(sym) or {}
+                exit_price = (
+                    q.get("bid")
+                    or q.get("last_trade_price")
+                    or _last_prices.get(sym)
+                )
+                if not exit_price:
+                    result["eod_flatten_warnings"].append({
+                        "wallet_id": "engine",
+                        "symbol": sym,
+                        "entry_time": pos.entry_time,
+                        "reason": "missing_exit_price_late_flatten",
+                    })
+                    continue
+                trade = _account.exit_position(sym, float(exit_price), _eod_late.LATE_FLATTEN_REASON)
+                if trade is None:
+                    continue
+                result["exits"].append({
+                    "symbol": sym,
+                    "exit_reason": _eod_late.LATE_FLATTEN_REASON,
+                    "entry_price": round(pos.entry_price, 4),
+                    "exit_price": round(float(exit_price), 4),
+                    "pnl": round(trade.pnl, 4),
+                    "pnl_percent": round(trade.pnl_percent, 4),
+                    "hold_minutes": trade.hold_minutes,
+                    "catalyst_type": trade.entry_catalyst_type,
+                    "total_score": trade.entry_score,
+                    "entry_mode": trade.entry_mode,
+                    "position_id": pos.position_id,
+                    "shares": round(pos.shares, 6),
+                    "cost_basis": round(pos.cost_basis, 4),
+                    "wallet_id": "engine",
+                    "strategy_id": "engine",
+                })
+        except Exception as exc:
+            logger.warning("Late EOD flatten failed defensively: %s", exc)
+
         # ── Phase G1B-H1 Part E: end-of-day flatten ─────────────────────────
         # Close every remaining open engine position once we're inside the
         # flatten window (defaults: at/after 16:00 ET). Reuses the standard
         # exit_position mechanics — no TP/SL changes outside this window.
         # Shadow wallets are flattened by their own helper below.
-        result.setdefault("eod_flatten_warnings", [])
         try:
             from paper import eod as _eod
             if _eod.flatten_due():

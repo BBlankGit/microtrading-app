@@ -77,14 +77,41 @@ async def paper_wallets():
     }
 
 
+def _annotate_stale_overnight(positions: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    Stamp `stale_overnight: true` on positions whose entry NY trading-
+    session date is strictly older than today's latest NY session (and
+    PAPER_ALLOW_OVERNIGHT_POSITIONS is False). Returns (positions, warnings).
+
+    Phase G1B-H2 Part F: the dashboard should not present a yesterday-leftover
+    position as a normal open position. The simulator's next tick will
+    flatten it; until then this lets the dashboard surface it as stale.
+    """
+    from paper import eod as _eod
+    warnings: list[dict] = []
+    for p in positions:
+        entry_time = p.get("entry_time")
+        if _eod.position_is_stale_overnight(entry_time):
+            p["stale_overnight"] = True
+            warnings.append({
+                "wallet_id": p.get("wallet_id"),
+                "symbol": p.get("symbol"),
+                "entry_time": entry_time,
+                "reason": "stale_overnight_pending_flatten",
+            })
+        else:
+            p["stale_overnight"] = False
+    return positions, warnings
+
+
 @router.get("/wallets/positions")
 async def paper_wallet_positions(wallet_id: str | None = None):
     """
     Open positions, optionally filtered by wallet_id. When `wallet_id` is
     omitted, returns positions across engine + both shadow wallets, each
-    tagged with `wallet_id`/`strategy_id`. Backward-compatible with the
-    existing `/api/paper/positions` endpoint (which still returns engine
-    only).
+    tagged with `wallet_id`/`strategy_id` and a `stale_overnight` flag.
+    Backward-compatible with the existing `/api/paper/positions` endpoint
+    (which still returns engine only and without the new annotations).
     """
     from paper import shadow_wallets as _sw
 
@@ -93,24 +120,36 @@ async def paper_wallet_positions(wallet_id: str | None = None):
         for p in simulator.get_positions()
     ]
     if wallet_id == "engine":
-        return {"wallet_id": "engine", "positions": engine_positions}
+        positions, warnings = _annotate_stale_overnight(engine_positions)
+        return {"wallet_id": "engine", "positions": positions, "warnings": warnings}
     if wallet_id == _sw.WALLET_DETERMINISTIC:
+        positions, warnings = _annotate_stale_overnight(
+            _sw.get_positions(_sw.WALLET_DETERMINISTIC)
+        )
         return {
             "wallet_id": _sw.WALLET_DETERMINISTIC,
-            "positions": _sw.get_positions(_sw.WALLET_DETERMINISTIC),
+            "positions": positions,
+            "warnings": warnings,
         }
     if wallet_id == _sw.WALLET_AI:
+        positions, warnings = _annotate_stale_overnight(
+            _sw.get_positions(_sw.WALLET_AI)
+        )
         return {
             "wallet_id": _sw.WALLET_AI,
-            "positions": _sw.get_positions(_sw.WALLET_AI),
+            "positions": positions,
+            "warnings": warnings,
         }
+    all_positions = (
+        engine_positions
+        + _sw.get_positions(_sw.WALLET_DETERMINISTIC)
+        + _sw.get_positions(_sw.WALLET_AI)
+    )
+    positions, warnings = _annotate_stale_overnight(all_positions)
     return {
         "wallet_id": None,
-        "positions": (
-            engine_positions
-            + _sw.get_positions(_sw.WALLET_DETERMINISTIC)
-            + _sw.get_positions(_sw.WALLET_AI)
-        ),
+        "positions": positions,
+        "warnings": warnings,
     }
 
 

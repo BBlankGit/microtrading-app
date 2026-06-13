@@ -224,11 +224,20 @@ def _process_entries_for(
 
 
 def _eod_flatten_for(
-    wallet_id: str, quality_map: dict[str, dict]
+    wallet_id: str,
+    quality_map: dict[str, dict],
+    *,
+    exit_reason: str = "eod_flatten",
+    only_stale_overnight: bool = False,
 ) -> tuple[list[dict], list[dict]]:
-    """Close every open position on `wallet_id` at end-of-day. Returns
-    (exit_records, warnings). Warnings flag positions for which no
-    exit price could be derived (so the dashboard can surface them)."""
+    """Close positions on `wallet_id` and return (exit_records, warnings).
+
+    With ``only_stale_overnight=True`` we close ONLY positions whose entry
+    NY trading-session date is strictly older than the latest session — the
+    Phase G1B-H2 Part F "late flatten" path. Otherwise we close everything
+    open (Phase G1B-H1 Part E close-of-day path).
+    """
+    from paper import eod as _eod_mod
     account = _wallet(wallet_id)
     exits: list[dict] = []
     warnings: list[dict] = []
@@ -236,21 +245,28 @@ def _eod_flatten_for(
         pos = account.positions.get(sym)
         if pos is None:
             continue
+        if only_stale_overnight and not _eod_mod.position_is_stale_overnight(pos.entry_time):
+            continue
         q = quality_map.get(sym) or {}
         exit_price = q.get("bid") or q.get("last_trade_price")
         if not exit_price:
             warnings.append({
                 "wallet_id": wallet_id,
                 "symbol": sym,
-                "reason": "missing_exit_price",
+                "entry_time": pos.entry_time,
+                "reason": (
+                    "missing_exit_price_late_flatten"
+                    if only_stale_overnight
+                    else "missing_exit_price"
+                ),
             })
             continue
-        trade = account.exit_position(sym, float(exit_price), "eod_flatten")
+        trade = account.exit_position(sym, float(exit_price), exit_reason)
         if trade is None:
             continue
         exits.append({
             "symbol": sym,
-            "exit_reason": "eod_flatten",
+            "exit_reason": exit_reason,
             "entry_price": round(pos.entry_price, 4),
             "exit_price": round(float(exit_price), 4),
             "pnl": round(trade.pnl, 4),
@@ -290,6 +306,24 @@ def process_tick(
     try:
         from paper import eod as _eod
         exits: list[dict] = []
+        warnings: list[dict] = []
+
+        # Phase G1B-H2 Part F: every tick, close any position carried over
+        # from a prior NY session. Runs before regular intrabar exits so
+        # stale positions don't soak up exit slots.
+        late_det, late_det_warn = _eod_flatten_for(
+            WALLET_DETERMINISTIC, quality_map,
+            exit_reason=_eod.LATE_FLATTEN_REASON, only_stale_overnight=True,
+        )
+        exits.extend(late_det)
+        warnings.extend(late_det_warn)
+        late_ai, late_ai_warn = _eod_flatten_for(
+            WALLET_AI, quality_map,
+            exit_reason=_eod.LATE_FLATTEN_REASON, only_stale_overnight=True,
+        )
+        exits.extend(late_ai)
+        warnings.extend(late_ai_warn)
+
         exits.extend(_process_exits_for(WALLET_DETERMINISTIC, quality_map, intrabar_map))
         if _llm_enabled():
             exits.extend(_process_exits_for(WALLET_AI, quality_map, intrabar_map))
@@ -313,7 +347,6 @@ def process_tick(
                     )
                 )
 
-        warnings: list[dict] = []
         if _eod.flatten_due():
             flat_exits, flat_warn = _eod_flatten_for(WALLET_DETERMINISTIC, quality_map)
             exits.extend(flat_exits)
