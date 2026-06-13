@@ -1,0 +1,48 @@
+================================================================
+git rev-parse HEAD
+================================================================
+772d7d8133db8652c1da5a9ea3a6f4cb06c516d8
+
+================================================================
+git log --oneline -3
+================================================================
+772d7d8 Add DB-backed audit fixture and durable shadow decision evidence
+1c0b63f Merge pull request #106 from BBlankGit/codex/review-g1b-h10-patch-for-microtrading-app
+4b6c1c3 docs: review phase g1b h10 audit tests
+
+================================================================
+curl -i -s --max-time 10 http://localhost:8000/api/audit/persistence/status | head -7
+================================================================
+HTTP/1.1 200 OK
+date: Sat, 13 Jun 2026 15:54:40 GMT
+server: uvicorn
+content-length: 975
+content-type: application/json
+
+{"ok":true,"candidates_total":598714,"candidates_with_extras_json":51,"extras_json_coverage_percent":0.01,"outcomes_by_status":{"pending":255},"outcomes_by_horizon":{"5":{"pending":51},"10":{"pending":51},"15":{"pending":51},"30":{"pending":51},"60":{"pending":51}},"outcomes_by_source":{"unknown":255},"recent_extras_examples":[{"id":598714,"symbol":"AXTI","has_extras":true,"created_at":"2026-06-13T09:24:24.101874+00:00"},{"id":598713,"symbol":"PYPL","has_extras":true,"created_at":"2026-06-13T09:24:24.101874+00:00"},{"id":598712,"symbol":"MS","has_extras":true,"created_at":"2026-06-13T09:24:24.101874+00:00"},{"id":598711,"symbol":"HOOD","has_extras":true,"created_at":"2026-06-13T09:24:24.101874+00:00"},{"id":598710,"symbol":"GOOGL","has_extras":true,"created_at":"2026-06-13T09:24:24.101874+00:00"}],"high_low_caveat":"Interval high/low unavailable in current resolver; future_price is cache price at resolution time.","resolver_last_run":{"at":null,"summary":null}}
+================================================================
+Production safety: scoped endpoint must return HTTP 403
+curl -sw 'HTTP %{http_code}\n' http://localhost:8000/api/audit/persistence/deep-status-scoped?scope_tick_id_prefix=production_test
+================================================================
+{"detail":{"ok":false,"disabled":true,"reason":"AUDIT_TEST_FILTERS_ENABLED=false","note":"Test-only endpoint; never exposed in production."}}HTTP 403
+
+================================================================
+Wallet status — DETERMINISTIC_SHADOW active, AI_SHADOW inactive
+curl -s http://localhost:8000/api/paper/wallets | jq excerpt
+================================================================
+engine: status=active, inactive_reason=None
+deterministic_shadow: status=active, inactive_reason=None
+  enabled=True, enabled_by_config=[{'flag': 'PAPER_SHADOW_WALLETS_ENABLED', 'value': True}, {'flag': 'PAPER_DETERMINISTIC_SHADOW_ENABLED', 'value': True}]
+  last_decision_at_source=persisted_candidate_extras, _persisted=2026-06-13T09:24:24.101874+00:00
+ai_shadow: status=inactive, inactive_reason='LLM_SHADOW_ENABLED=false'
+  enabled=False, enabled_by_config=[{'flag': 'PAPER_SHADOW_WALLETS_ENABLED', 'value': True}, {'flag': 'LLM_SHADOW_ENABLED', 'value': False}]
+  last_decision_at_source=persisted_candidate_extras, _persisted=2026-06-13T09:24:24.101874+00:00
+
+================================================================
+Dashboard SSR markers (curl http://localhost:3000/ | grep)
+================================================================
+Advanced diagnostics
+Engine Daily Reports
+Engine Decision Analytics
+Legacy ENGINE-only
+Trading Activity

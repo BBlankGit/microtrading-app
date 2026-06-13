@@ -7,6 +7,17 @@ from main import app
 
 
 @pytest.fixture(autouse=True)
+def _reset_db_pool_between_tests():
+    """Phase G1B-H12: the asyncpg pool cached on paper.db._pool can go
+    stale between tests because the FastAPI TestClient lifecycle closes
+    connections but the module-level cache survives. Reset before each
+    test so endpoint calls get a freshly-built pool."""
+    from paper import db as _db
+    _db._pool = None
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _mock_reddit_redis_save():
     """Prevent test-generated ApeWisdom data from being written to real Redis."""
     with patch("intelligence.reddit._redis_save", new=AsyncMock(return_value=None)):

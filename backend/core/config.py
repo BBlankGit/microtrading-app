@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     # LLM_SHADOW_ENABLED.
     PAPER_DETERMINISTIC_SHADOW_ENABLED: bool = True
 
+    # G1B-H12 Part A: gate for the test-only scoped audit endpoint
+    # `/api/audit/persistence/deep-status-scoped`. MUST default False so
+    # production deployments cannot accept the tick_id filter parameter.
+    # Tests flip this on via monkeypatch only.
+    AUDIT_TEST_FILTERS_ENABLED: bool = False
+
     # Phase G1B-H1 Part E: end-of-day flattening (fake-money only).
     # Microtrading targets are intraday; default behavior is to refuse new
     # entries inside a cutoff window before the regular close and to flatten
