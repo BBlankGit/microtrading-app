@@ -1059,6 +1059,44 @@ def record_tick_call() -> None:
     _status["calls_last_tick"] += 1
 
 
+def simulator_ready() -> tuple[bool, str]:
+    """
+    Provider-aware readiness gate used by the paper simulator tick.
+
+    Returns (ready, default_status) where:
+      ready = True   → selector may pick candidates AND analyze_candidate_packet()
+                       may run. Unselected candidates default to "not_selected".
+                       The actual local-provider availability is decided per
+                       call inside analyze_candidate_packet() — this gate does
+                       not require it.
+      ready = False  → selector and analyzer are skipped entirely for the tick.
+                       Every candidate row gets `default_status` so the
+                       dashboard can render a stable explanation.
+
+    Specific rules:
+      - LLM_SHADOW_ENABLED=False   → (False, "disabled")
+      - provider="openai" + no/placeholder key → (False, "missing_api_key")
+      - provider="openai" + valid-looking key  → (True, "not_selected")
+      - provider="ollama"                       → (True, "not_selected")
+        (no key required; analyze_candidate_packet does the local probe.)
+      - provider=any other value                → (False, "provider_not_supported")
+
+    The simulator must NEVER consult api_key_present() on its own. That
+    function is an OpenAI-era check and rejects everything when no key is
+    set — which would prevent the local Ollama path from ever running.
+    """
+    if not is_enabled():
+        return False, "disabled"
+    prov = provider()
+    if prov == "openai":
+        if not api_key_present():
+            return False, "missing_api_key"
+        return True, "not_selected"
+    if prov == "ollama":
+        return True, "not_selected"
+    return False, "provider_not_supported"
+
+
 def default_not_selected_result() -> dict:
     """The 'not picked by selector' stable shape for candidate rows."""
     return {

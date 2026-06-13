@@ -1855,17 +1855,18 @@ async def run_tick() -> dict[str, Any]:
     # The LLM output never modifies eligible/action/entry_mode.
     try:
         from intelligence import llm_shadow as _llm_mod
+        # Phase G1A-H1: provider-aware readiness. Replaces the cloud-LLM-era
+        # api_key_present() gate which blocked the local-provider path.
+        # See intelligence.llm_shadow.simulator_ready() for the full matrix.
         _llm_default = _llm_mod.default_not_selected_result()
-        if not _llm_mod.is_enabled():
-            _llm_default = {**_llm_default, "llm_status": "disabled"}
-        elif not _llm_mod.api_key_present():
-            _llm_default = {**_llm_default, "llm_status": "missing_api_key"}
+        _llm_ready, _llm_default_status = _llm_mod.simulator_ready()
+        _llm_default = {**_llm_default, "llm_status": _llm_default_status}
         for c in result["candidates"]:
             for k, v in _llm_default.items():
                 c.setdefault(k, v)
         _llm_mod.reset_tick_counters()
 
-        if _llm_mod.is_enabled() and _llm_mod.api_key_present():
+        if _llm_ready:
             try:
                 _open_syms = {p.symbol for p in _account.positions.values()}
             except Exception:
