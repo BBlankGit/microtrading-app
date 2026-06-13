@@ -5901,38 +5901,49 @@ export default function Home() {
         />
       </section>
 
-      {/* ENGINE Analytics — candidate funnel, score distribution, rejection reasons (ENGINE-only) */}
-      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
-        <h2 className="text-lg font-semibold mb-3">
-          ENGINE Analytics
-          <span className="ml-2 text-xs font-normal text-gray-400">
-            candidate funnel · score distribution · rejection reasons · ENGINE-only · fake-money
+      {/* Phase G1B-H6 — Legacy ENGINE diagnostics (collapsed; wallet-aware sections above) */}
+      <details className="mb-6 bg-gray-900 rounded-lg border border-gray-700">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-300 hover:text-white select-none">
+          ▸ Legacy ENGINE diagnostics
+          <span className="ml-2 text-xs font-normal text-gray-500">
+            ENGINE-only · candidate funnel, daily journal, history log · superseded by wallet-aware sections above · collapsed by default
           </span>
-        </h2>
-        <AnalyticsPanel analytics={dashboard?.analytics ?? null} />
-      </section>
+        </summary>
+        <div className="px-4 pb-4 space-y-4">
+          {/* Legacy ENGINE Analytics — candidate funnel, score distribution, rejection reasons */}
+          <section className="bg-gray-800 rounded-lg border border-gray-700 p-4">
+            <h3 className="text-base font-semibold mb-3">
+              Legacy ENGINE Analytics
+              <span className="ml-2 text-xs font-normal text-gray-400">
+                candidate funnel · score distribution · rejection reasons · ENGINE-only · fake-money
+              </span>
+            </h3>
+            <AnalyticsPanel analytics={dashboard?.analytics ?? null} />
+          </section>
 
-      {/* ENGINE Journal Report (engine-only journal data) */}
-      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
-        <h2 className="text-lg font-semibold mb-3">
-          ENGINE Journal Report
-          <span className="ml-2 text-xs font-normal text-gray-400">
-            engine-only journal · daily summary · fake-money · no broker
-          </span>
-        </h2>
-        <TodayReportPanel report={todayReport} />
-      </section>
+          {/* Legacy ENGINE Journal Report */}
+          <section className="bg-gray-800 rounded-lg border border-gray-700 p-4">
+            <h3 className="text-base font-semibold mb-3">
+              Legacy ENGINE Journal Report
+              <span className="ml-2 text-xs font-normal text-gray-400">
+                engine-only journal · daily summary · fake-money · no broker
+              </span>
+            </h3>
+            <TodayReportPanel report={todayReport} />
+          </section>
 
-      {/* Journal / History */}
-      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
-        <h2 className="text-lg font-semibold mb-3">
-          Journal / History
-          <span className="ml-2 text-xs font-normal text-gray-400">
-            persistent PostgreSQL log · fake-money · no broker
-          </span>
-        </h2>
-        <JournalPanel journal={journal} />
-      </section>
+          {/* Legacy ENGINE Journal / History */}
+          <section className="bg-gray-800 rounded-lg border border-gray-700 p-4">
+            <h3 className="text-base font-semibold mb-3">
+              Legacy ENGINE Journal / History
+              <span className="ml-2 text-xs font-normal text-gray-400">
+                ENGINE-only persistent PostgreSQL log · fake-money · no broker
+              </span>
+            </h3>
+            <JournalPanel journal={journal} />
+          </section>
+        </div>
+      </details>
       </>)}
 
       {topTab === "strategy" && (
