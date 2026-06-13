@@ -426,13 +426,60 @@ def _last_update_time(account: PaperAccount) -> str | None:
     return max(times) if times else None
 
 
+def _deterministic_shadow_enabled() -> bool:
+    """G1B-H9: deterministic shadow has its own switch (default True),
+    plus the master `PAPER_SHADOW_WALLETS_ENABLED` switch."""
+    return enabled() and bool(
+        getattr(settings, "PAPER_DETERMINISTIC_SHADOW_ENABLED", True)
+    )
+
+
 def _wallet_status(wallet_id: str) -> tuple[str, str | None]:
-    """Return (status, inactive_reason)."""
+    """Return (status, inactive_reason). G1B-H9: deterministic shadow no
+    longer depends on LLM availability; only on its own switch and the
+    master switch."""
     if not enabled():
         return ("inactive", "PAPER_SHADOW_WALLETS_ENABLED=false")
+    if wallet_id == WALLET_DETERMINISTIC and not _deterministic_shadow_enabled():
+        return ("inactive", "PAPER_DETERMINISTIC_SHADOW_ENABLED=false")
     if wallet_id == WALLET_AI and not _llm_enabled():
         return ("inactive", "LLM_SHADOW_ENABLED=false")
     return ("active", None)
+
+
+def _wallet_processing_info(wallet_id: str) -> dict:
+    """G1B-H9 Part A: per-wallet enabled / processing_enabled / config-flag fields."""
+    if wallet_id == WALLET_DETERMINISTIC:
+        master = enabled()
+        own = bool(getattr(settings, "PAPER_DETERMINISTIC_SHADOW_ENABLED", True))
+        return {
+            "enabled": master and own,
+            "processing_enabled": master and own,
+            "enabled_by_config": [
+                {"flag": "PAPER_SHADOW_WALLETS_ENABLED", "value": master},
+                {"flag": "PAPER_DETERMINISTIC_SHADOW_ENABLED", "value": own},
+            ],
+            "depends_on_llm": False,
+        }
+    if wallet_id == WALLET_AI:
+        master = enabled()
+        llm = _llm_enabled()
+        return {
+            "enabled": master and llm,
+            "processing_enabled": master and llm,
+            "enabled_by_config": [
+                {"flag": "PAPER_SHADOW_WALLETS_ENABLED", "value": master},
+                {"flag": "LLM_SHADOW_ENABLED", "value": llm},
+            ],
+            "depends_on_llm": True,
+            "no_paid_ai_calls": True,
+        }
+    return {
+        "enabled": True,
+        "processing_enabled": True,
+        "enabled_by_config": [],
+        "depends_on_llm": False,
+    }
 
 
 def get_positions(wallet_id: str, quality_map: dict[str, dict] | None = None) -> list[dict]:
@@ -482,8 +529,23 @@ def _wallet_snapshot(wallet_id: str, quality_map: dict[str, dict]) -> dict:
     account = _wallet(wallet_id)
     base = account.to_status(_last_prices_for(account, quality_map))
     status, inactive_reason = _wallet_status(wallet_id)
+    proc = _wallet_processing_info(wallet_id)
     daily_baseline = account.daily_start_equity or account.starting_cash
     daily_pnl = round(base["equity"] - daily_baseline, 4) if daily_baseline else 0.0
+    # G1B-H9 Part A: per-wallet last_entry_at / last_decision_at (best-effort
+    # from in-memory ledger; deeper history lives in DB).
+    last_entry_at = None
+    if account.positions:
+        last_entry_at = max(
+            (p.entry_time for p in account.positions.values() if p.entry_time),
+            default=None,
+        )
+    last_exit_at = None
+    if account.trades:
+        last_exit_at = max(
+            (t.exit_time for t in account.trades if t.exit_time),
+            default=None,
+        )
     base.update({
         "wallet_id": wallet_id,
         "strategy_id": wallet_id,
@@ -492,7 +554,17 @@ def _wallet_snapshot(wallet_id: str, quality_map: dict[str, dict]) -> dict:
         "daily_pnl": daily_pnl,
         "win_rate": _win_rate(account),
         "last_update_time": _last_update_time(account),
+        # G1B-H9 Part A new fields
+        "enabled": proc["enabled"],
+        "processing_enabled": proc["processing_enabled"],
+        "enabled_by_config": proc["enabled_by_config"],
+        "depends_on_llm": proc["depends_on_llm"],
+        "last_entry_at": last_entry_at,
+        "last_exit_at": last_exit_at,
+        "last_decision_at": last_entry_at,  # best-effort: entries are decisions
     })
+    if wallet_id == WALLET_AI:
+        base["no_paid_ai_calls"] = True
     return base
 
 

@@ -405,6 +405,15 @@ interface WalletSnapshot {
   closed_trade_count: number;
   win_rate: number | null;
   last_update_time: string | null;
+  // Phase G1B-H9 Part A: per-wallet processing flags
+  enabled?: boolean;
+  processing_enabled?: boolean;
+  enabled_by_config?: { flag: string; value: boolean }[];
+  depends_on_llm?: boolean;
+  last_entry_at?: string | null;
+  last_exit_at?: string | null;
+  last_decision_at?: string | null;
+  no_paid_ai_calls?: boolean;
 }
 
 interface WalletsResponse {
@@ -5593,6 +5602,7 @@ function EngineAccountCard({
   perf: WalletPerf | undefined;
 }) {
   const active = snapshot?.status === "active";
+  const hasTrades = (snapshot?.closed_trade_count ?? 0) > 0 || (snapshot?.open_position_count ?? 0) > 0;
   const cardCls = active
     ? "bg-gray-800 border-gray-700"
     : "bg-gray-900 border-gray-800 opacity-85";
@@ -5611,7 +5621,10 @@ function EngineAccountCard({
         </span>
       </div>
       {!active && snapshot?.inactive_reason && (
-        <p className="text-[11px] text-gray-400 mb-2 font-mono">{snapshot.inactive_reason}</p>
+        <p className="text-[11px] text-orange-400 mb-2 font-mono">disabled by config: {snapshot.inactive_reason}</p>
+      )}
+      {active && !hasTrades && (
+        <p className="text-[11px] text-gray-500 mb-2 font-mono italic">active — no trades this session</p>
       )}
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
         <div className="text-gray-400">Cash</div>

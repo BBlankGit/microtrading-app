@@ -59,6 +59,11 @@ async def persistence_deep_status() -> dict:
             "skipped": True,
             "reason": "no pool",
             "analysis_ready": False,
+            "overall_freeze_audit_ready": False,
+            "engine_analysis_ready": False,
+            "deterministic_shadow_analysis_ready": False,
+            "ai_shadow_analysis_ready": False,
+            "ai_shadow_status_note": "postgres_pool_unavailable",
             "blocking_gaps": ["postgres_pool_unavailable"],
             "warnings": [],
         }
@@ -245,6 +250,85 @@ async def persistence_deep_status() -> dict:
             ):
                 missing_by_horizon[str(int(r["horizon_minutes"]))] = int(r["n"])
 
+            # G1B-H9 Part D: direct resolved_at NULL/present counts
+            resolved_at_null_count = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM paper_candidate_outcomes WHERE resolved_at IS NULL"
+            ) or 0)
+            resolved_at_present_count = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM paper_candidate_outcomes WHERE resolved_at IS NOT NULL"
+            ) or 0)
+
+            # G1B-H9 Part E: TRUE missing-horizon-row count (absent rows, not
+            # just unresolved). For each REQUIRED horizon, count candidates
+            # that have NO row at all for that horizon.
+            REQUIRED_HORIZONS = [5, 15, 30, 60, 120]
+            missing_horizon_row_count_by_horizon: dict[str, int] = {}
+            horizon_row_coverage: dict[str, dict] = {}
+            for h in REQUIRED_HORIZONS:
+                missing_rows = int(await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM paper_candidates c
+                     WHERE NOT EXISTS (
+                        SELECT 1 FROM paper_candidate_outcomes o
+                         WHERE o.candidate_id = c.id
+                           AND o.horizon_minutes = $1
+                     )
+                    """,
+                    h,
+                ) or 0)
+                present_rows = int(await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM paper_candidates c
+                     WHERE EXISTS (
+                        SELECT 1 FROM paper_candidate_outcomes o
+                         WHERE o.candidate_id = c.id
+                           AND o.horizon_minutes = $1
+                     )
+                    """,
+                    h,
+                ) or 0)
+                resolved_rows = int(await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM paper_candidate_outcomes
+                     WHERE horizon_minutes = $1 AND status = 'resolved'
+                    """,
+                    h,
+                ) or 0)
+                pending_rows = int(await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM paper_candidate_outcomes
+                     WHERE horizon_minutes = $1 AND status = 'pending'
+                    """,
+                    h,
+                ) or 0)
+                error_rows = int(await conn.fetchval(
+                    """
+                    SELECT COUNT(*) FROM paper_candidate_outcomes
+                     WHERE horizon_minutes = $1 AND status IN ('error','missing_data')
+                    """,
+                    h,
+                ) or 0)
+                missing_horizon_row_count_by_horizon[str(h)] = missing_rows
+                horizon_row_coverage[str(h)] = {
+                    "candidates_with_row": present_rows,
+                    "candidates_missing_row": missing_rows,
+                    "resolved_rows": resolved_rows,
+                    "pending_rows": pending_rows,
+                    "error_or_missing_data_rows": error_rows,
+                }
+            candidates_with_all_required_horizons = int(await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT candidate_id FROM paper_candidate_outcomes
+                     WHERE horizon_minutes = ANY($1::int[])
+                     GROUP BY candidate_id
+                    HAVING COUNT(DISTINCT horizon_minutes) >= cardinality($1::int[])
+                ) c
+                """,
+                REQUIRED_HORIZONS,
+            ) or 0)
+            candidates_missing_any_required_horizon = cand_total - candidates_with_all_required_horizons
+
             # ── extras_json field-family coverage (sampled on recent rows) ──
             family_probes = {
                 "marketdata": ["marketdata_source", "marketdata_age_seconds"],
@@ -269,13 +353,22 @@ async def persistence_deep_status() -> dict:
                 ") s"
             ) or 0)
             for family, keys in family_probes.items():
+                # G1B-H9 Part C: every coverage object explicitly includes
+                # coverage_scope, status (collected/not_collected), and the
+                # set of keys actually found in present rows.
                 if sample_size == 0:
                     field_family_coverage[family] = {
-                        "sample_size": 0, "present": 0, "coverage_percent": 0.0, "keys": keys,
+                        "coverage_scope": "sampled",
+                        "sample_size": 0,
+                        "rows_present": 0,
+                        "present": 0,  # backwards-compat alias
+                        "coverage_percent": 0.0,
+                        "status": "not_collected",
+                        "keys": keys,
+                        "keys_found": [],
                     }
                     continue
                 or_clauses = " OR ".join([f"extras_json ? $1::text"] + [f"extras_json ? ${i+2}::text" for i in range(len(keys) - 1)])
-                # Build params list for parametrized OR
                 params = list(keys)
                 present = int(await conn.fetchval(
                     f"""
@@ -287,12 +380,31 @@ async def persistence_deep_status() -> dict:
                     """,
                     *params,
                 ) or 0)
+                # Find which specific keys actually appear in the sample
+                keys_found: list[str] = []
+                for k in keys:
+                    n = int(await conn.fetchval(
+                        """
+                        SELECT COUNT(*) FROM (
+                            SELECT extras_json FROM paper_candidates
+                             WHERE extras_json IS NOT NULL
+                             ORDER BY id DESC LIMIT 5000
+                        ) s WHERE extras_json ? $1::text
+                        """,
+                        k,
+                    ) or 0)
+                    if n > 0:
+                        keys_found.append(k)
                 pct = round(present / sample_size * 100.0, 2) if sample_size else 0.0
                 field_family_coverage[family] = {
+                    "coverage_scope": "sampled",
                     "sample_size": sample_size,
-                    "present": present,
+                    "rows_present": present,
+                    "present": present,  # backwards-compat alias
                     "coverage_percent": pct,
+                    "status": "collected" if present > 0 else "not_collected",
                     "keys": keys,
+                    "keys_found": keys_found,
                 }
 
             # ── Per-engine trade separability ──────────────────────────
@@ -545,7 +657,24 @@ async def persistence_deep_status() -> dict:
             or engine_trade_counts["unattributed_missing_wallet_id"] == 0
         )
 
-        # ── Phase G1B-H8 Part I: analysis-ready summary ──────────────
+        # ── Phase G1B-H9 Part F: latest_session_date from multiple sources ──
+        latest_trade_session_date = next(iter(trade_by_ny_session), None)
+        latest_candidate_session_date = next(iter(cand_by_ny_session), None)
+        latest_outcome_session_date = next(iter(out_by_ny_session), None)
+        candidate_sources = [
+            ("trades", latest_trade_session_date),
+            ("candidates", latest_candidate_session_date),
+            ("outcomes", latest_outcome_session_date),
+        ]
+        available = [(src, d) for src, d in candidate_sources if d]
+        if available:
+            latest_session_date = max(d for _, d in available)
+            latest_session_date_source = next(src for src, d in available if d == latest_session_date)
+        else:
+            latest_session_date = None
+            latest_session_date_source = "no_data"
+
+        # ── Phase G1B-H9 Part H: per-engine and overall readiness ─────
         blocking_gaps: list[str] = []
         warnings_list: list[str] = []
         if cand_total == 0:
@@ -566,16 +695,51 @@ async def persistence_deep_status() -> dict:
             warnings_list.append(
                 f"trades_missing_wallet_id_{engine_trade_counts['unattributed_missing_wallet_id']}"
             )
-        analysis_ready = (
-            len(blocking_gaps) == 0
-            and engine_separable
+        if candidates_missing_any_required_horizon > 0 and cand_total > 0:
+            warnings_list.append(
+                f"missing_outcome_rows_{candidates_missing_any_required_horizon}_candidates"
+            )
+
+        # Per-engine readiness — evidence-based
+        engine_analysis_ready = (
+            cand_total > 0
             and joinable_cand_outcome > 0
+            and engine_separable
         )
+        deterministic_shadow_analysis_ready = (
+            det_separable
+            and cand_total > 0
+        )
+        # AI shadow is "ready for analysis" only if its decisions are persisted.
+        # Being inactive due to LLM_SHADOW_ENABLED=false is NOT readiness — it
+        # means the audit cannot compare AI_SHADOW yet.
+        ai_shadow_analysis_ready = ai_separable
+        ai_shadow_status_note = (
+            "ai_shadow_data_collected"
+            if ai_separable
+            else "ai_shadow_inactive_or_decisions_not_persisted"
+        )
+
+        overall_freeze_audit_ready = (
+            engine_analysis_ready
+            and deterministic_shadow_analysis_ready
+            and len(blocking_gaps) == 0
+            # AI shadow not required for freeze if it's intentionally disabled
+            # AND warnings call this out clearly.
+        )
+
+        # Keep top-level analysis_ready for backwards-compat but make it strict.
+        analysis_ready = overall_freeze_audit_ready
 
         return {
             "ok": True,
             "generated_at": now_utc.isoformat(),
             "analysis_ready": analysis_ready,
+            "overall_freeze_audit_ready": overall_freeze_audit_ready,
+            "engine_analysis_ready": engine_analysis_ready,
+            "deterministic_shadow_analysis_ready": deterministic_shadow_analysis_ready,
+            "ai_shadow_analysis_ready": ai_shadow_analysis_ready,
+            "ai_shadow_status_note": ai_shadow_status_note,
             "blocking_gaps": blocking_gaps,
             "warnings": warnings_list,
             "candidates": {
@@ -625,12 +789,25 @@ async def persistence_deep_status() -> dict:
                 "by_source": out_by_source,
                 "min_resolved_at": out_min_resolved.isoformat() if out_min_resolved else None,
                 "max_resolved_at": out_max_resolved.isoformat() if out_max_resolved else None,
-                "missing_resolved_at_count": out_by_status.get("pending", 0)
+                # G1B-H9 Part D: direct resolved_at NULL/present counts
+                "resolved_at_null_count": resolved_at_null_count,
+                "resolved_at_present_count": resolved_at_present_count,
+                # Status-derived counts kept separate
+                "status_derived_missing_resolved_at_count": (
+                    out_by_status.get("pending", 0)
                     + out_by_status.get("missing_data", 0)
-                    + out_by_status.get("error", 0),
+                    + out_by_status.get("error", 0)
+                ),
+                "missing_resolved_at_count": resolved_at_null_count,  # backwards-compat
                 "distinct_candidates_with_any_outcome": distinct_candidates_with_any_outcome,
                 "candidates_with_all_5_horizons": candidates_with_all_5_horizons,
-                "missing_outcome_count_by_horizon": missing_by_horizon,
+                # G1B-H9 Part E: TRUE missing horizon rows (absent, not just unresolved)
+                "required_horizons": [5, 15, 30, 60, 120],
+                "candidates_with_all_required_horizons": candidates_with_all_required_horizons,
+                "candidates_missing_any_required_horizon": candidates_missing_any_required_horizon,
+                "missing_horizon_row_count_by_horizon": missing_horizon_row_count_by_horizon,
+                "horizon_row_coverage": horizon_row_coverage,
+                "missing_outcome_count_by_horizon": missing_by_horizon,  # backwards-compat (unresolved only)
             },
             "trades": {
                 "total": trade_total,
@@ -669,7 +846,12 @@ async def persistence_deep_status() -> dict:
                 "trade_by_ny_session": trade_by_ny_session,
                 "candidates_by_ny_session": cand_by_ny_session,
                 "outcomes_by_ny_session": out_by_ny_session,
-                "latest_session_date": next(iter(trade_by_ny_session), None),
+                # G1B-H9 Part F: explicit per-source latest dates + derived latest
+                "latest_trade_session_date": latest_trade_session_date,
+                "latest_candidate_session_date": latest_candidate_session_date,
+                "latest_outcome_session_date": latest_outcome_session_date,
+                "latest_session_date": latest_session_date,
+                "latest_session_date_source": latest_session_date_source,
                 "weekend_after_close_derivation_supported": True,
             },
             "wallet_snapshots": wallet_snapshots,
@@ -717,6 +899,11 @@ async def persistence_deep_status() -> dict:
             "ok": False,
             "error": f"{type(exc).__name__}: {exc}",
             "analysis_ready": False,
+            "overall_freeze_audit_ready": False,
+            "engine_analysis_ready": False,
+            "deterministic_shadow_analysis_ready": False,
+            "ai_shadow_analysis_ready": False,
+            "ai_shadow_status_note": "audit_query_failed",
             "blocking_gaps": ["audit_query_failed"],
             "warnings": [],
         }

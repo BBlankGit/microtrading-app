@@ -26,12 +26,18 @@ class Settings(BaseSettings):
     PAPER_STOP_LOSS_PERCENT: float = 0.35
     PAPER_MAX_HOLD_MINUTES: int = 15
     # Phase G1B Part C: parallel fake wallets for shadow strategies.
-    # Default OFF. When enabled, each tick also feeds a separate
-    # DETERMINISTIC_SHADOW wallet (enters when enhanced_shadow_decision=WOULD_ENTER)
-    # and an AI_SHADOW wallet (enters when llm_decision=WOULD_ENTER, only if
-    # LLM_SHADOW_ENABLED). Same starting capital, sizing, TP/SL, max-hold as the
-    # engine wallet, but independent ledgers — never affects engine decisions.
-    PAPER_SHADOW_WALLETS_ENABLED: bool = False
+    # G1B-H9: default is now ON so DETERMINISTIC_SHADOW collects its decisions
+    # alongside ENGINE. Each tick also feeds a separate DETERMINISTIC_SHADOW
+    # wallet (enters when enhanced_shadow_decision=WOULD_ENTER) and an
+    # AI_SHADOW wallet (enters when llm_decision=WOULD_ENTER, only if
+    # LLM_SHADOW_ENABLED). Same starting capital, sizing, TP/SL, max-hold as
+    # the engine wallet, but independent ledgers — never affects engine
+    # decisions.
+    PAPER_SHADOW_WALLETS_ENABLED: bool = True
+    # G1B-H9 Part A: deterministic shadow specific switch (no external
+    # dependency, defaults True). AI_SHADOW activation also requires
+    # LLM_SHADOW_ENABLED.
+    PAPER_DETERMINISTIC_SHADOW_ENABLED: bool = True
 
     # Phase G1B-H1 Part E: end-of-day flattening (fake-money only).
     # Microtrading targets are intraday; default behavior is to refuse new
