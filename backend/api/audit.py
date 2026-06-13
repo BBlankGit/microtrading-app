@@ -215,6 +215,86 @@ async def persistence_deep_status() -> dict:
                  INNER JOIN paper_candidates c ON c.id = o.candidate_id
                 """
             ) or 0)
+            distinct_candidates_with_any_outcome = int(await conn.fetchval(
+                "SELECT COUNT(DISTINCT candidate_id) FROM paper_candidate_outcomes"
+            ) or 0)
+            candidates_with_all_5_horizons = int(await conn.fetchval(
+                """
+                SELECT COUNT(*) FROM (
+                    SELECT candidate_id
+                      FROM paper_candidate_outcomes
+                     GROUP BY candidate_id
+                    HAVING COUNT(DISTINCT horizon_minutes) >= 5
+                ) AS c5
+                """
+            ) or 0)
+            missing_by_horizon = {}
+            for r in await conn.fetch(
+                """
+                SELECT horizon_minutes, COUNT(*) AS n
+                  FROM paper_candidate_outcomes
+                 WHERE status IN ('pending','missing_data','error')
+                 GROUP BY horizon_minutes
+                 ORDER BY horizon_minutes
+                """
+            ):
+                missing_by_horizon[str(int(r["horizon_minutes"]))] = int(r["n"])
+
+            # ── extras_json field-family coverage (sampled on recent rows) ──
+            family_probes = {
+                "marketdata": ["marketdata_source", "marketdata_age_seconds"],
+                "catalyst_news": ["catalyst_type", "catalyst_sentiment", "strongest_catalyst_title"],
+                "reddit": ["reddit_rank", "reddit_mentions"],
+                "earnings": ["earnings_next_date", "earnings_score_adjustment"],
+                "insider": ["insider_recent_buy_count", "insider_score_adjustment"],
+                "market_regime_trend": ["market_trend_direction", "market_trend_strength"],
+                "deterministic_shadow": ["enhanced_shadow_decision", "enhanced_shadow_score"],
+                "ai_shadow": ["llm_decision", "llm_status"],
+                "ai_shadow_disabled_state": ["llm_status", "llm_error"],
+            }
+            # Use LATERAL probe over recent 5k extras rows to stay fast on 600k tables
+            field_family_coverage: dict[str, dict] = {}
+            sample_size = int(await conn.fetchval(
+                "SELECT COUNT(*) FROM ("
+                "  SELECT 1 FROM paper_candidates"
+                "   WHERE extras_json IS NOT NULL"
+                "   ORDER BY id DESC LIMIT 5000"
+                ") s"
+            ) or 0)
+            for family, keys in family_probes.items():
+                if sample_size == 0:
+                    field_family_coverage[family] = {
+                        "sample_size": 0, "present": 0, "coverage_percent": 0.0, "keys": keys,
+                    }
+                    continue
+                or_clauses = " OR ".join([f"extras_json ? $1::text"] + [f"extras_json ? ${i+2}::text" for i in range(len(keys) - 1)])
+                # Build params list for parametrized OR
+                params = list(keys)
+                present = int(await conn.fetchval(
+                    f"""
+                    SELECT COUNT(*) FROM (
+                        SELECT extras_json FROM paper_candidates
+                         WHERE extras_json IS NOT NULL
+                         ORDER BY id DESC LIMIT 5000
+                    ) s WHERE {or_clauses}
+                    """,
+                    *params,
+                ) or 0)
+                pct = round(present / sample_size * 100.0, 2) if sample_size else 0.0
+                field_family_coverage[family] = {
+                    "sample_size": sample_size,
+                    "present": present,
+                    "coverage_percent": pct,
+                    "keys": keys,
+                }
+
+            # ── Per-engine trade separability ──────────────────────────
+            engine_trade_counts = {
+                "engine": trade_by_wallet.get("engine", 0),
+                "deterministic_shadow": trade_by_wallet.get("deterministic_shadow", 0),
+                "ai_shadow": trade_by_wallet.get("ai_shadow", 0),
+                "unattributed_missing_wallet_id": trade_by_wallet.get("missing", 0),
+            }
 
         # ── Future-timestamp integrity (small tolerance for clock skew) ─
         now_utc = datetime.now(timezone.utc)
@@ -289,9 +369,13 @@ async def persistence_deep_status() -> dict:
                 "future_max_created_at": _future(trade_max_created),
             },
             "wallet_snapshots": wallet_snapshots,
+            "extras_json_field_family_coverage": field_family_coverage,
             "analysis_readiness": {
                 "candidate_to_outcome_joinable_rows": joinable_cand_outcome,
                 "candidate_to_outcome_join_supported": True,
+                "distinct_candidates_with_any_outcome": distinct_candidates_with_any_outcome,
+                "candidates_with_all_5_horizons": candidates_with_all_5_horizons,
+                "missing_outcome_count_by_horizon": missing_by_horizon,
                 "trade_to_wallet_separable": trade_missing_wallet == 0,
                 "trade_to_strategy_separable": trade_missing_strategy == 0,
                 "ny_session_filter_supported": True,
@@ -300,6 +384,11 @@ async def persistence_deep_status() -> dict:
                 ),
                 "invalid_out_of_session_separable_via_exit_reason": True,
                 "wallet_breakdown_supported": ["engine", "deterministic_shadow", "ai_shadow"],
+                "per_engine_trade_counts": engine_trade_counts,
+                "engine_data_separable": engine_trade_counts["engine"] > 0
+                    or engine_trade_counts["unattributed_missing_wallet_id"] == 0,
+                "deterministic_shadow_data_separable": True,
+                "ai_shadow_data_separable": True,
             },
             "timestamps": {
                 "stored_as": "TIMESTAMPTZ (UTC)",

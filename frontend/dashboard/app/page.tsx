@@ -490,6 +490,60 @@ interface WalletPerfResponse {
   session_status: string | null;
 }
 
+// ── Phase G1B-H7: Per-engine decision analytics ──────────────────────────────
+
+interface EngineAnalyticsCommon {
+  wallet_id: string;
+  strategy_id: string;
+  kind: "engine" | "deterministic_shadow" | "ai_shadow";
+  candidate_pool_size: number;
+  available: boolean;
+  unavailable_reason: string | null;
+}
+
+interface EngineDecisionAnalytics extends EngineAnalyticsCommon {
+  kind: "engine";
+  candidate_funnel: CandidateFunnelInfo | null;
+  score_distribution: ScoreDistributionInfo | null;
+  rejections: { top_rejection_reasons: RejectionItem[] } | null;
+  catalysts: { by_type: CatalystTypeItem[] } | null;
+  performance: PerformanceInfo | null;
+}
+
+interface DeterministicShadowAnalytics extends EngineAnalyticsCommon {
+  kind: "deterministic_shadow";
+  would_enter_count: number;
+  watch_count: number;
+  would_reject_count: number;
+  no_decision_count: number;
+  average_score: number | null;
+  top_rejection_reasons: { reason: string; count: number }[];
+  actual_shadow_entries_open: number;
+  actual_shadow_trades_closed: number;
+}
+
+interface AIShadowAnalytics extends EngineAnalyticsCommon {
+  kind: "ai_shadow";
+  llm_enabled: boolean;
+  would_enter_count: number;
+  watch_count: number;
+  would_reject_count: number;
+  disabled_count: number;
+  error_count: number;
+  not_selected_count: number;
+  by_status: Record<string, number>;
+  actual_ai_entries_open: number;
+  actual_ai_trades_closed: number;
+  no_paid_ai_calls: boolean;
+  provider_note: string;
+}
+
+interface WalletAnalyticsResponse {
+  engine: EngineDecisionAnalytics;
+  deterministic_shadow: DeterministicShadowAnalytics;
+  ai_shadow: AIShadowAnalytics;
+}
+
 // ── Intelligence types ────────────────────────────────────────────────────────
 
 interface RedditRow {
@@ -973,6 +1027,16 @@ async function fetchWalletTrades(walletId?: string, latestSession = true): Promi
 async function fetchWalletPerformance(): Promise<WalletPerfResponse | null> {
   try {
     const r = await fetch("/api/paper/wallets/performance?session_date=latest");
+    if (!r.ok) return null;
+    return r.json();
+  } catch {
+    return null;
+  }
+}
+
+async function fetchWalletAnalytics(): Promise<WalletAnalyticsResponse | null> {
+  try {
+    const r = await fetch("/api/paper/wallets/analytics");
     if (!r.ok) return null;
     return r.json();
   } catch {
@@ -5567,6 +5631,406 @@ function WalletDailyAnalytics({ perf, walletId }: { perf: WalletPerfResponse | n
   );
 }
 
+// ── Phase G1B-H7: per-engine account/report/analytics components ────────────
+
+function EngineAccountCard({
+  walletId, label, snapshot, perf,
+}: {
+  walletId: string;
+  label: string;
+  snapshot: WalletSnapshot | undefined;
+  perf: WalletPerf | undefined;
+}) {
+  const active = snapshot?.status === "active";
+  const cardCls = active
+    ? "bg-gray-800 border-gray-700"
+    : "bg-gray-900 border-gray-800 opacity-85";
+  const badgeCls = active
+    ? "bg-green-900 text-green-300 border-green-700"
+    : "bg-gray-800 text-gray-400 border-gray-600";
+  return (
+    <div className={`rounded-lg border p-4 ${cardCls}`}>
+      <div className="flex items-center justify-between mb-2">
+        <div>
+          <div className="text-sm font-bold text-yellow-200 font-mono">{label}</div>
+          <div className="text-[10px] text-gray-500 font-mono">wallet_id: {walletId} · strategy_id: {walletId}</div>
+        </div>
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded border ${badgeCls}`}>
+          {active ? "● ACTIVE" : "○ INACTIVE"}
+        </span>
+      </div>
+      {!active && snapshot?.inactive_reason && (
+        <p className="text-[11px] text-gray-400 mb-2 font-mono">{snapshot.inactive_reason}</p>
+      )}
+      <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+        <div className="text-gray-400">Cash</div>
+        <div className="font-mono text-right">${fmt(snapshot?.cash)}</div>
+        <div className="text-gray-400">Equity</div>
+        <div className="font-mono text-right">${fmt(snapshot?.equity)}</div>
+        <div className="text-gray-400">Realized P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(snapshot?.realized_pnl ?? 0)}`}>{fmtUSD(snapshot?.realized_pnl ?? 0)}</div>
+        <div className="text-gray-400">Unrealized P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(snapshot?.unrealized_pnl ?? 0)}`}>{fmtUSD(snapshot?.unrealized_pnl ?? 0)}</div>
+        <div className="text-gray-400">Total P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(snapshot?.total_pnl ?? 0)}`}>
+          {fmtUSD(snapshot?.total_pnl ?? 0)} ({fmt(snapshot?.total_pnl_percent ?? 0)}%)
+        </div>
+        <div className="text-gray-400">Daily P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(snapshot?.daily_pnl ?? 0)}`}>
+          {snapshot?.daily_pnl != null ? fmtUSD(snapshot.daily_pnl) : "—"}
+        </div>
+        <div className="text-gray-400">Return %</div>
+        <div className={`font-mono text-right ${pnlClass(perf?.return_percent ?? 0)}`}>
+          {perf?.return_percent != null ? `${perf.return_percent.toFixed(2)}%` : "—"}
+        </div>
+        <div className="text-gray-400">Open positions</div>
+        <div className="font-mono text-right">{snapshot?.open_position_count ?? 0}</div>
+        <div className="text-gray-400">Closed trades</div>
+        <div className="font-mono text-right">{snapshot?.closed_trade_count ?? 0}</div>
+        <div className="text-gray-400">Win rate</div>
+        <div className="font-mono text-right">
+          {perf?.win_rate != null ? `${perf.win_rate.toFixed(1)}%` : (snapshot?.win_rate != null ? `${snapshot.win_rate}%` : "—")}
+        </div>
+        <div className="text-gray-400">Avg trade P&amp;L</div>
+        <div className={`font-mono text-right ${pnlClass(perf?.avg_trade_pnl ?? 0)}`}>
+          {perf?.avg_trade_pnl != null ? fmtUSD(perf.avg_trade_pnl) : "—"}
+        </div>
+        <div className="text-gray-400">Best trade</div>
+        <div className={`font-mono text-right ${pnlClass(perf?.best_trade_pnl ?? 0)}`}>
+          {perf?.best_trade_pnl != null ? fmtUSD(perf.best_trade_pnl) : "—"}
+        </div>
+        <div className="text-gray-400">Worst trade</div>
+        <div className={`font-mono text-right ${pnlClass(perf?.worst_trade_pnl ?? 0)}`}>
+          {perf?.worst_trade_pnl != null ? fmtUSD(perf.worst_trade_pnl) : "—"}
+        </div>
+        <div className="text-gray-400">Invalid OOS count</div>
+        <div className={`font-mono text-right ${(perf?.invalid_out_of_session_count ?? 0) > 0 ? "text-orange-400" : "text-gray-300"}`}>
+          {perf?.invalid_out_of_session_count ?? 0}
+        </div>
+        <div className="text-gray-400">Last update</div>
+        <div className="font-mono text-right text-[10px] text-gray-400">{snapshot?.last_update_time ? utcShort(snapshot.last_update_time) : "—"}</div>
+      </div>
+      <div className="mt-2 text-[10px] text-gray-600 font-mono">
+        Fake-money paper account · simulated only · independent of other engines
+      </div>
+    </div>
+  );
+}
+
+function EngineAccountsSection({
+  wallets, perf,
+}: {
+  wallets: WalletsResponse | null;
+  perf: WalletPerfResponse | null;
+}) {
+  if (!wallets) return null;
+  const findPerf = (id: string) => perf?.wallets.find(w => w.wallet_id === id);
+  const entriesAllowed = wallets.entries_allowed !== false;
+  const oosCount = wallets.out_of_session_open_positions ?? 0;
+  return (
+    <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+      <h2 className="text-lg font-semibold mb-3">
+        Engine Accounts
+        <span className="ml-2 text-xs font-normal text-gray-400">
+          three independent fake-money experimental accounts · no combined balance · paper P&L only
+        </span>
+      </h2>
+      {!entriesAllowed && (
+        <div className="mb-3 rounded border border-gray-600 bg-gray-900 px-3 py-2 text-xs text-gray-400">
+          ○ Market closed — fake entries disabled.{wallets.entry_block_reason ? ` (${wallets.entry_block_reason})` : ""}
+        </div>
+      )}
+      {oosCount > 0 && (
+        <div className="mb-3 rounded border border-red-700 bg-red-950 px-3 py-2 text-xs text-red-300">
+          ⚠ {oosCount} out-of-session position(s) detected — will be force-closed on next tick.
+        </div>
+      )}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <EngineAccountCard walletId="engine" label="ENGINE Account" snapshot={wallets.engine} perf={findPerf("engine")} />
+        <EngineAccountCard walletId="deterministic_shadow" label="DETERMINISTIC_SHADOW Account" snapshot={wallets.deterministic_shadow} perf={findPerf("deterministic_shadow")} />
+        <EngineAccountCard walletId="ai_shadow" label="AI_SHADOW Account" snapshot={wallets.ai_shadow} perf={findPerf("ai_shadow")} />
+      </div>
+    </section>
+  );
+}
+
+function EngineDailyReportCard({ perf }: { perf: WalletPerf | undefined }) {
+  if (!perf) {
+    return (
+      <div className="rounded-lg border border-gray-700 bg-gray-900 p-4 text-xs text-gray-500">
+        No data for this engine
+      </div>
+    );
+  }
+  const noTrades = perf.closed_trades_count === 0 && perf.open_positions_count === 0;
+  const pnlCls = (v: number | null) =>
+    v == null ? "text-gray-400" : v > 0 ? "text-green-400" : v < 0 ? "text-red-400" : "text-gray-300";
+  return (
+    <div className="rounded-lg border border-gray-700 bg-gray-800 p-4">
+      <div className="mb-2">
+        <div className="text-sm font-bold text-yellow-200 font-mono">{perf.wallet_id.toUpperCase()} Daily Report</div>
+        <div className="text-[10px] text-gray-500 font-mono">session_date: {perf.session_date}</div>
+      </div>
+      {noTrades ? (
+        <p className="text-xs text-gray-500 italic mt-2">No trades for this session</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+          <div className="text-gray-400">Trades closed</div>
+          <div className="font-mono text-right">{perf.closed_trades_count}</div>
+          <div className="text-gray-400">Wins / Losses</div>
+          <div className="font-mono text-right">{perf.winning_trades_count}W / {perf.losing_trades_count}L</div>
+          <div className="text-gray-400">Win rate</div>
+          <div className="font-mono text-right">{perf.win_rate != null ? `${perf.win_rate.toFixed(1)}%` : "—"}</div>
+          <div className="text-gray-400">Realized P&amp;L</div>
+          <div className={`font-mono text-right ${pnlCls(perf.realized_pnl)}`}>{fmtUSD(perf.realized_pnl)}</div>
+          <div className="text-gray-400">Unrealized P&amp;L</div>
+          <div className={`font-mono text-right ${pnlCls(perf.unrealized_pnl)}`}>{fmtUSD(perf.unrealized_pnl)}</div>
+          <div className="text-gray-400">Total P&amp;L</div>
+          <div className={`font-mono text-right ${pnlCls(perf.total_pnl)}`}>{fmtUSD(perf.total_pnl)}</div>
+          <div className="text-gray-400">Return %</div>
+          <div className={`font-mono text-right ${pnlCls(perf.return_percent)}`}>
+            {perf.return_percent != null ? `${perf.return_percent.toFixed(2)}%` : "—"}
+          </div>
+          <div className="text-gray-400">Avg trade P&amp;L</div>
+          <div className={`font-mono text-right ${pnlCls(perf.avg_trade_pnl)}`}>
+            {perf.avg_trade_pnl != null ? fmtUSD(perf.avg_trade_pnl) : "—"}
+          </div>
+          <div className="text-gray-400">Best trade</div>
+          <div className={`font-mono text-right ${pnlCls(perf.best_trade_pnl)}`}>
+            {perf.best_trade_pnl != null ? fmtUSD(perf.best_trade_pnl) : "—"}
+          </div>
+          <div className="text-gray-400">Worst trade</div>
+          <div className={`font-mono text-right ${pnlCls(perf.worst_trade_pnl)}`}>
+            {perf.worst_trade_pnl != null ? fmtUSD(perf.worst_trade_pnl) : "—"}
+          </div>
+          <div className="text-gray-400">Current open</div>
+          <div className="font-mono text-right">{perf.open_positions_count}</div>
+          <div className="text-gray-400">EOD flatten</div>
+          <div className="font-mono text-right">{perf.eod_flatten_count}</div>
+          <div className="text-gray-400">Invalid OOS</div>
+          <div className={`font-mono text-right ${perf.invalid_out_of_session_count > 0 ? "text-orange-400" : "text-gray-300"}`}>
+            {perf.invalid_out_of_session_count}
+          </div>
+          <div className="text-gray-400">Last trade</div>
+          <div className="font-mono text-right text-[10px] text-gray-400">
+            {perf.last_trade_time ? utcShort(perf.last_trade_time) : "—"}
+          </div>
+        </div>
+      )}
+      {perf.invalid_out_of_session_count > 0 && (
+        <div className="mt-2 text-[10px] text-orange-400/80 font-mono">
+          ⚠ OOS trades excluded from metrics
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EngineDailyReportsSection({ perf }: { perf: WalletPerfResponse | null }) {
+  if (!perf) return null;
+  const find = (id: string) => perf.wallets.find(w => w.wallet_id === id);
+  return (
+    <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+      <h2 className="text-lg font-semibold mb-3">
+        Engine Daily Reports
+        <span className="ml-2 text-xs font-normal text-gray-400">
+          same-structure daily summary for each engine · session {perf.session_date} · OOS trades excluded from normal metrics
+        </span>
+      </h2>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <EngineDailyReportCard perf={find("engine")} />
+        <EngineDailyReportCard perf={find("deterministic_shadow")} />
+        <EngineDailyReportCard perf={find("ai_shadow")} />
+      </div>
+    </section>
+  );
+}
+
+function EngineDecisionAnalyticsCard({
+  data, kind, fallbackTitle,
+}: {
+  data: EngineDecisionAnalytics | DeterministicShadowAnalytics | AIShadowAnalytics | null;
+  kind: "engine" | "deterministic_shadow" | "ai_shadow";
+  fallbackTitle: string;
+}) {
+  if (!data) {
+    return (
+      <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
+        <div className="text-sm font-bold text-yellow-200 font-mono mb-2">{fallbackTitle}</div>
+        <p className="text-xs text-gray-500 italic">Metric not currently collected</p>
+      </div>
+    );
+  }
+  const title = `${data.wallet_id.toUpperCase()} Analytics`;
+  if (!data.available && data.unavailable_reason) {
+    return (
+      <div className="rounded-lg border border-gray-700 bg-gray-900 p-4">
+        <div className="text-sm font-bold text-yellow-200 font-mono mb-1">{title}</div>
+        <div className="text-[10px] text-gray-500 font-mono mb-2">strategy_id: {data.strategy_id}</div>
+        <p className="text-xs text-gray-500 italic">Not enough persisted data yet — {data.unavailable_reason}</p>
+        <p className="text-[10px] text-gray-600 mt-2 font-mono">Candidate pool last tick: {data.candidate_pool_size}</p>
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-gray-700 bg-gray-800 p-4">
+      <div className="text-sm font-bold text-yellow-200 font-mono mb-1">{title}</div>
+      <div className="text-[10px] text-gray-500 font-mono mb-2">strategy_id: {data.strategy_id} · pool: {data.candidate_pool_size}</div>
+      {kind === "engine" && (() => {
+        const d = data as EngineDecisionAnalytics;
+        return (
+          <div className="space-y-2 text-xs">
+            {d.candidate_funnel && (
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+                <div className="text-gray-400">Total candidates</div>
+                <div className="font-mono text-right">{d.candidate_funnel.total_candidates}</div>
+                <div className="text-gray-400">Eligible</div>
+                <div className="font-mono text-right">{d.candidate_funnel.eligible}</div>
+                <div className="text-gray-400">Entered</div>
+                <div className="font-mono text-right text-green-400">{d.candidate_funnel.entered}</div>
+                <div className="text-gray-400">Score rejected</div>
+                <div className="font-mono text-right">{d.candidate_funnel.score_rejected}</div>
+                <div className="text-gray-400">Hard rejected</div>
+                <div className="font-mono text-right">{d.candidate_funnel.hard_rejected}</div>
+                <div className="text-gray-400">Blocked</div>
+                <div className="font-mono text-right">{d.candidate_funnel.blocked}</div>
+              </div>
+            )}
+            {d.score_distribution && (
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 pt-2 border-t border-gray-700">
+                <div className="text-gray-400">Avg score</div>
+                <div className="font-mono text-right">{d.score_distribution.average_score != null ? d.score_distribution.average_score.toFixed(1) : "—"}</div>
+                <div className="text-gray-400">Above threshold</div>
+                <div className="font-mono text-right">{d.score_distribution.above_threshold}</div>
+              </div>
+            )}
+            {d.rejections?.top_rejection_reasons && d.rejections.top_rejection_reasons.length > 0 && (
+              <div className="pt-2 border-t border-gray-700">
+                <div className="text-[10px] text-gray-500 mb-1">Top rejection reasons</div>
+                <div className="space-y-0.5 max-h-32 overflow-y-auto">
+                  {d.rejections.top_rejection_reasons.slice(0, 5).map((r, i) => (
+                    <div key={i} className="flex justify-between text-[11px] font-mono">
+                      <span className="text-gray-400 truncate pr-2">{r.reason}</span>
+                      <span className="text-gray-300">{r.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {d.catalysts?.by_type && d.catalysts.by_type.length > 0 && (
+              <div className="pt-2 border-t border-gray-700">
+                <div className="text-[10px] text-gray-500 mb-1">Catalysts by type</div>
+                <div className="space-y-0.5 max-h-24 overflow-y-auto">
+                  {d.catalysts.by_type.slice(0, 5).map((c, i) => (
+                    <div key={i} className="flex justify-between text-[11px] font-mono">
+                      <span className="text-gray-400 truncate pr-2">{c.type}</span>
+                      <span className="text-gray-300">{c.count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+      {kind === "deterministic_shadow" && (() => {
+        const d = data as DeterministicShadowAnalytics;
+        return (
+          <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            <div className="text-gray-400">WOULD_ENTER</div>
+            <div className="font-mono text-right text-green-400">{d.would_enter_count}</div>
+            <div className="text-gray-400">WATCH</div>
+            <div className="font-mono text-right">{d.watch_count}</div>
+            <div className="text-gray-400">WOULD_REJECT</div>
+            <div className="font-mono text-right text-red-400">{d.would_reject_count}</div>
+            <div className="text-gray-400">No decision</div>
+            <div className="font-mono text-right text-gray-500">{d.no_decision_count}</div>
+            <div className="text-gray-400">Avg score</div>
+            <div className="font-mono text-right">{d.average_score != null ? d.average_score.toFixed(1) : "—"}</div>
+            <div className="text-gray-400">Open positions</div>
+            <div className="font-mono text-right">{d.actual_shadow_entries_open}</div>
+            <div className="text-gray-400">Closed trades</div>
+            <div className="font-mono text-right">{d.actual_shadow_trades_closed}</div>
+            {d.top_rejection_reasons.length > 0 && (
+              <>
+                <div className="col-span-2 pt-2 border-t border-gray-700 text-[10px] text-gray-500">Top rejection reasons</div>
+                {d.top_rejection_reasons.slice(0, 4).map((r, i) => (
+                  <React.Fragment key={i}>
+                    <div className="text-gray-400 truncate text-[11px]">{r.reason}</div>
+                    <div className="font-mono text-right text-[11px]">{r.count}</div>
+                  </React.Fragment>
+                ))}
+              </>
+            )}
+          </div>
+        );
+      })()}
+      {kind === "ai_shadow" && (() => {
+        const d = data as AIShadowAnalytics;
+        return (
+          <div className="space-y-2 text-xs">
+            <div className="grid grid-cols-2 gap-x-3 gap-y-1">
+              <div className="text-gray-400">LLM enabled</div>
+              <div className={`font-mono text-right ${d.llm_enabled ? "text-green-400" : "text-gray-500"}`}>
+                {String(d.llm_enabled)}
+              </div>
+              <div className="text-gray-400">WOULD_ENTER</div>
+              <div className="font-mono text-right text-green-400">{d.would_enter_count}</div>
+              <div className="text-gray-400">WATCH</div>
+              <div className="font-mono text-right">{d.watch_count}</div>
+              <div className="text-gray-400">WOULD_REJECT</div>
+              <div className="font-mono text-right text-red-400">{d.would_reject_count}</div>
+              <div className="text-gray-400">disabled</div>
+              <div className="font-mono text-right text-gray-500">{d.disabled_count}</div>
+              <div className="text-gray-400">error</div>
+              <div className="font-mono text-right text-red-400">{d.error_count}</div>
+              <div className="text-gray-400">not_selected</div>
+              <div className="font-mono text-right text-gray-500">{d.not_selected_count}</div>
+              <div className="text-gray-400">Open positions</div>
+              <div className="font-mono text-right">{d.actual_ai_entries_open}</div>
+              <div className="text-gray-400">Closed trades</div>
+              <div className="font-mono text-right">{d.actual_ai_trades_closed}</div>
+            </div>
+            <div className="pt-2 border-t border-gray-700 text-[10px] text-gray-600 font-mono">
+              ✓ No paid AI calls · {d.provider_note}
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function EngineDecisionAnalyticsSection({ analytics }: { analytics: WalletAnalyticsResponse | null }) {
+  return (
+    <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
+      <h2 className="text-lg font-semibold mb-3">
+        Engine Decision Analytics
+        <span className="ml-2 text-xs font-normal text-gray-400">
+          same-structure decision analytics for each engine · derived from last tick · no paid AI calls
+        </span>
+      </h2>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <EngineDecisionAnalyticsCard
+          data={analytics?.engine ?? null}
+          kind="engine"
+          fallbackTitle="ENGINE Analytics"
+        />
+        <EngineDecisionAnalyticsCard
+          data={analytics?.deterministic_shadow ?? null}
+          kind="deterministic_shadow"
+          fallbackTitle="DETERMINISTIC_SHADOW Analytics"
+        />
+        <EngineDecisionAnalyticsCard
+          data={analytics?.ai_shadow ?? null}
+          kind="ai_shadow"
+          fallbackTitle="AI_SHADOW Analytics"
+        />
+      </div>
+    </section>
+  );
+}
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 
 export default function Home() {
@@ -5587,6 +6051,7 @@ export default function Home() {
   const [wallets, setWallets] = useState<WalletsResponse | null>(null);
   const [walletId, setWalletId] = useState<string>("all");
   const [walletPerf, setWalletPerf] = useState<WalletPerfResponse | null>(null);
+  const [walletAnalytics, setWalletAnalytics] = useState<WalletAnalyticsResponse | null>(null);
 
   // Note: NewsTab / EarningsTab / InsidersTab manage their own cache-first
   // fetches with filters. They are not part of the global 30s loop so the
@@ -5594,10 +6059,10 @@ export default function Home() {
   // is not open.
 
   const refresh = useCallback(async () => {
-    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, mtdata, wdata, wpdata] = await Promise.all([
+    const [data, jdata, mdata, tdata, rdata, rddata, pmdata, rcfgdata, mtdata, wdata, wpdata, wadata] = await Promise.all([
       fetchDashboard(), fetchJournal(), fetchMonitoringStatus(), fetchTodayReport(), fetchReadiness(),
       fetchReddit(), fetchPremarket(), fetchRuntimeConfig(), fetchMarketTrend(),
-      fetchWallets(), fetchWalletPerformance(),
+      fetchWallets(), fetchWalletPerformance(), fetchWalletAnalytics(),
     ]);
     setDashboard(data);
     setJournal(jdata);
@@ -5610,6 +6075,7 @@ export default function Home() {
     setMarketTrend(mtdata);
     setWallets(wdata);
     setWalletPerf(wpdata);
+    setWalletAnalytics(wadata);
     setLoading(false);
     setLastRefresh(new Date().toUTCString());
   }, []);
@@ -5726,14 +6192,17 @@ export default function Home() {
         <SessionReadiness analytics={dashboard?.analytics ?? null} status={dashboard?.status} />
       </section>
 
-      {/* Phase G1B-H4 Part C — Engine Performance Today / Wallet Comparison */}
+      {/* Phase G1B-H7 Part F — Engine Performance Today (wallet comparison) */}
       <EnginePerformanceSection perf={walletPerf} />
 
-      {/* Account stats */}
+      {/* Phase G1B-H7 Part B — Three independent engine accounts (replaces single Account + Fake Wallets) */}
+      <EngineAccountsSection wallets={wallets} perf={walletPerf} />
+
+      {/* Phase G1B-H7 — Simulator/system status (mode/controls context) */}
       {s && (
-        <section className="mb-6">
+        <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
           <div className="flex flex-wrap items-center gap-3 mb-3">
-            <h2 className="text-xl font-semibold">Account</h2>
+            <h2 className="text-lg font-semibold">Simulator Status</h2>
             <span className={`text-xs font-semibold px-2 py-0.5 rounded border ${
               s.running
                 ? "bg-green-900 text-green-300 border-green-700"
@@ -5746,21 +6215,12 @@ export default function Home() {
                 ERR: {s.last_error}
               </span>
             )}
+            <span className="text-[10px] text-gray-500 font-mono">
+              No combined cash/equity total across engines — each account is independent.
+            </span>
           </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3 mb-3">
-            <StatBox label="Starting Cash" value={`$${fmt(s.starting_cash)}`} />
-            <StatBox label="Cash" value={`$${fmt(s.cash)}`} />
-            <StatBox label="Equity" value={`$${fmt(s.equity)}`} />
-            <StatBox label="Realized P&L" value={fmtUSD(s.realized_pnl)} cls={pnlClass(s.realized_pnl)} />
-            <StatBox label="Unrealized P&L" value={fmtUSD(s.unrealized_pnl)} cls={pnlClass(s.unrealized_pnl)} />
-            <StatBox label="Total P&L" value={`${fmtUSD(s.total_pnl)} (${fmt(s.total_pnl_percent)}%)`} cls={pnlClass(s.total_pnl)} />
-            <StatBox label="Trades Today" value={`${s.daily_trade_count} / ${s.max_trades_per_day}`} />
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
-            <StatBox label="Open Positions" value={String(s.open_position_count)} />
-            <StatBox label="Closed Trades" value={String(s.closed_trade_count)} />
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-3">
+            <StatBox label="Trades Today (ENGINE)" value={`${s.daily_trade_count} / ${s.max_trades_per_day}`} />
             <StatBox label="Take Profit" value={`+${s.take_profit_percent}%`} />
             <StatBox label="Stop Loss" value={`-${s.stop_loss_percent}%`} />
             <StatBox label="Max Hold" value={`${s.max_hold_minutes}m`} />
@@ -5780,7 +6240,7 @@ export default function Home() {
                 ? "border-red-700 bg-red-950 text-red-300"
                 : "border-gray-700 bg-gray-900 text-gray-400"
             }`}>
-              <span>Loss Guard: {s.daily_loss_guard.enabled ? (s.daily_loss_guard.triggered ? "TRIGGERED" : "active") : "disabled"}</span>
+              <span>Loss Guard (ENGINE): {s.daily_loss_guard.enabled ? (s.daily_loss_guard.triggered ? "TRIGGERED" : "active") : "disabled"}</span>
               <span>Daily P&L: <span className={pnlClass(s.daily_loss_guard.daily_pnl)}>{fmtUSD(s.daily_loss_guard.daily_pnl)} ({fmt(s.daily_loss_guard.daily_pnl_percent)}%)</span></span>
               <span>Threshold: -{s.daily_loss_guard.threshold_percent}%{s.daily_loss_guard.threshold_usd ? ` / $${s.daily_loss_guard.threshold_usd}` : ""}</span>
               {s.daily_loss_guard.triggered && s.daily_loss_guard.reason && (
@@ -5808,17 +6268,6 @@ export default function Home() {
           )}
         </section>
       )}
-
-      {/* Phase G1B-H1 Part A — 3-wallet summary */}
-      <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
-        <h2 className="text-lg font-semibold mb-3">
-          Fake Wallets
-          <span className="ml-2 text-xs font-normal text-gray-400">
-            engine + 2 shadow strategies · fake-money · no broker · no real orders
-          </span>
-        </h2>
-        <WalletsPanel wallets={wallets} />
-      </section>
 
       {/* Controls */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
@@ -5855,7 +6304,10 @@ export default function Home() {
         )}
       </section>
 
-      {/* Phase G1B-H5 Part B — unified wallet-aware Positions & Trades (replaces legacy ENGINE-only sections) */}
+      {/* Phase G1B-H7 Part C — Engine Daily Reports (3 same-structure panels) */}
+      <EngineDailyReportsSection perf={walletPerf} />
+
+      {/* Phase G1B-H5 Part B — unified wallet-aware Positions & Trades */}
       <section className="mb-6 bg-gray-800 rounded-lg border border-gray-700 p-4">
         <h2 className="text-lg font-semibold mb-3">
           Trading Activity
@@ -5866,8 +6318,8 @@ export default function Home() {
         <WalletExplorer walletId={walletId} onWalletChange={setWalletId} />
       </section>
 
-      {/* Phase G1B-H4 Part D — wallet-scoped daily analytics */}
-      <WalletDailyAnalytics perf={walletPerf} walletId={walletId} />
+      {/* Phase G1B-H7 Part D — Engine Decision Analytics (3 same-structure panels) */}
+      <EngineDecisionAnalyticsSection analytics={walletAnalytics} />
 
       {/* Last tick candidates */}
       <section className="mb-6">
@@ -5901,12 +6353,17 @@ export default function Home() {
         />
       </section>
 
-      {/* Phase G1B-H6 — Legacy ENGINE diagnostics (collapsed; wallet-aware sections above) */}
-      <details className="mb-6 bg-gray-900 rounded-lg border border-gray-700">
-        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-300 hover:text-white select-none">
-          ▸ Legacy ENGINE diagnostics
-          <span className="ml-2 text-xs font-normal text-gray-500">
-            ENGINE-only · candidate funnel, daily journal, history log · superseded by wallet-aware sections above · collapsed by default
+      {/* Phase G1B-H7 Part G — Advanced diagnostics / Legacy ENGINE-only (very bottom of main tab) */}
+      <div className="mt-10 mb-4 border-t border-gray-800 pt-4">
+        <p className="text-[10px] uppercase tracking-wider text-gray-600 font-mono mb-2">
+          Advanced diagnostics — not part of the normal three-engine daily report
+        </p>
+      </div>
+      <details className="mb-6 bg-gray-900 rounded-lg border border-gray-800">
+        <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-gray-400 hover:text-white select-none">
+          ▸ Legacy ENGINE-only diagnostics
+          <span className="ml-2 text-xs font-normal text-gray-600">
+            engine-only · candidate funnel, journal, history log · superseded by Engine Daily Reports + Engine Decision Analytics above · collapsed by default
           </span>
         </summary>
         <div className="px-4 pb-4 space-y-4">

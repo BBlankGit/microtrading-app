@@ -406,6 +406,124 @@ async def paper_wallet_performance(session_date: str | None = None):
     }
 
 
+@router.get("/wallets/analytics")
+async def paper_wallet_analytics():
+    """
+    Phase G1B-H7 Part I — same-structure decision analytics for each engine.
+
+    Returns three analytics objects (engine, deterministic_shadow, ai_shadow)
+    with comparable counts so the dashboard can render side-by-side panels
+    without falling back to engine-only data for the shadows. Counts come
+    from the last tick's candidate list. Fake-money paper simulation only.
+    """
+    from paper.analytics import get_trade_analytics
+    from paper import shadow_wallets as _sw
+
+    state = simulator.get_state()
+    candidates = state.get("last_candidates") or []
+    status = simulator.get_status()
+
+    engine_analytics = get_trade_analytics(
+        status,
+        simulator.get_positions(),
+        simulator.get_trades(),
+        candidates,
+        get_cached_universe(),
+    )
+
+    def _count(items, key, value):
+        return sum(1 for c in items if c.get(key) == value)
+
+    def _top_n(items, key, n=5):
+        from collections import Counter
+        c = Counter(c.get(key) for c in items if c.get(key))
+        return [{"reason": k, "count": v} for k, v in c.most_common(n)]
+
+    det_would_enter = _count(candidates, "enhanced_shadow_decision", "WOULD_ENTER")
+    det_watch = _count(candidates, "enhanced_shadow_decision", "WATCH")
+    det_would_reject = _count(candidates, "enhanced_shadow_decision", "WOULD_REJECT")
+    det_unknown = sum(1 for c in candidates if not c.get("enhanced_shadow_decision"))
+    det_scores = [c.get("enhanced_shadow_score") for c in candidates
+                  if isinstance(c.get("enhanced_shadow_score"), (int, float))]
+    det_avg_score = round(sum(det_scores) / len(det_scores), 2) if det_scores else None
+
+    llm_status_counts = {}
+    for c in candidates:
+        s = c.get("llm_status") or "not_called"
+        llm_status_counts[s] = llm_status_counts.get(s, 0) + 1
+    ai_would_enter = _count(candidates, "llm_decision", "WOULD_ENTER")
+    ai_watch = _count(candidates, "llm_decision", "WATCH")
+    ai_would_reject = _count(candidates, "llm_decision", "WOULD_REJECT")
+    ai_disabled = llm_status_counts.get("disabled", 0)
+    ai_error = llm_status_counts.get("error", 0)
+    ai_not_selected = llm_status_counts.get("not_selected", 0) + llm_status_counts.get("not_called", 0)
+
+    shadow_snap = _sw.snapshot()
+    llm_enabled = bool(shadow_snap.get("llm_enabled"))
+
+    common = {
+        "session_status": "open" if state else "unknown",
+        "candidate_pool_size": len(candidates),
+        "data_collected_from": "last_tick_candidates",
+        "disclaimer": "Fake-money paper simulation only. No paid AI calls.",
+    }
+
+    return {
+        "engine": {
+            **common,
+            "wallet_id": "engine",
+            "strategy_id": "engine",
+            "kind": "engine",
+            "candidate_funnel": engine_analytics.get("candidate_funnel"),
+            "score_distribution": engine_analytics.get("score_distribution"),
+            "rejections": engine_analytics.get("rejections"),
+            "catalysts": engine_analytics.get("catalysts"),
+            "performance": engine_analytics.get("performance"),
+            "available": True,
+            "unavailable_reason": None,
+        },
+        "deterministic_shadow": {
+            **common,
+            "wallet_id": _sw.WALLET_DETERMINISTIC,
+            "strategy_id": _sw.WALLET_DETERMINISTIC,
+            "kind": "deterministic_shadow",
+            "would_enter_count": det_would_enter,
+            "watch_count": det_watch,
+            "would_reject_count": det_would_reject,
+            "no_decision_count": det_unknown,
+            "average_score": det_avg_score,
+            "top_rejection_reasons": _top_n(
+                [c for c in candidates if c.get("enhanced_shadow_decision") == "WOULD_REJECT"],
+                "enhanced_shadow_reason",
+            ),
+            "actual_shadow_entries_open": len(_sw.get_positions(_sw.WALLET_DETERMINISTIC)),
+            "actual_shadow_trades_closed": len(_sw.get_trades(_sw.WALLET_DETERMINISTIC)),
+            "available": shadow_snap.get("enabled", False) or det_would_enter + det_watch + det_would_reject > 0,
+            "unavailable_reason": None if shadow_snap.get("enabled") else "shadow_wallets_disabled",
+        },
+        "ai_shadow": {
+            **common,
+            "wallet_id": _sw.WALLET_AI,
+            "strategy_id": _sw.WALLET_AI,
+            "kind": "ai_shadow",
+            "llm_enabled": llm_enabled,
+            "would_enter_count": ai_would_enter,
+            "watch_count": ai_watch,
+            "would_reject_count": ai_would_reject,
+            "disabled_count": ai_disabled,
+            "error_count": ai_error,
+            "not_selected_count": ai_not_selected,
+            "by_status": llm_status_counts,
+            "actual_ai_entries_open": len(_sw.get_positions(_sw.WALLET_AI)),
+            "actual_ai_trades_closed": len(_sw.get_trades(_sw.WALLET_AI)),
+            "no_paid_ai_calls": True,
+            "provider_note": "local/free LLM provider (e.g. Ollama). No external paid-provider billing.",
+            "available": llm_enabled or ai_would_enter + ai_watch + ai_would_reject > 0,
+            "unavailable_reason": None if llm_enabled else "LLM_SHADOW_ENABLED=false",
+        },
+    }
+
+
 @router.get("/universe")
 async def paper_universe():
     return await get_active_paper_universe()
