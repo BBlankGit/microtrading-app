@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 _deterministic: PaperAccount | None = None
 _ai: PaperAccount | None = None
 
+# G1B-H10 Part C: track true last_decision_at for each shadow wallet,
+# updated every time a candidate is evaluated (WOULD_ENTER / WATCH /
+# WOULD_REJECT / no_decision) — not only when an entry happens.
+_last_decision_at: dict[str, str | None] = {
+    "deterministic_shadow": None,
+    "ai_shadow": None,
+}
+
 
 WALLET_DETERMINISTIC = "deterministic_shadow"
 WALLET_AI = "ai_shadow"
@@ -105,6 +113,48 @@ def _position_budget(account: PaperAccount) -> float:
 
 def _llm_enabled() -> bool:
     return bool(getattr(settings, "LLM_SHADOW_ENABLED", False))
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _stamp_decision(wallet_id: str, candidates: list[dict]) -> None:
+    """G1B-H10 Part C: record true last_decision_at whenever the shadow
+    wallet evaluates ANY candidate decision (WOULD_ENTER, WATCH,
+    WOULD_REJECT, no_decision). Independent of last_entry_at."""
+    if not candidates:
+        return
+    if wallet_id == WALLET_DETERMINISTIC:
+        # any candidate that carries enhanced_shadow_decision (or was
+        # evaluated for shadow scoring) counts as a decision touch
+        touched = any(
+            c.get("enhanced_shadow_decision") is not None
+            or c.get("enhanced_shadow_score") is not None
+            for c in candidates
+        )
+        if touched:
+            _last_decision_at[WALLET_DETERMINISTIC] = _now_iso()
+    elif wallet_id == WALLET_AI:
+        touched = any(
+            c.get("llm_decision") is not None
+            or c.get("llm_status") is not None
+            for c in candidates
+        )
+        if touched:
+            _last_decision_at[WALLET_AI] = _now_iso()
+
+
+def get_last_decision_at(wallet_id: str) -> str | None:
+    """Public accessor for the in-memory last_decision_at tracker."""
+    return _last_decision_at.get(wallet_id)
+
+
+def _reset_last_decision_at() -> None:
+    """Test-only helper: clear the in-memory decision timestamps."""
+    _last_decision_at[WALLET_DETERMINISTIC] = None
+    _last_decision_at[WALLET_AI] = None
 
 
 def _process_exits_for(
@@ -312,6 +362,13 @@ def process_tick(
     if not enabled():
         return {"entries": [], "exits": [], "warnings": [], "snapshots": {},
                 "skipped": "disabled"}
+
+    # G1B-H10 Part C: record true last_decision_at independently of entries.
+    # This stamps a decision touch whenever the shadow strategy evaluated any
+    # candidate, even when no entry happened.
+    _stamp_decision(WALLET_DETERMINISTIC, candidates)
+    if _llm_enabled():
+        _stamp_decision(WALLET_AI, candidates)
 
     intrabar_map = intrabar_map or {}
     try:
@@ -561,7 +618,12 @@ def _wallet_snapshot(wallet_id: str, quality_map: dict[str, dict]) -> dict:
         "depends_on_llm": proc["depends_on_llm"],
         "last_entry_at": last_entry_at,
         "last_exit_at": last_exit_at,
-        "last_decision_at": last_entry_at,  # best-effort: entries are decisions
+        # G1B-H10 Part C: true last_decision_at — updated every time the
+        # shadow strategy evaluates a candidate (WOULD_ENTER / WATCH /
+        # WOULD_REJECT / no_decision), independent of whether an entry
+        # actually opened. Falls back to last_entry_at if no decision tick
+        # has been recorded yet (e.g. right after restart).
+        "last_decision_at": _last_decision_at.get(wallet_id) or last_entry_at,
     })
     if wallet_id == WALLET_AI:
         base["no_paid_ai_calls"] = True

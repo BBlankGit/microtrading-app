@@ -789,6 +789,11 @@ async def persistence_deep_status() -> dict:
                 "by_source": out_by_source,
                 "min_resolved_at": out_min_resolved.isoformat() if out_min_resolved else None,
                 "max_resolved_at": out_max_resolved.isoformat() if out_max_resolved else None,
+                # G1B-H10 Part D: spec-named aliases (Codex requested
+                # resolved_at_min / resolved_at_max; the legacy keys above
+                # are kept for backwards-compat).
+                "resolved_at_min": out_min_resolved.isoformat() if out_min_resolved else None,
+                "resolved_at_max": out_max_resolved.isoformat() if out_max_resolved else None,
                 # G1B-H9 Part D: direct resolved_at NULL/present counts
                 "resolved_at_null_count": resolved_at_null_count,
                 "resolved_at_present_count": resolved_at_present_count,

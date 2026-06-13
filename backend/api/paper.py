@@ -255,6 +255,16 @@ async def paper_wallet_trades(
     }
 
 
+def _last_engine_entry_time() -> str | None:
+    times = [p.get("entry_time") for p in simulator.get_positions() if p.get("entry_time")]
+    return max(times) if times else None
+
+
+def _last_engine_exit_time() -> str | None:
+    times = [t.get("exit_time") for t in simulator.get_trades() if t.get("exit_time")]
+    return max(times) if times else None
+
+
 @router.get("/wallets/performance")
 async def paper_wallet_performance(session_date: str | None = None):
     """
@@ -317,6 +327,18 @@ async def paper_wallet_performance(session_date: str | None = None):
             "display_name": wallet_id.replace("_", " ").title(),
             "status": snap.get("status", "unknown"),
             "inactive_reason": snap.get("inactive_reason"),
+            # Phase G1B-H10 Part B: same status/config fields exposed by
+            # /api/paper/wallets, replicated here so callers do not need a
+            # second request just to know whether the wallet is enabled.
+            "enabled": snap.get("enabled"),
+            "active": snap.get("status") == "active",
+            "processing_enabled": snap.get("processing_enabled"),
+            "enabled_by_config": snap.get("enabled_by_config"),
+            "depends_on_llm": snap.get("depends_on_llm"),
+            "last_entry_at": snap.get("last_entry_at"),
+            "last_exit_at": snap.get("last_exit_at"),
+            "last_decision_at": snap.get("last_decision_at"),
+            "no_paid_ai_calls": snap.get("no_paid_ai_calls"),
             "session_date": resolved,
             "starting_cash": start,
             "cash": snap.get("cash"),
@@ -362,6 +384,15 @@ async def paper_wallet_performance(session_date: str | None = None):
         "status": "active",
         "inactive_reason": None,
         "daily_pnl": eng_daily_pnl,
+        # G1B-H10 Part B: engine status/config field symmetry
+        "enabled": True,
+        "processing_enabled": True,
+        "enabled_by_config": [{"flag": "always_active", "value": True}],
+        "depends_on_llm": False,
+        "last_entry_at": _last_engine_entry_time(),
+        "last_exit_at": _last_engine_exit_time(),
+        "last_decision_at": eng_raw.get("last_tick_at"),
+        "no_paid_ai_calls": True,
     }
     engine_perf = _build(
         "engine",
@@ -460,6 +491,8 @@ async def paper_wallet_analytics():
 
     shadow_snap = _sw.snapshot()
     llm_enabled = bool(shadow_snap.get("llm_enabled"))
+    det_snap = shadow_snap.get(_sw.WALLET_DETERMINISTIC) or {}
+    ai_snap = shadow_snap.get(_sw.WALLET_AI) or {}
 
     common = {
         "session_status": "open" if state else "unknown",
@@ -468,9 +501,41 @@ async def paper_wallet_analytics():
         "disclaimer": "Fake-money paper simulation only. No paid AI calls.",
     }
 
+    def _engine_status_block() -> dict:
+        # G1B-H10 Part B: engine status/config field symmetry
+        return {
+            "status": "active",
+            "active": True,
+            "inactive_reason": None,
+            "enabled": True,
+            "processing_enabled": True,
+            "enabled_by_config": [{"flag": "always_active", "value": True}],
+            "depends_on_llm": False,
+            "no_paid_ai_calls": True,
+            "last_decision_at": status.get("last_tick_at"),
+            "last_entry_at": _last_engine_entry_time(),
+            "last_exit_at": _last_engine_exit_time(),
+        }
+
+    def _shadow_status_block(snap: dict) -> dict:
+        return {
+            "status": snap.get("status", "unknown"),
+            "active": snap.get("status") == "active",
+            "inactive_reason": snap.get("inactive_reason"),
+            "enabled": snap.get("enabled"),
+            "processing_enabled": snap.get("processing_enabled"),
+            "enabled_by_config": snap.get("enabled_by_config"),
+            "depends_on_llm": snap.get("depends_on_llm"),
+            "no_paid_ai_calls": snap.get("no_paid_ai_calls"),
+            "last_decision_at": snap.get("last_decision_at"),
+            "last_entry_at": snap.get("last_entry_at"),
+            "last_exit_at": snap.get("last_exit_at"),
+        }
+
     return {
         "engine": {
             **common,
+            **_engine_status_block(),
             "wallet_id": "engine",
             "strategy_id": "engine",
             "kind": "engine",
@@ -484,6 +549,7 @@ async def paper_wallet_analytics():
         },
         "deterministic_shadow": {
             **common,
+            **_shadow_status_block(det_snap),
             "wallet_id": _sw.WALLET_DETERMINISTIC,
             "strategy_id": _sw.WALLET_DETERMINISTIC,
             "kind": "deterministic_shadow",
@@ -503,6 +569,7 @@ async def paper_wallet_analytics():
         },
         "ai_shadow": {
             **common,
+            **_shadow_status_block(ai_snap),
             "wallet_id": _sw.WALLET_AI,
             "strategy_id": _sw.WALLET_AI,
             "kind": "ai_shadow",
